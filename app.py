@@ -160,9 +160,9 @@ def run_quant_system(stock_code, exchange="TW", window=252):
         # 顯示指標卡片
         st.markdown("### 🔮 未來 5 日預測與位階狀態")
         col1, col2, col3 = st.columns(3)
-        col1.metric("AI 預測擊敗大盤勝率", f"{latest_proba:.2%}")
-        col2.metric("Beta_3 純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
-        col3.metric("Gamma 資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
+        col1.metric("AI 預測擊敗大盤未來5日勝率", f"{latest_proba:.2%}")
+        col2.metric("NVDA含量純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
+        col3.metric("追隨NVDA資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
         
         st.info(f"**💡 系統策略建議：** {action_plan}")
 
