@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 from google import genai
 import pandas as pd
+import traceback # 新增：用於捕捉詳細錯誤日誌
 
 # 子頁面設定
 st.set_page_config(
@@ -17,10 +18,11 @@ st.caption("內建「投資報告專業 1.3 版」邏輯：自動判斷 P/E 與 
 with st.sidebar:
     st.header("⚙️ 模組參數設定")
     gemini_api_key = st.text_input("輸入 Gemini API Key", type="password", key="stock_report_api_key")
+    
+    # 確保使用官方支援的最新模型名稱
     selected_model = st.selectbox(
         "選擇 Gemini 模型",
-#        ["gemini-1.5-flash", "gemini-1.5-pro","gemini-3.8-flash", "gemini-3.8-pro"],
-        ["gemini-1.5-flash", "gemini-1.5-pro"],
+        ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"],
         key="stock_report_model"
     )
     st.markdown("---")
@@ -30,7 +32,7 @@ with st.sidebar:
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    stock_id = st.text_input("請輸入台股代號（例：6217, 6209, 8271）", value="6217").strip()
+    stock_id = st.text_input("請輸入台股代號（例：2330, 6217, 6209）", value="6217").strip()
     macro_news = st.text_area(
         "總體經濟新聞/補充背景資訊（選填）",
         value="美國聯準會維持利率政策方向，台灣半導體與電子零組件出口維持溫和復甦，新台幣匯率平穩。",
@@ -38,12 +40,10 @@ with col1:
     )
     submit_btn = st.button("🚀 生成專業報告", type="primary", use_container_width=True)
 
-# 數據抓取函式 (加入防錯機制、名稱抓取與時間紀錄)
+# 數據抓取函式
 @st.cache_data(ttl=300)
 def fetch_stock_data(ticker_symbol: str):
     ticker_symbol = ticker_symbol.strip()
-    
-    # 依序嘗試 上市 (.TW) 與 上櫃 (.TWO)
     for suffix in [".TW", ".TWO"]:
         try:
             ticker = yf.Ticker(f"{ticker_symbol}{suffix}")
@@ -53,7 +53,6 @@ def fetch_stock_data(ticker_symbol: str):
                 latest_price = hist['Close'].iloc[-1]
                 latest_date = hist.index[-1].strftime("%Y 年 %m 月 %d 日")
                 
-                # 嘗試取得公司名稱 (yfinance 有時會回傳英文名稱)
                 company_name = ""
                 try:
                     info = ticker.info
@@ -61,7 +60,6 @@ def fetch_stock_data(ticker_symbol: str):
                 except:
                     pass
                 
-                # 紀錄當下抓取時間 (設定為台北時區)
                 current_time = pd.Timestamp.now(tz='Asia/Taipei').strftime("%Y-%m-%d %H:%M:%S")
                 
                 return {
@@ -73,31 +71,31 @@ def fetch_stock_data(ticker_symbol: str):
                 }
         except Exception as e:
             continue
-            
     return None
 
 # 執行分析
 if submit_btn:
     if not gemini_api_key:
-        st.error("請先在左側邊欄輸入 Gemini API Key！")
+        st.error("⚠️ 請先在左側邊欄輸入 Gemini API Key！")
     elif not stock_id:
-        st.error("請輸入有效的台股代號！")
+        st.error("⚠️ 請輸入有效的台股代號！")
     else:
         with st.spinner("正在抓取市場即時數據..."):
             stock_info = fetch_stock_data(stock_id)
             
         if not stock_info:
-            st.error(f"⚠️ 無法取得代號 {stock_id} 的市場數據。可能是 Yahoo Finance 暫時限制存取，或請確認代號是否正確。")
+            st.error(f"⚠️ 無法取得代號 {stock_id} 的市場數據。可能是 Yahoo Finance 暫時限制存取。")
         else:
             price = stock_info["price"]
             price_date = stock_info["date"]
             fetch_time = stock_info["time"]
-            company_name = stock_info["name"] if stock_info["name"] else "未知名稱"
+            company_name = stock_info["name"]
             
-            # 在右側 UI 介面同時顯示代碼、名稱與時間
+            display_name = company_name if company_name else "交由 AI 識別"
+            
             with col2:
                 st.subheader("📊 即時市場數據")
-                st.markdown(f"**🎯 標的：** {company_name} ({stock_id})")
+                st.markdown(f"**🎯 標的：** {display_name} ({stock_id})")
                 st.metric("當前市場股價", f"{price:.2f} TWD", delta=f"報價日期: {price_date}")
                 st.caption(f"🕒 資料更新時間：{fetch_time}")
                 
@@ -113,7 +111,9 @@ if submit_btn:
 
 請嚴格依據以下結構進行撰寫：
 
-以『投資報告：{company_name} ({stock_id}) 投資價值分析』為標題開頭（若名稱為英文，請自動翻譯並使用中文公司名稱），撰寫一份關於該公司狀況的簡短投資報告，內容須包含以下章節：
+以『投資報告：[請依據股票代碼 {stock_id} 填入對應的台灣中文公司名稱] ({stock_id}) 投資價值分析』為標題開頭。務必使用你的知識庫自動識別並寫出正確的中文企業名稱。
+
+撰寫一份關於該公司狀況的簡短投資報告，內容須包含以下章節：
 
 1. 近期新聞
 2. 財務狀況與次產業成長率
@@ -133,8 +133,8 @@ if submit_btn:
 * 【P/B 模型執行標準】：
   - 標明「近一季每股淨值 (BPS)」與當前股價。
   - 算式：理論合理價格 = 合理 P/B * 近一季每股淨值 (BPS)。
-  - 參考 P/B 河流圖倍數區間（如 0.5倍、1.0倍、1.5倍、2.0倍、2.5倍、3.0倍等），建立多場景理論價格估值表格。
-  - 說明當前股價落在河流圖的哪個 P/B 階梯與溢價/折價狀況。
+  - 參考 P/B 河流圖倍數區間，建立多場景理論價格估值表格。
+  - 說明當前股價落在河流圖的哪個 P/B 階梯。
 
 最後，另起一行，輸出 Score: X。
 """
@@ -144,7 +144,8 @@ if submit_btn:
             report_placeholder = st.empty()
             
             try:
-                client = genai.Client(api_key=gemini_api_key)
+                # 這裡確保 API Key 有正確傳入
+                client = genai.Client(api_key=gemini_api_key.strip())
                 response = client.models.generate_content_stream(
                     model=selected_model,
                     contents=prompt_template
@@ -164,4 +165,7 @@ if submit_btn:
                     mime="text/markdown"
                 )
             except Exception as e:
-                st.error(f"報告生成失敗：{str(e)}")
+                # 錯誤捕捉與顯示區
+                st.error(f"❌ 報告生成失敗：{str(e)}")
+                with st.expander("🔍 點擊展開詳細錯誤代碼 (請將此處內容貼給我)"):
+                    st.code(traceback.format_exc(), language="python")
