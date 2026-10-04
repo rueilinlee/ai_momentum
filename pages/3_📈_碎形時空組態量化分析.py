@@ -28,7 +28,7 @@ st.markdown("""
         margin-bottom: 5px;
     }
     .metric-value {
-        font-size: 24px;
+        font-size: 22px;
         font-weight: bold;
         color: #212529;
     }
@@ -69,15 +69,36 @@ selected_freq = st.sidebar.selectbox("選擇 K 棒頻率", list(interval_map.key
 
 
 # ==========================================
-# 2. 輔助函數：台股代號解析與資料抓取 (含時區轉台灣時間)
+# 2. 輔助函數：台股代號解析與中文對應字典
 # ==========================================
+# 常見台股公司中文對應字典（可依需求自行擴充）
+TW_STOCK_NAMES = {
+    "3122": "笙泉",
+    "2330": "台積電",
+    "2317": "鴻海",
+    "2454": "聯發科",
+    "6213": "聯茂",
+    "6147": "頎邦",
+    "2376": "技嘉",
+    "3017": "奇鋐",
+    "2308": "台達電",
+    "2881": "富邦金",
+    "2882": "國泰金",
+    "0050": "元大台灣50",
+    "0056": "元大高股息",
+}
+
+
 def resolve_yahoo_ticker(code):
   code = code.strip()
-  if code == "0000":
+  if code == "0000" or code.upper() == "^TWII":
     return "^TWII", "大盤加權指數", "台灣市場指數"
 
+  # 取得中文公司名稱
+  company_name = TW_STOCK_NAMES.get(code, f"台股代號 {code}")
+
   if code.isdigit():
-    return f"{code}.TW", f"台股代號 {code}", "台灣上市公司"
+    return f"{code}.TW", company_name, "台灣上市公司"
   else:
     return code.upper(), f"標的 {code.upper()}", "國際/美股標的"
 
@@ -88,6 +109,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
     ticker = yf.Ticker(ticker_symbol)
     df = ticker.history(period=period, interval=interval)
     if df.empty and ".TW" in ticker_symbol:
+      # Fallback to 上櫃 (.TWO)
       alt_symbol = ticker_symbol.replace(".TW", ".TWO")
       ticker = yf.Ticker(alt_symbol)
       df = ticker.history(period=period, interval=interval)
@@ -120,7 +142,6 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
           "Asia/Taipei"
       )
 
-    # 移除時區物件讓顯示更乾淨 (轉為字串格式 YYYY-MM-DD HH:MM:SS)
     df["DateTime"] = df["DateTime"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
     return df, ticker_symbol
@@ -280,7 +301,7 @@ def generate_deep_insights(latest, market_state):
     )
   elif delta_net_di < 0 and slope_acc > 0:
     insights.append(
-        "**⚠️ 高檔多頭背離警訊：** 價格雖然維持慣性（加速度轉正/平緩）,但 $\\Delta"
+        "**⚠️️ 高檔多頭背離警訊：** 價格雖然維持慣性（加速度轉正/平緩）,但 $\\Delta"
         " Net\_DI$ 動能變化量轉負,顯示高檔追價力道開始收斂,須防範短線過熱拉回。"
     )
   elif delta_net_di > 0 and slope_acc < 0:
@@ -351,7 +372,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
     chg_class = "up" if chg >= 0 else "down"
     chg_str = f"↓ {chg:.2f} ({chg_pct:.2f}%)" if chg < 0 else f"↑ +{chg:.2f} (+{chg_pct:.2f}%)"
 
-    # --- 輸出個股資訊卡片 ---
+    # --- 輸出個股資訊卡片（加入中文公司名稱） ---
     st.markdown("### 📋 標的即時資訊摘要")
     c1, c2, c3, c4, c5 = st.columns(5)
 
@@ -360,8 +381,8 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
           f"""
             <div class="metric-card">
                 <div class="metric-title">標的名稱</div>
-                <div class="metric-value">台股代號 {user_input_code}</div>
-                <div class="metric-sub">({user_input_code})</div>
+                <div class="metric-value">{default_name} ({user_input_code})</div>
+                <div class="metric-sub">中文對應名稱</div>
             </div>
             """,
           unsafe_allow_html=True,
@@ -371,7 +392,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       st.markdown(
           f"""
             <div class="metric-card">
-                <div class="metric-title">股票/指數代碼</div>
+                <div class="metric-title">股票/指數代號</div>
                 <div class="metric-value">{user_input_code}</div>
                 <div class="metric-sub">{used_ticker}</div>
             </div>
@@ -404,7 +425,6 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       )
 
     with c5:
-      # 強制轉換並取得台灣時間 (CST / UTC+8)
       now_time_tw = (
           pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M:%S")
       )
@@ -412,7 +432,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       st.markdown(
           f"""
             <div class="metric-card">
-                <div class="metric-title">最後 K 棒時間</div>
+                <div class="metric-title">最後 K 棒時間 (CST)</div>
                 <div class="metric-value" style="font-size: 14px;">{last_k_time}</div>
                 <div class="metric-sub">報告產出: {now_time_tw}</div>
             </div>
@@ -449,8 +469,9 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
 
     with st.container():
       st.markdown(
-          f"**📊 分析標的：** `{user_input_code}` ｜ **目前狀態判定：**"
-          f" `{latest['Hurst']:.4f}` 記憶性主導下的 **【{market_state_val}】**"
+          f"**📊 分析標的：** `{default_name} ({user_input_code})` ｜"
+          f" **目前狀態判定：** `{latest['Hurst']:.4f}` 記憶性主導下的"
+          f" **【{market_state_val}】**"
       )
 
       for ins in insights:
@@ -460,7 +481,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       st.info(strategy_advice)
 
     # --- Excel 下載按鈕 ---
-    excel_file = f"{user_input_code}_碎形推論完整報告.xlsx"
+    excel_file = f"{user_input_code}_{default_name}_碎形推論完整報告.xlsx"
     try:
       df_res[output_cols].to_excel(excel_file, index=False)
       with open(excel_file, "rb") as f:
@@ -478,6 +499,5 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
 else:
   st.info(
       "👈 請在左側側邊欄輸入公司代碼（例如 3122、2330 或 0000 大盤），選擇 K"
-      " 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
+      " 棒頻率,然後點擊「開始執行碎形推論」後台引擎按鈕。"
   )
-
