@@ -6,7 +6,7 @@ import yfinance as yf
 from typing import Dict, Any
 
 # ==========================================
-# 核心引擎 (相容性修正版 v2.1)
+# 核心引擎 (相容性與長度對齊修正版 v2.2)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, timeframe: str = "Daily"):
@@ -27,22 +27,30 @@ class IChingTrinitySpatiotemporalEngine:
         return float(np.clip(poly[0] * 2.0, 0.4, 0.75))
 
     def _ricker_wavelet(self, points: int, a: int) -> np.ndarray:
-        """自定義 Ricker 小波函數，相容所有 scipy 版本"""
         t = np.arange(0, points) - (points - 1.0) / 2.0
         x = t / a
         return (2.0 / (np.sqrt(3.0 * a) * (np.pi ** 0.25))) * (1.0 - x ** 2) * np.exp(-0.5 * x ** 2)
 
     def _custom_cwt(self, data: np.ndarray, widths: np.ndarray) -> np.ndarray:
-        """替代 scipy.signal.cwt 的高效卷積實作"""
-        cwtmatr = np.zeros((len(widths), len(data)))
+        """替代 scipy.signal.cwt 的高效卷積實作（加入嚴格長度對齊防呆）"""
+        data_len = len(data)
+        cwtmatr = np.zeros((len(widths), data_len))
+        
         for i, width in enumerate(widths):
-            # 決定小波視窗大小
-            points = min(int(width * 10), len(data))
+            points = min(int(width * 10), data_len)
             if points % 2 == 0:
                 points += 1
             wavelet = self._ricker_wavelet(points, width)
-            # 進行同質卷積
-            cwtmatr[i, :] = np.convolve(data, wavelet, mode='same')
+            
+            conv_result = np.convolve(data, wavelet, mode='same')
+            
+            if len(conv_result) > data_len:
+                conv_result = conv_result[:data_len]
+            elif len(conv_result) < data_len:
+                conv_result = np.pad(conv_result, (0, data_len - len(conv_result)), 'edge')
+                
+            cwtmatr[i, :] = conv_result
+            
         return cwtmatr
 
     def analyze_bian_yi(self) -> Dict[str, Any]:
@@ -95,7 +103,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 2.1 版】實戰分析報告
+【易經三義量化時空分析 2.2 版】實戰分析報告
 標的: {self.ticker} | 週期: {self.timeframe} | 太極原點 P0: {buyi['p0']:.2f}
 ==================================================
 
