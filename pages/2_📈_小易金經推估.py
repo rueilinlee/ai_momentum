@@ -22,7 +22,7 @@ TAIWAN_STOCK_NAMES = {
 }
 
 # ==========================================
-# 核心引擎 (v2.8)
+# 核心引擎 (v2.9)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str = "Daily"):
@@ -117,7 +117,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 2.8 版】實戰分析報告
+【易經三義量化時空分析 2.9 版】實戰分析報告
 ==================================================
 公司名稱: {self.company_name}
 標的代碼: {self.ticker} | 週期: {self.timeframe}
@@ -184,7 +184,7 @@ class IChingTrinitySpatiotemporalEngine:
         
         cbar = fig.colorbar(cax, ax=ax2, orientation='horizontal', pad=0.2, aspect=40)
         cbar.set_label('Energy Density (Volatility)', color='white')
-        cbar.ax.tick_params(colors='white')  # <--- 已在此處修正 colors['white'] 為 'white'
+        cbar.ax.tick_params(colors='white')
         
         plt.tight_layout()
         return fig
@@ -265,13 +265,20 @@ if run_btn:
             buyi_data = engine.analyze_bu_yi()
             bian_data = engine.analyze_bian_yi()
             
+            # 頂部顯示 5 大欄位看板（第 5 欄內部透過 container 上下分割為 2 列）
             st.markdown("---")
             m1, m2, m3, m4, m5 = st.columns(5)
+            
             m1.metric("公司名稱", company_name)
             m2.metric("股票代碼", pure_code)
             m3.metric("市場類型", market_type)
             m4.metric("目前收盤價 (P0)", f"{current_price:.2f} 元", f"{price_change:+.2f} ({price_change_pct:+.2f}%)")
-            m5.metric("最後交易日", last_trading_date)
+            
+            # 第 5 欄內部上下分割 2 列
+            with m5:
+                st.metric("最後交易日", last_trading_date)
+                st.metric("報告產出時間 (CST)", now_tw.strftime('%H:%M:%S'))
+                
             st.markdown("---")
             
             col1, col2 = st.columns([1.2, 2])
