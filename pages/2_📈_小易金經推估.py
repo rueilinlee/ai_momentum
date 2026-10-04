@@ -3,10 +3,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import yfinance as yf
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # ==========================================
-# 核心引擎 (加入圖表自動解說模組 v2.3)
+# 核心引擎 (智慧代碼判斷版 v2.4)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, timeframe: str = "Daily"):
@@ -100,7 +100,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 2.3 版】實戰分析報告
+【易經三義量化時空分析 2.4 版】實戰分析報告
 標的: {self.ticker} | 週期: {self.timeframe} | 太極原點 P0: {buyi['p0']:.2f}
 ==================================================
 
@@ -132,7 +132,7 @@ class IChingTrinitySpatiotemporalEngine:
    預計於 {turning['primary_window']} 進入動能耗散臨界點。
 2. 逆數策略: 靜待價格進入 {turning['primary_space_target']} 重力井，
    並觀察小波動能是否平鋪，作為高期望值 E[R] 之決策對位點。
-==================================================="""""
+=================================================="""
         return report
 
     def plot_spatiotemporal_matrix(self):
@@ -168,6 +168,32 @@ class IChingTrinitySpatiotemporalEngine:
         plt.tight_layout()
         return fig
 
+def fetch_taiwan_stock_data(raw_input: str, period: str) -> tuple[Optional[pd.DataFrame], str]:
+    """智慧判斷上市/上櫃代碼並下載資料"""
+    clean_code = raw_input.strip()
+    
+    # 如果使用者已經自行加上尾綴，直接處理
+    if clean_code.upper().endswith(('.TW', '.TWO', '.US')):
+        tickers_to_try = [clean_code]
+    else:
+        # 自動組合：優先試上市 (.TW)，若失敗則試上櫃 (.TWO)
+        tickers_to_try = [f"{clean_code}.TW", f"{clean_code}.TWO"]
+        
+    for t in tickers_to_try:
+        try:
+            df = yf.download(t, period=period, interval="1d", progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+            
+            if not df.empty:
+                market_type = "上市公司" if ".TW" in t and ".TWO" not in t else "上櫃公司"
+                return df, f"{t} ({market_type})"
+        except Exception:
+            continue
+            
+    return None, ""
+
 # ==========================================
 # Streamlit 前端介面
 # ==========================================
@@ -178,49 +204,39 @@ st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)
 
 with st.sidebar:
     st.header("參數設定")
-    ticker_input = st.text_input("輸入股票代碼 (台股請加 .TW)", value="2330.TW")
+    # 更改提示文字，讓使用者直接輸入代碼即可
+    ticker_input = st.text_input("輸入股票代碼 (例如: 2330 或 3293)", value="2330")
     period = st.selectbox("分析週期", ["3mo", "6mo", "1y", "2y"], index=1)
     current_regime_bars = st.slider("當前趨勢已持續 K棒數 (狀態根數)", min_value=1, max_value=13, value=3)
     run_btn = st.button("啟動量化引擎 🚀", use_container_width=True)
 
 if run_btn:
-    with st.spinner(f"正在從 Yahoo Finance 獲取 {ticker_input} 歷史數據..."):
-        try:
-            df_real = yf.download(ticker_input, period=period, interval="1d", progress=False)
+    with st.spinner(f"正在智慧辨識與獲取代碼 [{ticker_input}] 的歷史數據..."):
+        df_real, resolved_ticker = fetch_taiwan_stock_data(ticker_input, period)
+        
+        if df_real is None or df_real.empty:
+            st.error(f"⚠️ 無法獲取代碼 [{ticker_input}] 的資料，請確認代碼是否正確（上市或上櫃皆可）。")
+        else:
+            engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=resolved_ticker, timeframe=f"Daily ({period})")
+            report_text = engine.generate_full_report(current_regime_bars=current_regime_bars)
+            fig = engine.plot_spatiotemporal_matrix()
             
-            if isinstance(df_real.columns, pd.MultiIndex):
-                df_real.columns = df_real.columns.get_level_values(0)
-                
-            df_real = df_real[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+            buyi_data = engine.analyze_bu_yi()
+            bian_data = engine.analyze_bian_yi()
             
-            if df_real.empty:
-                st.error("⚠️ 無法獲取資料，請確認代碼是否正確（例如台積電為 2330.TW）。")
-            else:
-                engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=ticker_input, timeframe=f"Daily ({period})")
-                report_text = engine.generate_full_report(current_regime_bars=current_regime_bars)
-                fig = engine.plot_spatiotemporal_matrix()
+            col1, col2 = st.columns([1.2, 2])
+            with col1:
+                st.subheader("📝 策略決策報告")
+                st.code(report_text, language="text")
                 
-                # 取得內部數值供說明摘要使用
-                buyi_data = engine.analyze_bu_yi()
-                bian_data = engine.analyze_bian_yi()
+            with col2:
+                st.subheader(f"📊 時空共振視覺化矩陣 ({resolved_ticker})")
+                st.pyplot(fig)
                 
-                col1, col2 = st.columns([1.2, 2])
-                with col1:
-                    st.subheader("📝 策略決策報告")
-                    st.code(report_text, language="text")
-                    
-                with col2:
-                    st.subheader("📊 時空共振視覺化矩陣")
-                    st.pyplot(fig)
-                    
-                    # --- 新增：圖表簡短說明區塊 ---
-                    st.info(f"""
-                    📌 **【圖表判讀重點摘要】**
-                    1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}` 元。若價格回檔，此線具備強大的結構吸引與支撐防線。
-                    2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}` 元。若價格逼近此區間，上檔易受引力約束。
-                    3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
-                    4. 👁️ **讀圖指引**：上圖藍線觀察價格相對於上下虛線（重力井）的空間位階；下圖熱力圖越亮代表能量越強，深色代表進入蓄能或耗散期。
-                    """)
-                    
-        except Exception as e:
-            st.error(f"執行時發生錯誤: {e}")
+                st.info(f"""
+                📌 **【圖表判讀重點摘要】**
+                1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}` 元。若價格回檔，此線具備強大的結構吸引與支撐防線。
+                2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}` 元。若價格逼近此區間，上檔易受引力約束。
+                3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
+                4. 👁️ **讀圖指引**：上圖藍線觀察價格相對於上下虛線（重力井）的空間位階；下圖熱力圖越亮代表能量越強，深色代表進入蓄能或耗散期。
+                """)
