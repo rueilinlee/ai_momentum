@@ -21,3 +21,7 @@ pandas
 numpy
 yfinance
 openpyxl
+streamlit
+pandas
+yfinance
+fpdf2
