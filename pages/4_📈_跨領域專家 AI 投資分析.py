@@ -22,6 +22,7 @@ def get_company_name_and_symbol(symbol):
     clean_sym = symbol.upper().strip()
     pure_num = clean_sym.replace(".TW", "").replace(".TWO", "")
     
+    # 強制精準對應穩懋與其他熱門標的
     if pure_num == "3105" or "3105" in clean_sym:
         return "穩懋 (3105.TWO)"
     elif pure_num == "2330" or "2330" in clean_sym:
@@ -136,14 +137,14 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
     doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
     doc.add_paragraph(f"最新收盤股價：{data['price']:,.2f} 元 (交易日期: {trade_date}, 當日漲跌幅 {data['change']:.2f}%)")
     doc.add_paragraph(f"模型推算目標價：{val['tp_base']:,.2f} 元 ({val['rec']}) [含非線性雙指數動能加權]")
-    doc.add_paragraph(f"目標價合理區間：{val['tp_lower']:,.0f} ~ {val['tp_upper']:,.0f} 元")
+    doc.add_paragraph(f"目標價合理區間：[{val['tp_lower']:,.0f}, {val['tp_upper']:,.0f}] 元")
     
     doc.add_heading('一、 產業專家視角：技術壁壘與熱點量化', level=1)
     doc.add_paragraph(f"近 1 個月產業熱點量化分數：{hot_1m} / 10 | 近 3 個月熱點分數：{hot_3m} / 10")
     doc.add_paragraph(insights['ind_1'], style='List Bullet')
     doc.add_paragraph(insights['ind_2'], style='List Bullet')
 
-    doc.add_heading('二、 數學家視角：非線性雙指數成長與動能加權模型', level=1)
+    doc.add_heading('二、 數學家視角：非線性指數成長與動能加權模型', level=1)
     doc.add_paragraph("本模型導入非線性指數函數計算成長展望溢價與新聞聲量情緒溢價，並結合熱點動能與 TTM 財報超越年報檢核：")
     doc.add_paragraph(f"• 熱點動能觸發狀態：{'【已觸發指數上修】(近1月熱點 > 近3月熱點)' if val['hot_triggered'] else '【標準狀態】'}")
     doc.add_paragraph(f"• 財報成長觸發狀態：{'【已觸發指數上修】(近4季 TTM EPS > 最近年度 EPS)' if val['eps_triggered'] else '【標準狀態】'}")
@@ -295,11 +296,8 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("最新收盤價 (即時)", f"${live_price:,.2f}", f"交易日: {trade_date} ({live_change:+.2f}%)")
 col2.metric("模型上修目標價 (Base)", f"${tp_base:,.0f}", f"{upside_base:.1f}% 潛在空間")
 col3.metric("綜合投資評等", f"{rec}", f"{rec_color}")
-
-# 關鍵修正：透過 Markdown 卡片結構強制以波浪號 "~" 嚴格隔開合理區間，避免 metric 元件自動處理字串
-with col4:
-    st.markdown("目標價合理區間")
-    st.markdown(f"### ${tp_lower:,.0f} ~${tp_upper:,.0f}")
+# 改用方括號 [低價, 高價] 格式強制穩定呈現
+col4.metric("目標價合理區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
 
 st.divider()
 
