@@ -8,9 +8,10 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 常見台股名稱對照表（作為備援）
+# 常見台股名稱對照表（支援 0000 對應大盤）
 # ==========================================
 TAIWAN_STOCK_NAMES = {
+    "^TWII": "台灣加權指數 (TAIEX)",
     "2330": "台積電 (TSMC)",
     "2308": "台達電 (Delta)",
     "2454": "聯發科 (MediaTek)",
@@ -22,7 +23,7 @@ TAIWAN_STOCK_NAMES = {
 }
 
 # ==========================================
-# 核心引擎 (v3.0 - 支援多時框日內分析)
+# 核心引擎 (v3.2)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -118,9 +119,9 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 3.0 版】日內實戰報告
+【易經三義量化時空分析 3.2 版】實戰分析報告
 ==================================================
-公司名稱: {self.company_name}
+公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
 最後K棒時間: {last_bar_time} | 報告產出時脈: {report_time}
 當前收盤/太極原點 P0: {buyi['p0']:.2f}
@@ -190,25 +191,22 @@ class IChingTrinitySpatiotemporalEngine:
         plt.tight_layout()
         return fig
 
-def fetch_taiwan_stock_data(raw_input: str, interval_choice: str) -> Tuple[Optional[pd.DataFrame], str, str, str]:
+def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Optional[pd.DataFrame], str, str, str]:
     clean_code = raw_input.strip()
-    pure_code = ''.join(filter(str.isdigit, clean_code))
     
-    if clean_code.upper().endswith(('.TW', '.TWO', '.US')):
-        tickers_to_try = [clean_code]
-    else:
-        tickers_to_try = [f"{clean_code}.TW", f"{clean_code}.TWO"]
-        
-    # 根據不同週期自動匹配 Yahoo Finance 支援的最大歷史區間 (period)
+    # 智慧對應：如果輸入 0000，自動轉換為 Yahoo Finance 的大盤指數 ^TWII
+    if clean_code == "0000":
+        clean_code = "^TWII"
+
     if interval_choice == "Daily (日線)":
         interval = "1d"
         period = "1y"
     elif interval_choice == "60m (60分K)":
         interval = "60m"
-        period = "730d" # Yahoo 60m 最多可抓 2 年
+        period = "730d"
     elif interval_choice == "30m (30分K)":
         interval = "30m"
-        period = "60d"  # Yahoo 日內短週期限制約 60 天
+        period = "60d"
     elif interval_choice == "15m (15分K)":
         interval = "15m"
         period = "60d"
@@ -218,6 +216,12 @@ def fetch_taiwan_stock_data(raw_input: str, interval_choice: str) -> Tuple[Optio
     else:
         interval = "1d"
         period = "1y"
+
+    if clean_code.startswith('^') or clean_code.upper().endswith(('.TW', '.TWO', '.US', '=F')):
+        tickers_to_try = [clean_code]
+    else:
+        pure_digits = ''.join(filter(str.isdigit, clean_code))
+        tickers_to_try = [f"{pure_digits}.TW", f"{pure_digits}.TWO"]
 
     for t in tickers_to_try:
         try:
@@ -232,13 +236,17 @@ def fetch_taiwan_stock_data(raw_input: str, interval_choice: str) -> Tuple[Optio
             if not df.empty:
                 info = ticker_obj.info
                 yf_name = info.get('longName') or info.get('shortName')
-                if not yf_name or yf_name.upper() in t.upper() or len(yf_name) > 30:
-                    company_name = TAIWAN_STOCK_NAMES.get(pure_code, f"台灣標的 ({pure_code})")
+                
+                if t in TAIWAN_STOCK_NAMES:
+                    company_name = TAIWAN_STOCK_NAMES[t]
+                elif not yf_name or yf_name.upper() in t.upper() or len(yf_name) > 30:
+                    company_name = TAIWAN_STOCK_NAMES.get(t.split('.')[0], f"金融標的 ({t})")
                 else:
                     company_name = yf_name
                     
-                market_type = "上市公司" if ".TW" in t and ".TWO" not in t else "上櫃公司"
-                return df, pure_code, market_type, company_name
+                market_type = "大盤指數" if t == '^TWII' else ("上市公司" if ".TW" in t else "上櫃公司")
+                display_code = "0000" if t == '^TWII' else pure_digits
+                return df, display_code, market_type, company_name
         except Exception:
             continue
             
@@ -250,13 +258,13 @@ def fetch_taiwan_stock_data(raw_input: str, interval_choice: str) -> Tuple[Optio
 st.set_page_config(page_title="易經三義量化時空分析", layout="wide", page_icon="☯️")
 
 st.title("☯️ 易經三義量化時空分析系統 (多時框日內版)")
-st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)** 與 **馬可夫狀態機率 (簡易)** 的多維度定序框架。支援日線與日內高頻時框。")
+st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)** 與 **馬可夫狀態機率 (簡易)**。輸入 `0000` 即可分析台股大盤指數 (TAIEX)。")
 
 with st.sidebar:
     st.header("參數設定")
-    ticker_input = st.text_input("輸入股票代碼 (例如: 2330 或 5483)", value="2330")
+    # 預設輸入 0000
+    ticker_input = st.text_input("輸入股票代碼 (輸入 0000 代表大盤)", value="0000")
     
-    # 新增：時框選擇選單
     timeframe_choice = st.selectbox(
         "選擇分析週期 (Timeframe)",
         ["Daily (日線)", "60m (60分K)", "30m (30分K)", "15m (15分K)", "5m (5分K)"],
@@ -268,15 +276,14 @@ with st.sidebar:
 
 if run_btn:
     with st.spinner(f"正在智慧辨識與獲取代碼 [{ticker_input}] 的 [{timeframe_choice}] 歷史數據..."):
-        df_real, pure_code, market_type, company_name = fetch_taiwan_stock_data(ticker_input, timeframe_choice)
+        df_real, resolved_ticker, market_type, company_name = fetch_stock_or_index_data(ticker_input, timeframe_choice)
         
         if df_real is None or df_real.empty:
-            st.error(f"⚠️ 無法獲取代碼 [{ticker_input}] 的資料，請確認代碼是否正確或該週期資料是否可用。")
+            st.error(f"⚠️ 無法獲取代碼 [{ticker_input}] 的資料，請確認代碼是否正確。")
         else:
             tw_timezone = ZoneInfo("Asia/Taipei")
             now_tw = datetime.now(tw_timezone)
             
-            # 針對日內數據，時間戳記會包含時分
             last_bar_time = df_real.index[-1].strftime('%Y-%m-%d %H:%M') if 'm' in timeframe_choice.lower() else df_real.index[-1].strftime('%Y-%m-%d')
             report_time = now_tw.strftime('%Y-%m-%d %H:%M:%S')
             
@@ -285,9 +292,7 @@ if run_btn:
             price_change = current_price - prev_price
             price_change_pct = (price_change / prev_price) * 100
             
-            resolved_ticker_display = f"{pure_code} ({market_type})"
-            
-            engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=resolved_ticker_display, company_name=company_name, timeframe=timeframe_choice)
+            engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=resolved_ticker, company_name=company_name, timeframe=timeframe_choice)
             report_text = engine.generate_full_report(current_regime_bars=current_regime_bars, last_bar_time=last_bar_time, report_time=report_time)
             fig = engine.plot_spatiotemporal_matrix(last_bar_time=last_bar_time)
             
@@ -296,10 +301,10 @@ if run_btn:
             
             st.markdown("---")
             m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("公司名稱", company_name)
-            m2.metric("股票代碼", pure_code)
-            m3.metric("市場類型", market_type)
-            m4.metric("目前收盤價 (P0)", f"{current_price:.2f} 元", f"{price_change:+.2f} ({price_change_pct:+.2f}%)")
+            m1.metric("標的名稱", company_name)
+            m2.metric("股票/指數代碼", resolved_ticker)
+            m3.metric("市場屬性", market_type)
+            m4.metric("目前收盤價 (P0)", f"{current_price:.2f}", f"{price_change:+.2f} ({price_change_pct:+.2f}%)")
             
             with m5:
                 st.metric("最後K棒時間", last_bar_time)
@@ -318,8 +323,8 @@ if run_btn:
                 
                 st.info(f"""
                 📌 **【圖表判讀重點摘要】**
-                1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}` 元。若價格回檔，此線具備強大的結構吸引與支撐防線。
-                2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}` 元。若價格逼近此區間，上檔易受引力約束。
+                1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔，此線具備強大的結構吸引與支撐防線。
+                2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間，上檔易受引力約束。
                 3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
-                4. 👁️ **讀圖指引**：目前分析級別為 **{timeframe_choice}**，最後 K 棒對位時間：**{last_bar_time}**。
+                4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({resolved_ticker})**，最後 K 棒時間：**{last_bar_time}**。
                 """)
