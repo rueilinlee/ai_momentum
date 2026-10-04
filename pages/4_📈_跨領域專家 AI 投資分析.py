@@ -53,6 +53,11 @@ def get_company_name_and_symbol(symbol):
     except Exception:
         pass
         
+    if pure_num == "3105":
+        return "穩懋 (3105.TWO)"
+    elif pure_num == "2330":
+        return "台積電 (2330.TW)"
+        
     if clean_sym.isdigit() or ".TW" in clean_sym or ".TWO" in clean_sym:
         return f"台股上櫃/上市公司 ({clean_sym})"
         
@@ -68,8 +73,8 @@ def get_stock_data_and_metrics(symbol):
     if clean_sym == "3105":
         q_data = [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 2.52), ("2025Q3", 1.26)]
         annual_eps_last = 4.10  
-        hot_1m = 8.8  
-        hot_3m = 7.2  
+        hot_1m = 7.5  
+        hot_3m = 6.8  
     elif clean_sym == "2330":
         q_data = [("2026Q2", 27.25), ("2026Q1", 22.10), ("2025Q4", 19.80), ("2025Q3", 18.23)]
         annual_eps_last = 65.40
@@ -93,7 +98,7 @@ def get_stock_data_and_metrics(symbol):
     except Exception:
         pass
         
-    return 591.0, 9.85, symbol, "2026-10-02", q_data, 4.10, 8.8, 7.2
+    return 591.0, 9.85, symbol, "2026-10-02", q_data, 4.10, 7.5, 6.8
 
 def generate_dynamic_insights(symbol, comp_name, hot_1m, hot_3m):
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
@@ -133,7 +138,7 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
     doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
     doc.add_paragraph(f"最新收盤股價：{data['price']:,.2f} 元 (交易日期: {trade_date}, 當日漲跌幅 {data['change']:.2f}%)")
     doc.add_paragraph(f"模型推算目標價：{val['tp_base']:,.2f} 元 ({val['rec']}) [含非線性雙指數動能加權]")
-    doc.add_paragraph(f"目標價合理區間：{val['tp_lower']:,.2f} 元 ~ {val['tp_upper']:,.2f} 元")
+    doc.add_paragraph(f"目標價合理區間：{val['tp_lower']:,.2f} ~ {val['tp_upper']:,.2f} 元")
     
     doc.add_heading('一、 產業專家視角：技術壁壘與熱點量化', level=1)
     doc.add_paragraph(f"近 1 個月產業熱點量化分數：{hot_1m} / 10 | 近 3 個月熱點分數：{hot_3m} / 10")
@@ -141,11 +146,11 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
     doc.add_paragraph(insights['ind_2'], style='List Bullet')
 
     doc.add_heading('二、 數學家視角：非線性雙指數成長與動能加權模型', level=1)
-    doc.add_paragraph("本模型導入非線性指數函數計算「成長展望溢價」與「新聞聲量情緒溢價」，並結合熱點動能與 TTM 財報超越年報檢核：")
+    doc.add_paragraph("本模型導入非線性指數函數計算成長展望溢價與新聞聲量情緒溢價，並結合熱點動能與 TTM 財報超越年報檢核：")
     doc.add_paragraph(f"• 熱點動能觸發狀態：{'【已觸發指數上修】(近1月熱點 > 近3月熱點)' if val['hot_triggered'] else '【標準狀態】'}")
     doc.add_paragraph(f"• 財報成長觸發狀態：{'【已觸發指數上修】(近4季 TTM EPS > 最近年度 EPS)' if val['eps_triggered'] else '【標準狀態】'}")
-    doc.add_paragraph(f"• 非線性指數成長溢價 (Delta PE growth)：+{val['growth_exp']:.2f} 倍")
-    doc.add_paragraph(f"• 非線性指數情緒溢價 (Delta PE sentiment)：{val['sentiment_exp']:+.2f} 倍")
+    doc.add_paragraph(f"• 非線性指數成長溢價 (Delta PE growth): +{val['growth_exp']:.2f} 倍")
+    doc.add_paragraph(f"• 非線性指數情緒溢價 (Delta PE sentiment): {val['sentiment_exp']:+.2f} 倍")
     doc.add_paragraph(f"• 綜合上修後調整預估 EPS：{val['adj_eps_fwd']:.2f} 元 (原始基礎: {data['raw_eps_fwd']} 元)")
     doc.add_paragraph(f"• 最終基準目標價 TP_base = {val['tp_base']:,.2f} 元 (潛在空間 {val['upside_base']:.1f}%)")
 
@@ -231,18 +236,14 @@ fin_ttm = round(sum([v for _, v in q_eps_data]), 2)
 hot_triggered = (hot_1m > hot_3m)
 eps_triggered = (fin_ttm > annual_eps_last)
 
-# 1. 成長展望溢價：非線性指數函數
 alpha_g = 0.8
 beta_g = 0.22
 growth_exp = alpha_g * (math.exp(beta_g * growth_score) - 1)
 
-# 2. 新聞聲量情緒溢價：非線性指數函數 (以 5.0 為中性基準)
-# 當 sentiment > 5.0 時呈指數正向擴張，當 < 5.0 時呈指數折價
 alpha_s = 0.5
 beta_s = 0.35
 sentiment_exp = alpha_s * (math.copysign(1, sentiment - 5.0)) * (math.exp(beta_s * abs(sentiment - 5.0)) - 1)
 
-# 3. 觸發動能乘數
 multiplier = 1.0
 if hot_triggered:
     multiplier *= math.exp((hot_1m - hot_3m) * 0.08)
@@ -252,7 +253,6 @@ if eps_triggered:
 
 eps_fwd_adjusted = eps_fwd_base * multiplier
 
-# 總體本益比結合雙指數溢價 (PE_target)
 pe_target = pe_base + sentiment_exp + growth_exp - risk
 
 pe_upper = pe_target + 4.0      
