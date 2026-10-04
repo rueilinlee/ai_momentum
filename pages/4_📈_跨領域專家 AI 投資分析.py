@@ -22,9 +22,13 @@ def get_company_name_and_symbol(symbol):
     clean_sym = symbol.upper().strip()
     pure_num = clean_sym.replace(".TW", "").replace(".TWO", "")
     
+    # 強制精準對應穩懋與其他熱門標的
+    if pure_num == "3105" or "3105" in clean_sym:
+        return "穩懋 (3105.TWO)"
+    elif pure_num == "2330" or "2330" in clean_sym:
+        return "台積電 (2330.TW)"
+        
     common_mapping = {
-        "3105": "穩懋 (3105.TWO)",
-        "2330": "台積電 (2330.TW)",
         "2454": "聯發科 (2454.TW)",
         "2317": "鴻海 (2317.TW)",
         "2308": "台達電 (2308.TW)",
@@ -53,11 +57,6 @@ def get_company_name_and_symbol(symbol):
     except Exception:
         pass
         
-    if pure_num == "3105":
-        return "穩懋 (3105.TWO)"
-    elif pure_num == "2330":
-        return "台積電 (2330.TW)"
-        
     if clean_sym.isdigit() or ".TW" in clean_sym or ".TWO" in clean_sym:
         return f"台股上櫃/上市公司 ({clean_sym})"
         
@@ -70,12 +69,12 @@ def get_company_name_and_symbol(symbol):
 def get_stock_data_and_metrics(symbol):
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
     
-    if clean_sym == "3105":
+    if clean_sym == "3105" or "3105" in clean_sym:
         q_data = [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 2.52), ("2025Q3", 1.26)]
         annual_eps_last = 4.10  
         hot_1m = 7.5  
         hot_3m = 6.8  
-    elif clean_sym == "2330":
+    elif clean_sym == "2330" or "2330" in clean_sym:
         q_data = [("2026Q2", 27.25), ("2026Q1", 22.10), ("2025Q4", 19.80), ("2025Q3", 18.23)]
         annual_eps_last = 65.40
         hot_1m = 9.2
@@ -102,7 +101,7 @@ def get_stock_data_and_metrics(symbol):
 
 def generate_dynamic_insights(symbol, comp_name, hot_1m, hot_3m):
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
-    if clean_sym == "3105":
+    if clean_sym == "3105" or "3105" in clean_sym:
         return {
             "ind_1": f"化合物半導體與 PA 庫存去化完成 (近1月熱點量化：{hot_1m}/10 vs 近3月：{hot_3m}/10)：穩懋作為全球砷化鎵龍頭，AI 光通訊與低軌衛星需求引爆市場高度關注，單季 EPS 顯著回升。",
             "ind_2": "技術節點與新應用佈局：光通訊元件良率穩定，毛利率持續修復，營運由谷底強勢翻揚。",
@@ -138,7 +137,7 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
     doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
     doc.add_paragraph(f"最新收盤股價：{data['price']:,.2f} 元 (交易日期: {trade_date}, 當日漲跌幅 {data['change']:.2f}%)")
     doc.add_paragraph(f"模型推算目標價：{val['tp_base']:,.2f} 元 ({val['rec']}) [含非線性雙指數動能加權]")
-    doc.add_paragraph(f"目標價合理區間：{val['tp_lower']:,.2f} ~ {val['tp_upper']:,.2f} 元")
+    doc.add_paragraph(f"目標價合理區間：{val['tp_lower']:,.0f} ~ {val['tp_upper']:,.0f} 元")
     
     doc.add_heading('一、 產業專家視角：技術壁壘與熱點量化', level=1)
     doc.add_paragraph(f"近 1 個月產業熱點量化分數：{hot_1m} / 10 | 近 3 個月熱點分數：{hot_3m} / 10")
@@ -297,7 +296,7 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("最新收盤價 (即時)", f"${live_price:,.2f}", f"交易日: {trade_date} ({live_change:+.2f}%)")
 col2.metric("模型上修目標價 (Base)", f"${tp_base:,.0f}", f"{upside_base:.1f}% 潛在空間")
 col3.metric("綜合投資評等", f"{rec}", f"{rec_color}")
-# 依照您的要求：目標價合理區間兩數字以 "~" 做區隔
+# 嚴格確保兩數字以 "~" 做隔開
 col4.metric("目標價合理區間", f"${tp_lower:,.0f} ~${tp_upper:,.0f}")
 
 st.divider()
@@ -354,4 +353,3 @@ with col_right:
     st.markdown("**下行風險追蹤 (Risk Matrix)**")
     df_risks = pd.DataFrame(insights['risks'], columns=['風險維度', '關鍵影響因子', '影響評估與應對建議'])
     st.dataframe(df_risks, use_container_width=True, hide_index=True)
-
