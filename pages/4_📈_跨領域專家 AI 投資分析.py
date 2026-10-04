@@ -288,7 +288,7 @@ valuation_data = {
     "growth_exp": growth_exp
 }
 
-st.title("📈 跨領域專家 AI 投資分析生成器 (非線性雙指數量化升級版)")
+st.title("📈 跨領域專家 AI 投資分析生成器")
 st.subheader(f"🏢 公司名稱：{company_display_name}")
 st.caption(f"報告生成時間：{get_taiwan_time_str()} | 非線性雙指數量化引擎已啟動 🚀")
 
