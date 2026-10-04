@@ -1,6 +1,0 @@
-git add .
-git commit -m "Add台股量化估值報告頁面"
-git push origin main
-git add .
-git commit -m "Add台股量化估值報告頁面"
-git push origin main
