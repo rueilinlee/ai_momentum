@@ -471,10 +471,12 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
           unsafe_allow_html=True,
       )
 
-    # --- 新增：動態數學支撐與壓力區間呈現 ---
+    # --- 透過標題與括號註記尺度頻率呈現動態數學支撐與壓力模型 ---
     sr = calculate_support_resistance(latest)
     st.markdown("---")
-    st.markdown("### 🎯 GARCH & 碎形動態數學支撐與壓力模型")
+    st.markdown(
+        f"### 🎯 GARCH & 碎形動態數學支撐與壓力模型 `({selected_freq})`"
+    )
 
     sc1, sc2, sc3, sc4, sc5 = st.columns(5)
     with sc1:
@@ -503,7 +505,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       )
     with sc5:
       st.markdown(
-          f"""<div class="sr-box" style="color: #28a745;">極限強支撐 (R2)<br><span"
+          f"""<div class="sr-box" style="color: #28a745;">極限強支撐 (S2)<br><span"
           f" style="font-size: 20px;">{sr['S2']}</span></div>""",
           unsafe_allow_html=True,
       )
