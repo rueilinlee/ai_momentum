@@ -11,7 +11,7 @@ import math
 # ==========================================
 # 0. 頁面基本設定與台灣時區設定
 # ==========================================
-st.set_page_config(page_title="跨領域專家 AI 投資分析 (非線性指數成長版)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="跨領域專家 AI 投資分析 (非線性雙指數量化升級版)", layout="wide", page_icon="📈")
 
 def get_taiwan_time_str(format_str='%Y-%m-%d %H:%M:%S'):
     tw_tz = timezone(timedelta(hours=8))
@@ -121,7 +121,7 @@ def generate_dynamic_insights(symbol, comp_name, hot_1m, hot_3m):
         }
 
 # ==========================================
-# 2. 專家級 Word 報告完整生成函數 (修正特殊符號)
+# 2. 專家級 Word 報告完整生成函數
 # ==========================================
 def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date, hot_1m, hot_3m):
     doc = Document()
@@ -132,7 +132,7 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
     doc.add_paragraph(f"公司名稱：{comp_name}")
     doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
     doc.add_paragraph(f"最新收盤股價：{data['price']:,.2f} 元 (交易日期: {trade_date}, 當日漲跌幅 {data['change']:.2f}%)")
-    doc.add_paragraph(f"模型推算目標價：{val['tp_base']:,.2f} 元 ({val['rec']}) [含非線性指數成長溢價]")
+    doc.add_paragraph(f"模型推算目標價：{val['tp_base']:,.2f} 元 ({val['rec']}) [含非線性雙指數動能加權]")
     doc.add_paragraph(f"目標價合理區間：{val['tp_lower']:,.2f} 元 ~ {val['tp_upper']:,.2f} 元")
     
     doc.add_heading('一、 產業專家視角：技術壁壘與熱點量化', level=1)
@@ -140,11 +140,12 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
     doc.add_paragraph(insights['ind_1'], style='List Bullet')
     doc.add_paragraph(insights['ind_2'], style='List Bullet')
 
-    doc.add_heading('二、 數學家視角：非線性指數成長與動能加權模型', level=1)
-    doc.add_paragraph("本模型導入非線性指數函數計算成長展望溢價，並結合熱點動能與 TTM 財報超越年報檢核：")
+    doc.add_heading('二、 數學家視角：非線性雙指數成長與動能加權模型', level=1)
+    doc.add_paragraph("本模型導入非線性指數函數計算「成長展望溢價」與「新聞聲量情緒溢價」，並結合熱點動能與 TTM 財報超越年報檢核：")
     doc.add_paragraph(f"• 熱點動能觸發狀態：{'【已觸發指數上修】(近1月熱點 > 近3月熱點)' if val['hot_triggered'] else '【標準狀態】'}")
     doc.add_paragraph(f"• 財報成長觸發狀態：{'【已觸發指數上修】(近4季 TTM EPS > 最近年度 EPS)' if val['eps_triggered'] else '【標準狀態】'}")
     doc.add_paragraph(f"• 非線性指數成長溢價 (Delta PE growth)：+{val['growth_exp']:.2f} 倍")
+    doc.add_paragraph(f"• 非線性指數情緒溢價 (Delta PE sentiment)：{val['sentiment_exp']:+.2f} 倍")
     doc.add_paragraph(f"• 綜合上修後調整預估 EPS：{val['adj_eps_fwd']:.2f} 元 (原始基礎: {data['raw_eps_fwd']} 元)")
     doc.add_paragraph(f"• 最終基準目標價 TP_base = {val['tp_base']:,.2f} 元 (潛在空間 {val['upside_base']:.1f}%)")
 
@@ -223,17 +224,25 @@ growth_score = st.sidebar.slider("展望成長評分 (0~10)", min_value=0.0, max
 risk = st.sidebar.slider("下行風險折價 (-PE)", min_value=0.0, max_value=10.0, value=float(default_ris), step=0.1)
 
 # ==========================================
-# 4. 數學模型：非線性指數成長溢價與動態加權
+# 4. 數學模型：非線性雙指數成長與情緒溢價運算
 # ==========================================
 fin_ttm = round(sum([v for _, v in q_eps_data]), 2)
 
 hot_triggered = (hot_1m > hot_3m)
 eps_triggered = (fin_ttm > annual_eps_last)
 
-alpha = 0.8
-beta = 0.22
-growth_exp = alpha * (math.exp(beta * growth_score) - 1)
+# 1. 成長展望溢價：非線性指數函數
+alpha_g = 0.8
+beta_g = 0.22
+growth_exp = alpha_g * (math.exp(beta_g * growth_score) - 1)
 
+# 2. 新聞聲量情緒溢價：非線性指數函數 (以 5.0 為中性基準)
+# 當 sentiment > 5.0 時呈指數正向擴張，當 < 5.0 時呈指數折價
+alpha_s = 0.5
+beta_s = 0.35
+sentiment_exp = alpha_s * (math.copysign(1, sentiment - 5.0)) * (math.exp(beta_s * abs(sentiment - 5.0)) - 1)
+
+# 3. 觸發動能乘數
 multiplier = 1.0
 if hot_triggered:
     multiplier *= math.exp((hot_1m - hot_3m) * 0.08)
@@ -243,8 +252,8 @@ if eps_triggered:
 
 eps_fwd_adjusted = eps_fwd_base * multiplier
 
-delta_sentiment = (sentiment - 5.0) * 0.4
-pe_target = pe_base + delta_sentiment + growth_exp - risk
+# 總體本益比結合雙指數溢價 (PE_target)
+pe_target = pe_base + sentiment_exp + growth_exp - risk
 
 pe_upper = pe_target + 4.0      
 pe_lower = pe_base + 0 + 0 - 3.0                       
@@ -267,27 +276,28 @@ else:
 report_data = {
     "symbol": resolved_symbol, "price": live_price, "change": live_change,
     "raw_eps_fwd": eps_fwd_base, "eps_fwd": eps_fwd_adjusted, "pe_base": pe_base, 
-    "sentiment": sentiment, "growth_exp": growth_exp, "risk": risk, "fin_ttm": fin_ttm,
-    "annual_eps_last": annual_eps_last
+    "sentiment": sentiment, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, 
+    "risk": risk, "fin_ttm": fin_ttm, "annual_eps_last": annual_eps_last
 }
 
 valuation_data = {
     "pe_target": pe_target, "pe_upper": pe_upper, "pe_lower": pe_lower,
     "tp_base": tp_base, "tp_lower": tp_lower, "tp_upper": tp_upper,
-    "upside_base": upside_base, "rec": rec, "delta_sentiment": delta_sentiment,
+    "upside_base": upside_base, "rec": rec, "sentiment_exp": sentiment_exp,
     "forward_pe": forward_pe, "historical_pe": historical_pe,
     "hot_triggered": hot_triggered, "eps_triggered": eps_triggered, "adj_eps_fwd": eps_fwd_adjusted,
     "growth_exp": growth_exp
 }
 
-st.title("📈 跨領域專家 AI 投資分析生成器 (非線性指數成長升級版)")
+st.title("📈 跨領域專家 AI 投資分析生成器 (非線性雙指數量化升級版)")
 st.subheader(f"🏢 公司名稱：{company_display_name}")
-st.caption(f"報告生成時間：{get_taiwan_time_str()} | 非線性指數成長量化引擎已啟動 🚀")
+st.caption(f"報告生成時間：{get_taiwan_time_str()} | 非線性雙指數量化引擎已啟動 🚀")
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("最新收盤價 (即時)", f"${live_price:,.2f}", f"交易日: {trade_date} ({live_change:+.2f}%)")
 col2.metric("模型上修目標價 (Base)", f"${tp_base:,.0f}", f"{upside_base:.1f}% 潛在空間")
 col3.metric("綜合投資評等", f"{rec}", f"{rec_color}")
+# 依照您的要求：目標價合理區間兩數字以 "~" 做區隔
 col4.metric("目標價合理區間", f"${tp_lower:,.0f} ~${tp_upper:,.0f}")
 
 st.divider()
@@ -309,16 +319,17 @@ col_left, col_right = st.columns(2)
 with col_left:
     st.subheader("一、 產業專家視角 (熱點量化)")
     st.info(f"**近 1 個月產業熱點分數：** {hot_1m} / 10\n\n**近 3 個月產業熱點分數：** {hot_3m} / 10\n\n{insights['ind_1']}")
-    st.success(f"**市場護城河：**\n\n{insights['ind_2']}")
+    st.success(f"**市場護城河：** (近1月熱點量化：{hot_1m}/10)\n\n產品線與市佔優勢：透過技術升級有效鞏固市場競爭壁壘。")
 
-    st.subheader("二、 數學家視角 (非線性指數成長模型)")
+    st.subheader("二、 數學家視角 (非線性雙指數動能模型)")
     st.markdown(f"🔥 **熱點動能觸發：** `{'已上修 (+)' if hot_triggered else '未觸發'}` (近1月分數: {hot_1m} > 近3月分數: {hot_3m})")
     st.markdown(f"📈 **財報成長觸發：** `{'已上修 (+)' if eps_triggered else '未觸發'}` (近4季 TTM EPS: {fin_ttm} > 最近年報 EPS: {annual_eps_last})")
-    st.markdown(f"🚀 **非線性指數成長溢價 ($\Delta PE_{{growth}}$)：** **`+{growth_exp:.2f} 倍`** (基於成長評分: {growth_score}/10)")
+    st.markdown(f"💬 **非線性指數情緒溢價 ($\Delta PE_{{sentiment}}$)：** **`{sentiment_exp:+.2f} 倍`** (基於聲量情緒分數: {sentiment}/10)")
+    st.markdown(f"🚀 **非線性指數成長溢價 ($\Delta PE_{{growth}}$)：** **`+{growth_exp:.2f} 倍`** (基於成長展望評分: {growth_score}/10)")
     st.markdown(f"✨ **調整後 Forward EPS：** **`{eps_fwd_adjusted:.2f} 元`** (基礎: {eps_fwd_base} 元, 指數加權乘數: {multiplier:.3f}x)")
-    st.markdown(f"📊 **動態本益比 ($PE_{{target}}$)：** **`{pe_target:.1f} 倍`** (基礎PE: {pe_base} + 情緒修正: {delta_sentiment:+.1f} + 指數成長溢價: +{growth_exp:.2f} - 風險折價: -{risk})")
+    st.markdown(f"📊 **動態本益比 ($PE_{{target}}$)：** **`{pe_target:.1f} 倍`** (基礎PE: {pe_base} + 指數情緒溢價: {sentiment_exp:+.2f} + 指數成長溢價: +{growth_exp:.2f} - 風險折價: -{risk})")
     
-    st.latex(r"""PE_{target} = PE_{base} + \Delta PE_{sentiment} + \Delta PE_{growth\_exp} - \Delta PE_{risk}""")
+    st.latex(r"""PE_{target} = PE_{base} + \Delta PE_{sentiment\_exp} + \Delta PE_{growth\_exp} - \Delta PE_{risk}""")
     
     sc1, sc2, sc3 = st.columns(3)
     sc1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x", delta_color="off")
@@ -343,3 +354,4 @@ with col_right:
     st.markdown("**下行風險追蹤 (Risk Matrix)**")
     df_risks = pd.DataFrame(insights['risks'], columns=['風險維度', '關鍵影響因子', '影響評估與應對建議'])
     st.dataframe(df_risks, use_container_width=True, hide_index=True)
+
