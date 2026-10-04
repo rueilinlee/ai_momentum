@@ -5,7 +5,7 @@ import streamlit as st
 import yfinance as yf
 
 # ==========================================
-# 0. 頁面配置與 CSS 樣式
+# 0. 頁面配置與自定義 CSS 樣式
 # ==========================================
 st.set_page_config(
     page_title="碎形推論核心量化引擎 1.0",
@@ -36,8 +36,8 @@ st.markdown("""
         font-size: 13px;
         margin-top: 5px;
     }
-    .up { color: #28a745; }
-    .down { color: #dc3545; }
+    .up { color: #28a745; font-weight: bold; }
+    .down { color: #dc3545; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -52,12 +52,12 @@ st.markdown(
 # ==========================================
 st.sidebar.header("⚙️ 參數設定面板")
 
-# 輸入代碼
 user_input_code = st.sidebar.text_input(
-    "輸入公司/指數代號", value="3122", help="例如: 3122, 2330, 0000(大盤)"
+    "輸入公司/指數代號",
+    value="3122",
+    help="例如: 3122, 2330, 6213, 0000(大盤)",
 )
 
-# 頻率選擇
 interval_map = {
     "日線 (Daily)": {"interval": "1d", "period": "1y"},
     "60分鐘 (60m)": {"interval": "60m", "period": "60d"},
@@ -69,17 +69,14 @@ selected_freq = st.sidebar.selectbox("選擇 K 棒頻率", list(interval_map.key
 
 
 # ==========================================
-# 2. 輔助函數：台股代號解析與資料抓取
+# 2. 輔助函數：台股代號解析與資料抓取 (含時區轉台灣時間)
 # ==========================================
 def resolve_yahoo_ticker(code):
   code = code.strip()
   if code == "0000":
     return "^TWII", "大盤加權指數", "台灣市場指數"
 
-  # 簡單啟發式判斷上市櫃 (實務上可串接上市櫃完整清單)
-  # 4碼多數為台股，若為美股英文代碼則直接回傳
   if code.isdigit():
-    # 這裡預設上市優先，若失敗可在後面 fallback 上櫃
     return f"{code}.TW", f"台股代號 {code}", "台灣上市公司"
   else:
     return code.upper(), f"標的 {code.upper()}", "國際/美股標的"
@@ -91,7 +88,6 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
     ticker = yf.Ticker(ticker_symbol)
     df = ticker.history(period=period, interval=interval)
     if df.empty and ".TW" in ticker_symbol:
-      # Try OTC (.TWO)
       alt_symbol = ticker_symbol.replace(".TW", ".TWO")
       ticker = yf.Ticker(alt_symbol)
       df = ticker.history(period=period, interval=interval)
@@ -101,7 +97,6 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
       return None, f"無法從 Yahoo Finance 取得代號 {ticker_symbol} 的資料。"
 
     df = df.reset_index()
-    # 統一欄位名稱
     col_candidates = [c for c in df.columns if "Date" in c or "Datetime" in c]
     date_col = col_candidates[0] if col_candidates else df.columns[0]
 
@@ -115,6 +110,19 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
             "Volume": "Volume",
         }
     )
+
+    # 統一轉為台灣時區 (Asia/Taipei)
+    df["DateTime"] = pd.to_datetime(df["DateTime"])
+    if df["DateTime"].dt.tz is not None:
+      df["DateTime"] = df["DateTime"].dt.tz_convert("Asia/Taipei")
+    else:
+      df["DateTime"] = df["DateTime"].dt.tz_localize("UTC").dt.tz_convert(
+          "Asia/Taipei"
+      )
+
+    # 移除時區物件讓顯示更乾淨 (轉為字串格式 YYYY-MM-DD HH:MM:SS)
+    df["DateTime"] = df["DateTime"].dt.strftime("%Y-%m-%d %H:%M:%S")
+
     return df, ticker_symbol
   except Exception as e:
     return None, str(e)
@@ -124,16 +132,13 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
 # 3. 核心量化引擎運算函數
 # ==========================================
 def run_quant_engine(df):
-  # 確保數值正確
   for col in ["Open", "High", "Low", "Close"]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
 
   df = df.dropna(subset=["Close", "High", "Low"]).reset_index(drop=True)
 
-  # 1. 報酬率
   df["Return"] = np.log(df["Close"] / df["Close"].shift(1))
 
-  # 2. Hurst Exponent
   def get_hurst_rs(ts):
     ts = np.array(ts)
     ts = ts[~np.isnan(ts)]
@@ -163,7 +168,6 @@ def run_quant_engine(df):
   )
   df["GARCH_V"] = df["Return"].rolling(5).std() / 100.0
 
-  # 3. G_ADX & Net_DI
   up_move = df["High"].diff()
   down_move = df["Low"].shift(1) - df["Low"]
   pos_DM = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
@@ -181,7 +185,6 @@ def run_quant_engine(df):
   df["Net_DI"] = pos_DI - neg_DI
   df["Delta_Net_DI"] = df["Net_DI"].diff()
 
-  # 4. Slope & Slope_Acc
   def get_slope(ts):
     if np.isnan(ts).any():
       return np.nan
@@ -190,7 +193,6 @@ def run_quant_engine(df):
   df["Slope_5"] = df["Close"].rolling(5).apply(get_slope, raw=True)
   df["Slope_Acc"] = df["Slope_5"].diff()
 
-  # 5. fsQCA State Classification
   def map_state(row):
     if pd.isna(row["Hurst"]) or pd.isna(row["G_ADX"]):
       return "資料不足"
@@ -224,7 +226,100 @@ def run_quant_engine(df):
 
 
 # ==========================================
-# 4. 主畫面執行與呈現
+# 4. 智慧深度量化解析模組
+# ==========================================
+def generate_deep_insights(latest, market_state):
+  hurst = latest["Hurst"]
+  gadx = latest["G_ADX"]
+  net_di = latest["Net_DI"]
+  delta_net_di = latest["Delta_Net_DI"]
+  slope_acc = latest["Slope_Acc"]
+
+  insights = []
+
+  if hurst > 0.7:
+    insights.append(
+        f"**強效記憶性主導 ($Hurst = {hurst:.4f}$)：**"
+        " 目前走勢具備極強的單向持續性記憶,趨勢慣性不易輕易扭轉。"
+    )
+  elif 0.5 <= hurst <= 0.6:
+    insights.append(
+        f"**記憶剛形成 ($Hurst = {hurst:.4f}$)：**"
+        " 處於趨勢初升段或變盤轉折邊緣,正向記憶正剛開始萌芽。"
+    )
+  elif hurst < 0.4:
+    insights.append(
+        f"**均值回歸盤整 ($Hurst = {hurst:.4f}$)：**"
+        " 走勢呈現反持續性與鋸齒狀震盪,缺乏單向續航力,應避免盲目追價。"
+    )
+  else:
+    insights.append(
+        f"**過渡記憶區 ($Hurst = {hurst:.4f}$)：**"
+        f" 市場多空雜訊交織,正處於 {market_state}。"
+    )
+
+  if gadx > 25:
+    trend_desc = (
+        "多方" if net_di > 0 else ("空方" if net_di < 0 else "多空拉鋸")
+    )
+    insights.append(
+        f"**真實趨勢強度 ($G\_ADX = {gadx:.2f}$)：**"
+        f" 數值大於 25 門檻,代表當前動能已有效擊穿背景雜訊,由 **{trend_desc}**"
+        " 主導盤勢。"
+    )
+  else:
+    insights.append(
+        f"**動能引擎熄火 ($G\_ADX = {gadx:.2f}$)：**"
+        " 趨勢強度偏低,盤勢缺乏足夠的實質資金推力,容易出現假突破或頻繁拉回。"
+    )
+
+  if delta_net_di > 0 and slope_acc > 0:
+    insights.append(
+        "**動能與價格共振擴張：** 靈魂指標 $\\Delta Net\_DI$ 與價格加速度"
+        " 雙雙為正,買盤力道正在加速擴大,上攻動能扎實。"
+    )
+  elif delta_net_di < 0 and slope_acc > 0:
+    insights.append(
+        "**⚠️ 高檔多頭背離警訊：** 價格雖然維持慣性（加速度轉正/平緩）,但 $\\Delta"
+        " Net\_DI$ 動能變化量轉負,顯示高檔追價力道開始收斂,須防範短線過熱拉回。"
+    )
+  elif delta_net_di > 0 and slope_acc < 0:
+    insights.append(
+        "**🔥 低檔空頭背離/強烈抵抗：** 價格雖然處於回檔,但 $\\Delta Net\_DI$"
+        " 出現顯著正向跳升（賣壓竭盡、買盤回補）,具備潛在 V 型轉折契機。"
+    )
+  else:
+    insights.append(
+        f"**微觀動能交替：** $\\Delta Net\_DI$ 變動值為 {delta_net_di:,.2f},"
+        " 顯示短線資金攻防處於過渡交替期。"
+    )
+
+  if "多頭" in market_state:
+    strategy = (
+        "**💡 策略建議：** 大格局維持多頭主升段,強勢慣性有利順勢操作。"
+        " 若伴隨多頭背離則可適度居高思危,續抱核心部位並嚴守移動停利。"
+    )
+  elif "空頭" in market_state:
+    strategy = (
+        "**💡 策略建議：** 大格局受空方控盤。雖偶有低檔背離抵抗（短線回補）,但在"
+        " $Net\_DI$ 真正翻正前,反彈仍視為技術性修繕,不宜過度積極摸底。"
+    )
+  elif "剛起漲" in market_state:
+    strategy = (
+        "**💡 策略建議：** 🎯 **黃金起漲點訊號**！Hurst 剛跨越 0.5 且加速度與"
+        " Delta Net_DI 同步放大,為勝率與期望值極佳的切入點。"
+    )
+  else:
+    strategy = (
+        "**💡 策略建議：** 當前盤勢落於區間或過渡轉換期,建議降低部位或採高出低進策略,靜待下一個具備"
+        " G_ADX 突破 25 的明確訊號。"
+    )
+
+  return insights, strategy
+
+
+# ==========================================
+# 5. 主畫面執行與互動呈現
 # ==========================================
 if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
   raw_ticker, default_name, market_attr = resolve_yahoo_ticker(
@@ -240,13 +335,11 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
   if df_raw is None:
     st.error(f"資料取得失敗：{used_ticker}")
   else:
-    # 自動判斷上市櫃
     if ".TWO" in used_ticker:
       market_attr = "櫃買中心 (上櫃公司)"
     elif ".TW" in used_ticker:
       market_attr = "證交所 (上市公司)"
 
-    # 執行量化引擎
     df_res = run_quant_engine(df_raw)
     latest = df_res.iloc[-1]
     prev = df_res.iloc[-2] if len(df_res) > 1 else latest
@@ -256,9 +349,9 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
     chg = p0 - p_prev
     chg_pct = (chg / p_prev) * 100 if p_prev > 0 else 0.0
     chg_class = "up" if chg >= 0 else "down"
-    chg_str = f"↑ +{chg:.2f} (+{chg_pct:.2f}%)" if chg >= 0 else f"↓ {chg:.2f} ({chg_pct:.2f}%)"
+    chg_str = f"↓ {chg:.2f} ({chg_pct:.2f}%)" if chg < 0 else f"↑ +{chg:.2f} (+{chg_pct:.2f}%)"
 
-    # --- 輸出個股資訊卡片 (仿照您提供的圖片風格) ---
+    # --- 輸出個股資訊卡片 ---
     st.markdown("### 📋 標的即時資訊摘要")
     c1, c2, c3, c4, c5 = st.columns(5)
 
@@ -267,7 +360,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
           f"""
             <div class="metric-card">
                 <div class="metric-title">標的名稱</div>
-                <div class="metric-value">{default_name}</div>
+                <div class="metric-value">台股代號 {user_input_code}</div>
                 <div class="metric-sub">({user_input_code})</div>
             </div>
             """,
@@ -291,7 +384,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
           f"""
             <div class="metric-card">
                 <div class="metric-title">市場屬性</div>
-                <div class="metric-value" style="font-size: 20px;">{market_attr}</div>
+                <div class="metric-value" style="font-size: 18px;">{market_attr}</div>
                 <div class="metric-sub">Yahoo Finance 串接</div>
             </div>
             """,
@@ -311,14 +404,17 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       )
 
     with c5:
-      now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+      # 強制轉換並取得台灣時間 (CST / UTC+8)
+      now_time_tw = (
+          pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M:%S")
+      )
       last_k_time = str(latest["DateTime"])
       st.markdown(
           f"""
             <div class="metric-card">
                 <div class="metric-title">最後 K 棒時間</div>
-                <div class="metric-value" style="font-size: 16px;">{last_k_time}</div>
-                <div class="metric-sub">報告產出: {now_time}</div>
+                <div class="metric-value" style="font-size: 14px;">{last_k_time}</div>
+                <div class="metric-sub">報告產出: {now_time_tw}</div>
             </div>
             """,
           unsafe_allow_html=True,
@@ -340,23 +436,48 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
         "Delta_Net_DI",
         "市場狀態分類",
     ]
-    display_df = df_res[output_cols].tail(15).iloc[::-1]  # 顯示最近 15 筆，最新在上
+    display_df = df_res[output_cols].tail(15).iloc[::-1]
 
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    # 下載按鈕
-    excel_file = f"{user_input_code}_碎形推論完整報告.xlsx"
-    df_res[output_cols].to_excel(excel_file, index=False)
+    # --- 輸出智慧推論與實證解析模組 ---
+    st.markdown("---")
+    st.markdown("### 🧠 碎形推論引擎：深度量化推論與實證解析")
 
-    with open(excel_file, "rb") as f:
-      st.download_button(
-          label="📥 下載完整 Excel 矩陣分析報告",
-          data=f,
-          file_name=excel_file,
-          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    market_state_val = latest["市場狀態分類"]
+    insights, strategy_advice = generate_deep_insights(latest, market_state_val)
+
+    with st.container():
+      st.markdown(
+          f"**📊 分析標的：** `{user_input_code}` ｜ **目前狀態判定：**"
+          f" `{latest['Hurst']:.4f}` 記憶性主導下的 **【{market_state_val}】**"
+      )
+
+      for ins in insights:
+        st.markdown(f"- {ins}")
+
+      st.markdown("---")
+      st.info(strategy_advice)
+
+    # --- Excel 下載按鈕 ---
+    excel_file = f"{user_input_code}_碎形推論完整報告.xlsx"
+    try:
+      df_res[output_cols].to_excel(excel_file, index=False)
+      with open(excel_file, "rb") as f:
+        st.download_button(
+            label="📥 下載完整 Excel 矩陣分析報告",
+            data=f,
+            file_name=excel_file,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except Exception as e:
+      st.warning(
+          "⚠️ 無法自動生成 Excel 檔案，請確認環境是否已安裝 `openpyxl` 套件。"
+          f"（錯誤訊息: {e}）"
       )
 else:
   st.info(
-      "👈 請在左側側邊欄輸入公司代碼（例如 3122 或 2330），選擇 K"
+      "👈 請在左側側邊欄輸入公司代碼（例如 3122、2330 或 0000 大盤），選擇 K"
       " 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
   )
+
