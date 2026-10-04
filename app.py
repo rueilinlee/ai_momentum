@@ -39,17 +39,30 @@ def run_quant_system(stock_code, exchange="TW", window=252):
             st.error(f"❌ 找不到 {stock_code} 的股價資料，或遭遇 Yahoo Finance 暫時封鎖，請稍後再試。")
             return
 
-        # --- 新增：擷取股價名稱、最新價格與時間 ---
+        # --- 修正版：擷取股價名稱、最新價格與時間 ---
         valid_stock_data = market_data[stock_yf].dropna()
         latest_price = valid_stock_data.iloc[-1]
         latest_date = valid_stock_data.index[-1].strftime('%Y-%m-%d')
         
+        stock_name = stock_code
         try:
-            # 嘗試抓取股票中文名稱，若抓不到則預設顯示代碼
-            stock_info = yf.Ticker(stock_yf, session=session).info
-            stock_name = stock_info.get('shortName', stock_code)
-        except:
-            stock_name = stock_code
+            # 優先使用 Yahoo Search API (最穩定，可精準抓出中文或 KY 簡稱)
+            search_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={stock_yf}"
+            res = session.get(search_url, timeout=5)
+            data = res.json()
+            if 'quotes' in data and len(data['quotes']) > 0:
+                # 依序嘗試抓取短名或長名
+                stock_name = data['quotes'][0].get('shortname') or data['quotes'][0].get('longname') or stock_code
+            else:
+                # 備用方案：使用傳統的 info 屬性
+                info = yf.Ticker(stock_yf, session=session).info
+                stock_name = info.get('shortName') or info.get('longName') or stock_code
+        except Exception:
+            pass
+            
+        # 若抓取到的名稱仍與代碼完全相同，給予一個預設文字防呆
+        if str(stock_name) == str(stock_code):
+            stock_name = "台股標的"
 
         # 準備進行特徵工程的報酬率數據
         returns = market_data[[stock_yf, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
@@ -114,7 +127,7 @@ def run_quant_system(stock_code, exchange="TW", window=252):
         # --- 輸出到 Web UI ---
         st.success(f"✅ AI 模型訓練完成！平均 Test ACC: {sum(cv_test_acc)/5:.2%} | 平均 Test AUC: {sum(cv_test_auc)/5:.4f}")
 
-        # --- 新增的標的資訊區塊 ---
+        # --- 標的資訊區塊 ---
         st.markdown("### 📌 標的資訊與最新報價")
         info_col1, info_col2, info_col3 = st.columns(3)
         info_col1.metric("股價名稱 (代碼)", f"{stock_name} ({stock_code})")
