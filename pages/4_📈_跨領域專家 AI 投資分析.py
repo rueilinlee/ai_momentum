@@ -11,7 +11,7 @@ import math
 # ==========================================
 # 0. 頁面基本設定與台灣時區設定
 # ==========================================
-st.set_page_config(page_title="跨領域專家 AI 投資分析 (非線性雙指數量化升級版)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="跨領域專家 AI 投資分析", layout="wide", page_icon="📈")
 
 def get_taiwan_time_str(format_str='%Y-%m-%d %H:%M:%S'):
     tw_tz = timezone(timedelta(hours=8))
