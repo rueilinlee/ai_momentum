@@ -3,6 +3,9 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import yfinance as yf
+import urllib.request
+import urllib.parse
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
@@ -19,13 +22,14 @@ TAIWAN_STOCK_NAMES = {
     "3122": "笙泉 (3122)",
     "3293": "鈊象 (3293)",
     "5483": "中美晶 (5483)",
+    "6147": "頎邦 (6147)",
     "2317": "鴻海 (2317)",
     "2881": "富邦金 (2881)",
     "2882": "國泰金 (2882)"
 }
 
 # ==========================================
-# 核心引擎 (v3.5)
+# 核心引擎 (v3.6)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -121,7 +125,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 3.5 版】實戰分析報告
+【易經三義量化時空分析 3.6 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -193,31 +197,39 @@ class IChingTrinitySpatiotemporalEngine:
         plt.tight_layout()
         return fig
 
-def clean_and_format_company_name(pure_code: str, yf_name: Optional[str]) -> str:
-    """智慧將 Yahoo 傳回的名稱或代碼轉譯為標準中文公司名稱"""
-    # 1. 優先檢查內建對照表
+def search_stock_name_via_google(pure_code: str) -> str:
+    """透過模擬 Google 搜尋引擎抓取台股代碼對應的正確中文公司名稱"""
     if pure_code in TAIWAN_STOCK_NAMES:
         return TAIWAN_STOCK_NAMES[pure_code]
         
-    # 2. 檢查 Yahoo 傳回的名稱是否有包含中文字元
-    if yf_name:
-        has_chinese = any(('\u4e00' <= c <= '\u9fff') for c in yf_name)
-        if has_chinese and len(yf_name) <= 16:
-            # 清理常見冗長字眼
-            cleaned = yf_name.replace("股份有限公司", "").replace("公司", "").strip()
-            return f"{cleaned} ({pure_code})"
-            
-    # 3. 針對常見特定代碼手動對應備援
-    fallback_mapping = {
-        "3122": "笙泉 (3122)",
-        "3105": "穩懋 (3105)",
-        "3293": "鈊象 (3293)",
-        "5483": "中美晶 (5483)"
-    }
-    if pure_code in fallback_mapping:
-        return fallback_mapping[pure_code]
+    try:
+        query = f"{pure_code} 股票 台灣 名字"
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
         
-    # 4. 若全無中文，則以標準格式輸出
+        req = urllib.request.Request(
+            url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        with urllib.request.urlopen(req, timeout=3) as response:
+            html_content = response.read().decode('utf-8')
+            
+        # 從搜尋結果中嘗試擷取中文公司名稱關鍵字
+        import re
+        # 尋找類似 "公司名稱 (6147)" 或 "頎邦(6147)" 的模式
+        patterns = [
+            rf'([\u4e00-\u9fa5]{{2,6}})\s*\(?{pure_code}\)?',
+            rf'{pure_code}\s*[-–]\s*([\u4e00-\u9fa5]{{2,6}})'
+        ]
+        for pat in patterns:
+            match = re.search(pat, html_content)
+            if match:
+                name = match.group(1).strip()
+                if name not in ["台股", "股票", "上市", "上櫃", "公司"]:
+                    return f"{name} ({pure_code})"
+    except Exception:
+        pass
+        
     return f"台股標的 ({pure_code})"
 
 def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Optional[pd.DataFrame], str, str, str]:
@@ -264,10 +276,8 @@ def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Opt
             if not df.empty:
                 pure_digits = "0000" if t == '^TWII' else ''.join(filter(str.isdigit, t))
                 
-                info = ticker_obj.info
-                yf_name = info.get('longName') or info.get('shortName')
-                
-                company_name = clean_and_format_company_name(pure_digits, yf_name)
+                # 智慧取得中文公司名稱（支援字典與 Google 搜尋備援）
+                company_name = search_stock_name_via_google(pure_digits)
                 market_type = "大盤指數" if t == '^TWII' else ("上市公司" if ".TW" in t else "上櫃公司")
                 return df, pure_digits, market_type, company_name
         except Exception:
@@ -285,7 +295,7 @@ st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)
 
 with st.sidebar:
     st.header("參數設定")
-    ticker_input = st.text_input("輸入股票代碼 (輸入 0000 代表大盤)", value="3122")
+    ticker_input = st.text_input("輸入股票代碼 (輸入 0000 代表大盤)", value="6147")
     
     timeframe_choice = st.selectbox(
         "選擇分析週期 (Timeframe)",
@@ -297,7 +307,7 @@ with st.sidebar:
     run_btn = st.button("啟動量化引擎 🚀", use_container_width=True)
 
 if run_btn:
-    with st.spinner(f"正在智慧辨識與獲取代碼 [{ticker_input}] 的 [{timeframe_choice}] 歷史數據..."):
+    with st.spinner(f"正在透過 Google 搜尋引擎與 Yahoo Finance 聯動解析代碼 [{ticker_input}] 的 [{timeframe_choice}] 資料..."):
         df_real, pure_code, market_type, company_name = fetch_stock_or_index_data(ticker_input, timeframe_choice)
         
         if df_real is None or df_real.empty:
@@ -346,6 +356,7 @@ if run_btn:
             📌 **【圖表判讀重點摘要】**
             1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔，此線具備強大的結構吸引與支撐防線。
             2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間，上檔易受引力約束。
-            3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
+            3. ⚡ **當前動成狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
             4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{last_bar_time}**。
             """)
+
