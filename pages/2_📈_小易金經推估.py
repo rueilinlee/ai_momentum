@@ -1,13 +1,12 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-from scipy import signal
 import matplotlib.pyplot as plt
 import yfinance as yf
 from typing import Dict, Any
 
 # ==========================================
-# 核心引擎 (IChingTrinitySpatiotemporalEngine)
+# 核心引擎 (相容性修正版 v2.1)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, timeframe: str = "Daily"):
@@ -27,10 +26,29 @@ class IChingTrinitySpatiotemporalEngine:
         poly = np.polyfit(np.log(lags), np.log(tau), 1)
         return float(np.clip(poly[0] * 2.0, 0.4, 0.75))
 
+    def _ricker_wavelet(self, points: int, a: int) -> np.ndarray:
+        """自定義 Ricker 小波函數，相容所有 scipy 版本"""
+        t = np.arange(0, points) - (points - 1.0) / 2.0
+        x = t / a
+        return (2.0 / (np.sqrt(3.0 * a) * (np.pi ** 0.25))) * (1.0 - x ** 2) * np.exp(-0.5 * x ** 2)
+
+    def _custom_cwt(self, data: np.ndarray, widths: np.ndarray) -> np.ndarray:
+        """替代 scipy.signal.cwt 的高效卷積實作"""
+        cwtmatr = np.zeros((len(widths), len(data)))
+        for i, width in enumerate(widths):
+            # 決定小波視窗大小
+            points = min(int(width * 10), len(data))
+            if points % 2 == 0:
+                points += 1
+            wavelet = self._ricker_wavelet(points, width)
+            # 進行同質卷積
+            cwtmatr[i, :] = np.convolve(data, wavelet, mode='same')
+        return cwtmatr
+
     def analyze_bian_yi(self) -> Dict[str, Any]:
         close = self.df['Close'].values
         widths = np.arange(1, 32)
-        cwtmatr = signal.cwt(close, signal.ricker, widths)
+        cwtmatr = self._custom_cwt(close, widths)
         
         high_freq_energy = np.mean(np.abs(cwtmatr[1:8, :]), axis=0)
         recent_energy = high_freq_energy[-1]
@@ -43,8 +61,8 @@ class IChingTrinitySpatiotemporalEngine:
         close = self.df['Close'].values
         p0 = close[-1]
         
-        high_max = np.max(self.df['High'].values[-60:])
-        low_min = np.min(self.df['Low'].values[-60:])
+        high_max = np.max(self.df['High'].values[-60:]) if len(self.df) >= 60 else np.max(self.df['High'].values)
+        low_min = np.min(self.df['Low'].values[-60:]) if len(self.df) >= 60 else np.min(self.df['Low'].values)
         
         core_support = low_min + (p0 - low_min) * 0.236
         core_resistance = p0 + (high_max - p0) * 0.618
@@ -77,7 +95,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 2.0 版】實戰分析報告
+【易經三義量化時空分析 2.1 版】實戰分析報告
 標的: {self.ticker} | 週期: {self.timeframe} | 太極原點 P0: {buyi['p0']:.2f}
 ==================================================
 
@@ -130,7 +148,7 @@ class IChingTrinitySpatiotemporalEngine:
         ax1.grid(True, alpha=0.2, linestyle=':')
         
         widths = np.arange(1, 64)
-        cwtmatr = signal.cwt(close, signal.ricker, widths)
+        cwtmatr = self._custom_cwt(close, widths)
         
         cax = ax2.pcolormesh(x, widths, np.abs(cwtmatr), shading='gouraud', cmap='magma')
         ax2.set_title("CWT Energy Scalogram (Dynamics & Invariants)", fontsize=14, color='white')
@@ -163,30 +181,24 @@ with st.sidebar:
 if run_btn:
     with st.spinner(f"正在從 Yahoo Finance 獲取 {ticker_input} 歷史數據..."):
         try:
-            # 抓取資料
             df_real = yf.download(ticker_input, period=period, interval="1d", progress=False)
             
-            # yfinance 平坦化防呆
             if isinstance(df_real.columns, pd.MultiIndex):
                 df_real.columns = df_real.columns.get_level_values(0)
                 
             df_real = df_real[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
             
             if df_real.empty:
-                st.error("⚠️ 無法獲取資料，請確認代碼是否正確（例如台積電為 2330.TW，聯發科為 2454.TW）。")
+                st.error("⚠️ 無法獲取資料，請確認代碼是否正確（例如台積電為 2330.TW）。")
             else:
-                # 執行運算引擎
                 engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=ticker_input, timeframe=f"Daily ({period})")
                 report_text = engine.generate_full_report(current_regime_bars=current_regime_bars)
                 fig = engine.plot_spatiotemporal_matrix()
                 
-                # 左右版面配置顯示
                 col1, col2 = st.columns([1.2, 2])
-                
                 with col1:
                     st.subheader("📝 策略決策報告")
                     st.code(report_text, language="text")
-                    
                 with col2:
                     st.subheader("📊 時空共振視覺化矩陣")
                     st.pyplot(fig)
