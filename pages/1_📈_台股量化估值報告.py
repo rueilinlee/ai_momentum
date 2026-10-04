@@ -19,7 +19,7 @@ with st.sidebar:
     gemini_api_key = st.text_input("輸入 Gemini API Key", type="password", key="stock_report_api_key")
     selected_model = st.selectbox(
         "選擇 Gemini 模型",
-        ["gemini-3.8-flash", "gemini-3.8-pro"],
+        ["gemini-1.5-flash", "gemini-1.5-pro","gemini-3.8-flash", "gemini-3.8-pro"],
         key="stock_report_model"
     )
     st.markdown("---")
