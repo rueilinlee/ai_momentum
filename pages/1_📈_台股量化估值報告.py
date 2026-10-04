@@ -29,7 +29,7 @@ with st.sidebar:
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    stock_id = st.text_input("請輸入台股代號（例：6217, 6209, 8271）", value="6217").strip()
+    stock_id = st.text_input("請輸入台股代號（例：2330, 6217, 6209）", value="2330").strip()
     macro_news = st.text_area(
         "總體經濟新聞/補充背景資訊（選填）",
         value="美國聯準會維持利率政策方向，台灣半導體與電子零組件出口維持溫和復甦，新台幣匯率平穩。",
@@ -52,7 +52,7 @@ def fetch_stock_data(ticker_symbol: str):
                 latest_price = hist['Close'].iloc[-1]
                 latest_date = hist.index[-1].strftime("%Y 年 %m 月 %d 日")
                 
-                # 嘗試取得公司名稱 (yfinance 有時會回傳英文名稱)
+                # 嘗試取得公司名稱
                 company_name = ""
                 try:
                     info = ticker.info
@@ -91,12 +91,15 @@ if submit_btn:
             price = stock_info["price"]
             price_date = stock_info["date"]
             fetch_time = stock_info["time"]
-            company_name = stock_info["name"] if stock_info["name"] else "未知名稱"
+            company_name = stock_info["name"]
+            
+            # 判斷名稱是否抓取成功，若失敗則顯示交由 AI 識別
+            display_name = company_name if company_name else "交由 AI 識別"
             
             # 在右側 UI 介面同時顯示代碼、名稱與時間
             with col2:
                 st.subheader("📊 即時市場數據")
-                st.markdown(f"**🎯 標的：** {company_name} ({stock_id})")
+                st.markdown(f"**🎯 標的：** {display_name} ({stock_id})")
                 st.metric("當前市場股價", f"{price:.2f} TWD", delta=f"報價日期: {price_date}")
                 st.caption(f"🕒 資料更新時間：{fetch_time}")
                 
@@ -112,7 +115,9 @@ if submit_btn:
 
 請嚴格依據以下結構進行撰寫：
 
-以『投資報告：{company_name} ({stock_id}) 投資價值分析』為標題開頭（若名稱為英文，請自動翻譯並使用中文公司名稱），撰寫一份關於該公司狀況的簡短投資報告，內容須包含以下章節：
+以『投資報告：[請依據股票代碼 {stock_id} 填入對應的台灣中文公司名稱] ({stock_id}) 投資價值分析』為標題開頭。務必使用你的知識庫自動識別並寫出正確的中文企業名稱。
+
+撰寫一份關於該公司狀況的簡短投資報告，內容須包含以下章節：
 
 1. 近期新聞
 2. 財務狀況與次產業成長率
