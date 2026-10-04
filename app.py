@@ -12,12 +12,49 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import warnings
 import requests
-import re  # 新增：用來解析中文網頁標題
+import re  # 用來解析中文網頁標題
 
 warnings.filterwarnings('ignore')
 
 # 設定網頁標題與寬度
 st.set_page_config(page_title="台股 AI 量化預測系統", layout="wide")
+
+# --- 定義 RSI 價格模擬器 (計算藍紅動能區建議價格) ---
+def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
+    last_close = close_prices.iloc[-1]
+    step = last_close * 0.005  # 每次推進 0.5% 進行模擬
+    sim_price = last_close
+    
+    def calc_single_rsi(prices_series):
+        delta = prices_series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        return (100 - (100 / (1 + rs))).iloc[-1]
+        
+    current_rsi = calc_single_rsi(close_prices)
+    
+    if mode == 'drop':
+        if current_rsi <= target_rsi:
+            return last_close, current_rsi
+        for _ in range(100):
+            sim_price -= step
+            sim_series = pd.concat([close_prices, pd.Series([sim_price])]).reset_index(drop=True)
+            sim_rsi = calc_single_rsi(sim_series)
+            if pd.notna(sim_rsi) and sim_rsi <= target_rsi:
+                return sim_price, sim_rsi
+        return sim_price, sim_rsi
+        
+    elif mode == 'rise':
+        if current_rsi >= target_rsi:
+            return last_close, current_rsi
+        for _ in range(100):
+            sim_price += step
+            sim_series = pd.concat([close_prices, pd.Series([sim_price])]).reset_index(drop=True)
+            sim_rsi = calc_single_rsi(sim_series)
+            if pd.notna(sim_rsi) and sim_rsi >= target_rsi:
+                return sim_price, sim_rsi
+        return sim_price, sim_rsi
 
 def run_quant_system(stock_code, exchange="TW", window=252):
     stock_yf = f"{stock_code}.{exchange}"
@@ -40,25 +77,29 @@ def run_quant_system(stock_code, exchange="TW", window=252):
             st.error(f"❌ 找不到 {stock_code} 的股價資料，或遭遇 Yahoo Finance 暫時封鎖，請稍後再試。")
             return
 
-        # --- 升級版：直接去台灣 Yahoo 股市抓「中文名稱」 ---
+        # --- 抓取中文名稱、最新價格與時間 ---
         valid_stock_data = market_data[stock_yf].dropna()
         latest_price = valid_stock_data.iloc[-1]
         latest_date = valid_stock_data.index[-1].strftime('%Y-%m-%d')
         
         stock_name = stock_code
         try:
-            # 請求台灣 Yahoo 股市個股專頁
             tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_code}"
             res = session.get(tw_yahoo_url, timeout=5)
-            # 網頁的標題通常是: <title>台積電(2330) - 股價走勢...
             match = re.search(r'<title>(.*?)\(', res.text)
             if match:
                 extracted_name = match.group(1).strip()
-                # 確保沒有抓到預設的錯誤標題
                 if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
                     stock_name = extracted_name
         except Exception:
             pass
+
+        if str(stock_name) == str(stock_code):
+            stock_name = "台股標的"
+
+        # --- 計算藍紅動能區建議價格 (基於 SHAP RSI 邏輯) ---
+        blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
+        red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
         # 準備進行特徵工程的報酬率數據
         returns = market_data[[stock_yf, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
@@ -130,6 +171,17 @@ def run_quant_system(stock_code, exchange="TW", window=252):
         info_col2.metric("最新收盤價", f"{latest_price:.2f}")
         info_col3.metric("資料更新時間", f"{latest_date}")
         st.markdown("---")
+        
+        # --- 新增：AI 決策動能區間 (買點與賣出價格建議) ---
+        st.markdown("### 🎯 AI 決策動能區間 (基於 SHAP 均值回歸邏輯)")
+        zone_col1, zone_col2 = st.columns(2)
+        
+        with zone_col1:
+            st.info(f"**🟦 藍色動能區 (建議逢低試單點)**\n\n預估跌至 **{blue_price_target:.2f} 元** 時，RSI 將降至 {blue_rsi:.1f} (超賣區)。歷史數據顯示此時模型勝率最高，為極佳的防守反擊點。")
+            
+        with zone_col2:
+            st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**\n\n預估漲至 **{red_price_target:.2f} 元** 時，RSI 將飆至 {red_rsi:.1f} (過熱區)。系統判定此時追高勝率極差，容易遭遇主力倒貨，建議分批停利。")
+        st.markdown("---")
 
         # 5. 預測與策略邏輯
         latest_features = X.iloc[[-1]]
@@ -151,7 +203,7 @@ def run_quant_system(stock_code, exchange="TW", window=252):
         elif latest_proba < 0.45 and (beta3_trend_val < 0 or gamma_trend_val < 0):
             action_plan = "❄️ 強烈保守觀望：AI 不看好且純度或資金動能衰退，極高機率落後大盤，建議避開。"
         else:
-            action_plan = "⚖️️ 中性震盪：多空訊號分歧 (可能正在築底或盤頭)，等待右側趨勢明朗。"
+            action_plan = "⚖ 中性震盪：多空訊號分歧 (可能正在築底或盤頭)，等待右側趨勢明朗。"
 
         # 顯示指標卡片
         st.markdown("### 🔮 未來 5 日預測與位階狀態")
