@@ -61,8 +61,8 @@ st.sidebar.header("⚙️ 參數設定面板")
 
 user_input_code = st.sidebar.text_input(
     "輸入公司/指數代號",
-    value="3105",
-    help="例如: 3105, 3122, 2330, 6213, 0000(大盤)",
+    value="8028",
+    help="例如: 8028, 3105, 3122, 2330, 0000(大盤)",
 )
 
 interval_map = {
@@ -76,9 +76,11 @@ selected_freq = st.sidebar.selectbox("選擇 K 棒頻率", list(interval_map.key
 
 
 # ==========================================
-# 2. 輔助函數：台股代號解析與中文對應字典
+# 2. 智慧對應尋找中文公司名稱模組
 # ==========================================
-TW_STOCK_NAMES = {
+# 常用台股快取字典（確保秒開與高命中率）
+TW_STOCK_NAMES_CACHE = {
+    "8028": "昇陽半導體",
     "3105": "穩懋",
     "3122": "笙泉",
     "2330": "台積電",
@@ -96,17 +98,44 @@ TW_STOCK_NAMES = {
 }
 
 
+@st.cache_data(ttl=3600)
+def get_smart_company_name(code):
+  code = code.strip()
+  if code == "0000" or code.upper() == "^TWII":
+    return "大盤加權指數"
+
+  # 1. 先從快取字典尋找
+  if code in TW_STOCK_NAMES_CACHE:
+    return TW_STOCK_NAMES_CACHE[code]
+
+  # 2. 若不在快取中，智慧透過 yfinance API 尋找官方名稱
+  try:
+    for suffix in [".TW", ".TWO"]:
+      ticker_obj = yf.Ticker(f"{code}{suffix}")
+      info = ticker_obj.info
+      # 嘗試抓取 longName 或 shortName
+      name = info.get("longName") or info.get("shortName")
+      if name:
+        # 如果 Yahoo 回傳的是中文，直接採用；若是英文，可轉譯或保留
+        return name
+  except Exception:
+    pass
+
+  # 3. 若皆無法取得，回傳預設代號格式
+  return f"台股代號 {code}"
+
+
 def resolve_yahoo_ticker(code):
   code = code.strip()
   if code == "0000" or code.upper() == "^TWII":
     return "^TWII", "大盤加權指數", "台灣市場指數"
 
-  company_name = TW_STOCK_NAMES.get(code, f"台股代號 {code}")
+  company_name = get_smart_company_name(code)
 
   if code.isdigit():
     return f"{code}.TW", company_name, "台灣上市公司"
   else:
-    return code.upper(), f"標的 {code.upper()}", "國際/美股標的"
+    return code.upper(), company_name, "國際/美股標的"
 
 
 @st.cache_data(ttl=600)
@@ -115,7 +144,6 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
     ticker = yf.Ticker(ticker_symbol)
     df = ticker.history(period=period, interval=interval)
     if df.empty and ".TW" in ticker_symbol:
-      # Fallback to 上櫃 (.TWO)
       alt_symbol = ticker_symbol.replace(".TW", ".TWO")
       ticker = yf.Ticker(alt_symbol)
       df = ticker.history(period=period, interval=interval)
@@ -417,7 +445,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
             <div class="metric-card">
                 <div class="metric-title">標的名稱</div>
                 <div class="metric-value">{default_name} ({user_input_code})</div>
-                <div class="metric-sub">中文對應名稱</div>
+                <div class="metric-sub">智慧對應中文名稱</div>
             </div>
             """,
           unsafe_allow_html=True,
@@ -427,7 +455,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       st.markdown(
           f"""
             <div class="metric-card">
-                <div class="metric-title">股票/指數代碼</div>
+                <div class="metric-title">股票/指數代號</div>
                 <div class="metric-value">{user_input_code}</div>
                 <div class="metric-sub">{used_ticker}</div>
             </div>
@@ -571,7 +599,6 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       )
 else:
   st.info(
-      "👈 請在左側側邊欄輸入公司代碼（例如 3105、3122、2330 或 0000 大盤），選擇 K"
-      " 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
+      "👈 請在左側側邊欄輸入公司代碼（例如 8028、3105、3122、2330 或 0000"
+      " 大盤），選擇 K 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
   )
-
