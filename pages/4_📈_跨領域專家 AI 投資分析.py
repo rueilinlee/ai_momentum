@@ -22,7 +22,6 @@ def get_company_name_and_symbol(symbol):
     clean_sym = symbol.upper().strip()
     pure_num = clean_sym.replace(".TW", "").replace(".TWO", "")
     
-    # 強制精準對應穩懋與其他熱門標的
     if pure_num == "3105" or "3105" in clean_sym:
         return "穩懋 (3105.TWO)"
     elif pure_num == "2330" or "2330" in clean_sym:
@@ -46,7 +45,7 @@ def get_company_name_and_symbol(symbol):
     if pure_num in common_mapping:
         return common_mapping[pure_num]
     if clean_sym in common_mapping:
-        return common_mapping[clean_sym]
+        return clean_sym[clean_sym]
         
     try:
         tkr = yf.Ticker(symbol)
@@ -236,13 +235,12 @@ fin_ttm = round(sum([v for _, v in q_eps_data]), 2)
 hot_triggered = (hot_1m > hot_3m)
 eps_triggered = (fin_ttm > annual_eps_last)
 
-# 基礎參數設定
 alpha_g = 0.8
 beta_g = 0.22
 alpha_s = 0.5
 beta_s = 0.35
 
-# 【動態參數放大機制】：依據熱點擴張比率與財報超預期幅度計算正回饋放大係數
+# 動態放大機制連動計算
 amp_factor = 1.0
 if hot_triggered:
     amp_factor *= (1.0 + 0.30 * (hot_1m - hot_3m))
@@ -250,7 +248,6 @@ if eps_triggered:
     eps_ratio = (fin_ttm / annual_eps_last) if annual_eps_last > 0 else 1.0
     amp_factor *= math.pow(eps_ratio, 0.25)
 
-# 帶入動態放大後的係數
 alpha_g_dynamic = alpha_g * amp_factor
 alpha_s_dynamic = alpha_s * amp_factor
 
@@ -310,7 +307,6 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("最新收盤價 (即時)", f"${live_price:,.2f}", f"交易日: {trade_date} ({live_change:+.2f}%)")
 col2.metric("模型上修目標價 (Base)", f"${tp_base:,.0f}", f"{upside_base:.1f}% 潛在空間")
 col3.metric("綜合投資評等", f"{rec}", f"{rec_color}")
-# 使用方括號格式穩定顯示區間
 col4.metric("目標價合理區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
 
 st.divider()
@@ -335,11 +331,11 @@ with col_left:
     st.success(f"**市場護城河：** (近1月熱點量化：{hot_1m}/10)\n\n產品線與市佔優勢：透過技術升級有效鞏固市場競爭壁壘。")
 
     st.subheader("二、 數學家視角 (動態參數放大模型)")
-    st.markdown(f"🔥 **熱點動能觸發：** `{'已觸發放大 (+)' if hot_triggered else '未觸發'}` (近1月分數: {hot_1m} > 近3月分數: {hot_3m})")
-    st.markdown(f"📈 **財報成長觸發：** `{'已觸發放大 (+)' if eps_triggered else '未觸發'}` (近4季 TTM EPS: {fin_ttm} > 最近年報 EPS: {annual_eps_last})")
+    st.markdown(f"🔥 **熱點動能觸發：** `{'已上修放大 (+)' if hot_triggered else '未觸發'}` (近1月分數: {hot_1m} > 近3月分數: {hot_3m})")
+    st.markdown(f"📈 **財報成長觸發：** `{'已上修放大 (+)' if eps_triggered else '未觸發'}` (近4季 TTM EPS: {fin_ttm} > 最近年報 EPS: {annual_eps_last})")
     st.markdown(f"⚡ **動態放大係數 ($Amp Factor$)：** **`{amp_factor:.3f}x`**")
-    st.markdown(f"💬 **非線性指數情緒溢價 ($\Delta PE_{{sentiment}}$)：** **`{sentiment_exp:+.2f} 倍`** (基於動態放大係數與情緒分數: {sentiment}/10)")
-    st.markdown(f"🚀 **非線性指數成長溢價 ($\Delta PE_{{growth}}$)：** **`+{growth_exp:.2f} 倍`** (基於動態放大係數與成長評分: {growth_score}/10)")
+    st.markdown(f"💬 **非線性指數情緒溢價 ($\Delta PE_{{sentiment}}$)：** **`{sentiment_exp:+.2f} 倍`** (基於情緒分數: {sentiment}/10)")
+    st.markdown(f"🚀 **非線性指數成長溢價 ($\Delta PE_{{growth}}$)：** **`+{growth_exp:.2f} 倍`** (基於成長評分: {growth_score}/10)")
     st.markdown(f"✨ **調整後 Forward EPS：** **`{eps_fwd_adjusted:.2f} 元`** (基礎: {eps_fwd_base} 元, 指數加權乘數: {multiplier:.3f}x)")
     st.markdown(f"📊 **動態本益比 ($PE_{{target}}$)：** **`{pe_target:.1f} 倍`** (基礎PE: {pe_base} + 動態情緒溢價: {sentiment_exp:+.2f} + 動態成長溢價: +{growth_exp:.2f} - 風險折價: -{risk})")
     
@@ -368,3 +364,4 @@ with col_right:
     st.markdown("**下行風險追蹤 (Risk Matrix)**")
     df_risks = pd.DataFrame(insights['risks'], columns=['風險維度', '關鍵影響因子', '影響評估與應對建議'])
     st.dataframe(df_risks, use_container_width=True, hide_index=True)
+
