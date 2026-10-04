@@ -3,15 +3,17 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import yfinance as yf
-from typing import Dict, Any, Optional
+from datetime import datetime
+from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 核心引擎 (智慧代碼判斷版 v2.4)
+# 核心引擎 (加入公司全名與時脈資訊 v2.5)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
-    def __init__(self, df: pd.DataFrame, ticker: str, timeframe: str = "Daily"):
+    def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str = "Daily"):
         self.df = df.copy()
         self.ticker = ticker
+        self.company_name = company_name
         self.timeframe = timeframe
         self.lambda_decay = 1.0 / 4.16  
         
@@ -93,16 +95,20 @@ class IChingTrinitySpatiotemporalEngine:
             "secondary_space_target": f"{bu_yi['core_support'] * 0.98:.2f} – {bu_yi['core_support']:.2f}"
         }
 
-    def generate_full_report(self, current_regime_bars: int) -> str:
+    def generate_full_report(self, current_regime_bars: int, last_trading_date: str, report_time: str) -> str:
         bian = self.analyze_bian_yi()
         buyi = self.analyze_bu_yi()
         jian = self.analyze_jian_yi(current_regime_bars)
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 2.4 版】實戰分析報告
-標的: {self.ticker} | 週期: {self.timeframe} | 太極原點 P0: {buyi['p0']:.2f}
+【易經三義量化時空分析 2.5 版】實戰分析報告
 ==================================================
+公司名稱: {self.company_name}
+標的代碼: {self.ticker} | 週期: {self.timeframe}
+最後交易日: {last_trading_date} | 報告產出時脈: {report_time}
+當前收盤/太極原點 P0: {buyi['p0']:.2f}
+--------------------------------------------------
 
 一、 易經三義量化時空矩陣
 --------------------------------------------------
@@ -135,7 +141,7 @@ class IChingTrinitySpatiotemporalEngine:
 =================================================="""
         return report
 
-    def plot_spatiotemporal_matrix(self):
+    def plot_spatiotemporal_matrix(self, last_trading_date: str):
         plt.style.use('dark_background')
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [2, 1]}, sharex=True)
         
@@ -147,7 +153,7 @@ class IChingTrinitySpatiotemporalEngine:
         
         ax1.axhline(buyi['core_support'], color='lime', linestyle='--', linewidth=2, label=f"Core Support: {buyi['core_support']:.2f}")
         ax1.axhline(buyi['core_resistance'], color='red', linestyle='--', linewidth=2, label=f"Resistance: {buyi['core_resistance']:.2f}")
-        ax1.set_title(f"{self.ticker} - Spatiotemporal Gravity Wells", fontsize=16, fontweight='bold', color='white')
+        ax1.set_title(f"{self.company_name} ({self.ticker}) - Spatiotemporal Gravity Wells (Last: {last_trading_date})", fontsize=15, fontweight='bold', color='white')
         ax1.set_ylabel("Price")
         ax1.legend(loc='upper left', frameon=True, facecolor='black')
         ax1.grid(True, alpha=0.2, linestyle=':')
@@ -156,7 +162,7 @@ class IChingTrinitySpatiotemporalEngine:
         cwtmatr = self._custom_cwt(close, widths)
         
         cax = ax2.pcolormesh(x, widths, np.abs(cwtmatr), shading='gouraud', cmap='magma')
-        ax2.set_title("CWT Energy Scalogram (Dynamics & Invariants)", fontsize=14, color='white')
+        ax2.set_title("CWT Energy Scalogram (Dynamics & Invariants)", fontsize=13, color='white')
         ax2.set_ylabel("Scale (Time Horizon)")
         ax2.set_xlabel("Time (Trading Bars)")
         ax2.invert_yaxis()
@@ -168,31 +174,35 @@ class IChingTrinitySpatiotemporalEngine:
         plt.tight_layout()
         return fig
 
-def fetch_taiwan_stock_data(raw_input: str, period: str) -> tuple[Optional[pd.DataFrame], str]:
-    """智慧判斷上市/上櫃代碼並下載資料"""
+def fetch_taiwan_stock_data(raw_input: str, period: str) -> Tuple[Optional[pd.DataFrame], str, str]:
+    """智慧判斷代碼、抓取資料並取得公司中文/英文名稱"""
     clean_code = raw_input.strip()
     
-    # 如果使用者已經自行加上尾綴，直接處理
     if clean_code.upper().endswith(('.TW', '.TWO', '.US')):
         tickers_to_try = [clean_code]
     else:
-        # 自動組合：優先試上市 (.TW)，若失敗則試上櫃 (.TWO)
         tickers_to_try = [f"{clean_code}.TW", f"{clean_code}.TWO"]
         
     for t in tickers_to_try:
         try:
-            df = yf.download(t, period=period, interval="1d", progress=False)
+            ticker_obj = yf.Ticker(t)
+            df = ticker_obj.history(period=period, interval="1d")
+            
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
+                
             df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
             
             if not df.empty:
+                info = ticker_obj.info
+                # 嘗試取得公司名稱，若無則以代碼代替
+                company_name = info.get('longName') or info.get('shortName') or t
                 market_type = "上市公司" if ".TW" in t and ".TWO" not in t else "上櫃公司"
-                return df, f"{t} ({market_type})"
+                return df, f"{t} ({market_type})", company_name
         except Exception:
             continue
             
-    return None, ""
+    return None, "", ""
 
 # ==========================================
 # Streamlit 前端介面
@@ -204,25 +214,43 @@ st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)
 
 with st.sidebar:
     st.header("參數設定")
-    # 更改提示文字，讓使用者直接輸入代碼即可
     ticker_input = st.text_input("輸入股票代碼 (例如: 2330 或 3293)", value="2330")
     period = st.selectbox("分析週期", ["3mo", "6mo", "1y", "2y"], index=1)
     current_regime_bars = st.slider("當前趨勢已持續 K棒數 (狀態根數)", min_value=1, max_value=13, value=3)
     run_btn = st.button("啟動量化引擎 🚀", use_container_width=True)
 
 if run_btn:
-    with st.spinner(f"正在智慧辨識與獲取代碼 [{ticker_input}] 的歷史數據..."):
-        df_real, resolved_ticker = fetch_taiwan_stock_data(ticker_input, period)
+    with st.spinner(f"正在智慧辨識與獲取代碼 [{ticker_input}] 的歷史數據與公司資訊..."):
+        df_real, resolved_ticker, company_name = fetch_taiwan_stock_data(ticker_input, period)
         
         if df_real is None or df_real.empty:
-            st.error(f"⚠️ 無法獲取代碼 [{ticker_input}] 的資料，請確認代碼是否正確（上市或上櫃皆可）。")
+            st.error(f"⚠️ 無法獲取代碼 [{ticker_input}] 的資料，請確認代碼是否正確。")
         else:
-            engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=resolved_ticker, timeframe=f"Daily ({period})")
-            report_text = engine.generate_full_report(current_regime_bars=current_regime_bars)
-            fig = engine.plot_spatiotemporal_matrix()
+            # 取得時間資訊
+            last_trading_date = df_real.index[-1].strftime('%Y-%m-%d')
+            report_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            current_price = float(df_real['Close'].iloc[-1])
+            prev_price = float(df_real['Close'].iloc[-2]) if len(df_real) > 1 else current_price
+            price_change = current_price - prev_price
+            price_change_pct = (price_change / prev_price) * 100
+            
+            # 初始化引擎
+            engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=resolved_ticker, company_name=company_name, timeframe=f"Daily ({period})")
+            report_text = engine.generate_full_report(current_regime_bars=current_regime_bars, last_trading_date=last_trading_date, report_time=report_time)
+            fig = engine.plot_spatiotemporal_matrix(last_trading_date=last_trading_date)
             
             buyi_data = engine.analyze_bu_yi()
             bian_data = engine.analyze_bian_yi()
+            
+            # 頂部顯示核心即時數據指標看板 (Metric Cards)
+            st.markdown("---")
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("公司名稱", company_name)
+            m2.metric("股票代碼", resolved_ticker)
+            m3.metric("目前收盤價 (P0)", f"{current_price:.2f} 元", f"{price_change:+.2f} ({price_change_pct:+.2f}%)")
+            m4.metric("最後交易日", last_trading_date)
+            m5.metric("報告產出時間", report_time.split()[1]) # 顯示時分秒
+            st.markdown("---")
             
             col1, col2 = st.columns([1.2, 2])
             with col1:
@@ -230,7 +258,7 @@ if run_btn:
                 st.code(report_text, language="text")
                 
             with col2:
-                st.subheader(f"📊 時空共振視覺化矩陣 ({resolved_ticker})")
+                st.subheader("📊 時空共振視覺化矩陣")
                 st.pyplot(fig)
                 
                 st.info(f"""
@@ -238,5 +266,5 @@ if run_btn:
                 1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}` 元。若價格回檔，此線具備強大的結構吸引與支撐防線。
                 2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}` 元。若價格逼近此區間，上檔易受引力約束。
                 3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
-                4. 👁️ **讀圖指引**：上圖藍線觀察價格相對於上下虛線（重力井）的空間位階；下圖熱力圖越亮代表能量越強，深色代表進入蓄能或耗散期。
+                4. 👁️ **讀圖指引**：分析標的為 **{company_name}**，最後交易日為 **{last_trading_date}**。
                 """)
