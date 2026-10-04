@@ -11,7 +11,7 @@ import math
 # ==========================================
 # 0. 頁面基本設定與台灣時區設定
 # ==========================================
-st.set_page_config(page_title="跨領域專家 AI 投資分析 (動態參數放大升級版)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="跨領域專家 AI 投資分析 (技術動能參考版)", layout="wide", page_icon="📈")
 
 def get_taiwan_time_str(format_str='%Y-%m-%d %H:%M:%S'):
     tw_tz = timezone(timedelta(hours=8))
@@ -45,7 +45,7 @@ def get_company_name_and_symbol(symbol):
     if pure_num in common_mapping:
         return common_mapping[pure_num]
     if clean_sym in common_mapping:
-        return clean_sym[clean_sym]
+        return common_mapping[clean_sym]
         
     try:
         tkr = yf.Ticker(symbol)
@@ -62,7 +62,7 @@ def get_company_name_and_symbol(symbol):
     return f"{clean_sym} Corp. ({clean_sym})"
 
 # ==========================================
-# 1. 抓取資料、近4季EPS與產業熱點量化
+# 1. 抓取資料、近4季EPS、產業熱點與技術報酬率
 # ==========================================
 @st.cache_data(ttl=300)
 def get_stock_data_and_metrics(symbol):
@@ -84,19 +84,28 @@ def get_stock_data_and_metrics(symbol):
         hot_1m = 7.5
         hot_3m = 6.8
 
+    ret_05m, ret_3m = 5.2, 14.5  # 預設模擬報酬率
     try:
         tkr = yf.Ticker(symbol)
-        hist = tkr.history(period="5d")
-        if not hist.empty and len(hist) >= 1:
+        hist = tkr.history(period="6mo")
+        if not hist.empty and len(hist) >= 10:
             price = float(hist['Close'].iloc[-1])
             prev_price = float(hist['Close'].iloc[-2]) if len(hist) >= 2 else price
             change_pct = ((price - prev_price) / prev_price) * 100 if prev_price > 0 else 0.0
             trade_date = hist.index[-1].strftime('%Y-%m-%d')
-            return price, change_pct, symbol, trade_date, q_data, annual_eps_last, hot_1m, hot_3m
+            
+            # 計算近 0.5 個月 (~10個交易日) 與近 3 個月 (~60個交易日) 報酬率
+            price_05m_ago = float(hist['Close'].iloc[-10]) if len(hist) >= 10 else price
+            price_3m_ago = float(hist['Close'].iloc[-60]) if len(hist) >= 60 else float(hist['Close'].iloc[0])
+            
+            ret_05m = ((price - price_05m_ago) / price_05m_ago) * 100
+            ret_3m = ((price - price_3m_ago) / price_3m_ago) * 100
+            
+            return price, change_pct, symbol, trade_date, q_data, annual_eps_last, hot_1m, hot_3m, ret_05m, ret_3m
     except Exception:
         pass
         
-    return 591.0, 9.85, symbol, "2026-10-02", q_data, 4.10, 7.5, 6.8
+    return 591.0, 9.85, symbol, "2026-10-02", q_data, 4.10, 7.5, 6.8, ret_05m, ret_3m
 
 def generate_dynamic_insights(symbol, comp_name, hot_1m, hot_3m):
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
@@ -126,7 +135,7 @@ def generate_dynamic_insights(symbol, comp_name, hot_1m, hot_3m):
 # ==========================================
 # 2. 專家級 Word 報告完整生成函數
 # ==========================================
-def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date, hot_1m, hot_3m):
+def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date, hot_1m, hot_3m, ret_05m, ret_3m):
     doc = Document()
     
     title = doc.add_heading(f"{comp_name} 跨領域專家綜合投資分析報告", 0)
@@ -140,6 +149,7 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
     
     doc.add_heading('一、 產業專家視角：技術壁壘與熱點量化', level=1)
     doc.add_paragraph(f"近 1 個月產業熱點量化分數：{hot_1m} / 10 | 近 3 個月熱點分數：{hot_3m} / 10")
+    doc.add_paragraph(f"技術面動能參考：近 0.5 個月報酬率 {ret_05m:+.2f}% | 近 3 個月報酬率 {ret_3m:+.2f}%")
     doc.add_paragraph(insights['ind_1'], style='List Bullet')
     doc.add_paragraph(insights['ind_2'], style='List Bullet')
 
@@ -205,7 +215,7 @@ resolved_symbol = ticker_input
 if ticker_input.isdigit() and len(ticker_input) == 4:
     resolved_symbol = f"{ticker_input}.TWO" if ticker_input == "3105" else f"{ticker_input}.TW"
 
-live_price, live_change, _, trade_date, q_eps_data, annual_eps_last, hot_1m, hot_3m = get_stock_data_and_metrics(resolved_symbol)
+live_price, live_change, _, trade_date, q_eps_data, annual_eps_last, hot_1m, hot_3m, ret_05m, ret_3m = get_stock_data_and_metrics(resolved_symbol)
 company_display_name = get_company_name_and_symbol(resolved_symbol)
 insights = generate_dynamic_insights(resolved_symbol, company_display_name, hot_1m, hot_3m)
 
@@ -240,7 +250,6 @@ beta_g = 0.22
 alpha_s = 0.5
 beta_s = 0.35
 
-# 動態放大機制連動計算
 amp_factor = 1.0
 if hot_triggered:
     amp_factor *= (1.0 + 0.30 * (hot_1m - hot_3m))
@@ -299,9 +308,9 @@ valuation_data = {
     "growth_exp": growth_exp, "amp_factor": amp_factor
 }
 
-st.title("📈 跨領域專家 AI 投資分析生成器 (動態參數放大升級版)")
+st.title("📈 跨領域專家 AI 投資分析生成器 (技術動能參考版)")
 st.subheader(f"🏢 公司名稱：{company_display_name}")
-st.caption(f"報告生成時間：{get_taiwan_time_str()} | 動態參數放大與非線性雙指數量化引擎已啟動 🚀")
+st.caption(f"報告生成時間：{get_taiwan_time_str()} | 技術動能參考指標已載入 🚀")
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("最新收盤價 (即時)", f"${live_price:,.2f}", f"交易日: {trade_date} ({live_change:+.2f}%)")
@@ -312,7 +321,7 @@ col4.metric("目標價合理區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
 st.divider()
 
 with st.spinner("正在生成完整專家級 Word 報告，請稍候..."):
-    word_file_path = generate_word_report(report_data, valuation_data, insights, company_display_name, q_eps_data, trade_date, hot_1m, hot_3m)
+    word_file_path = generate_word_report(report_data, valuation_data, insights, company_display_name, q_eps_data, trade_date, hot_1m, hot_3m, ret_05m, ret_3m)
     with open(word_file_path, "rb") as word_file:
         st.download_button(
             label="📝 下載完整版專家級 Word 報告",
@@ -326,8 +335,15 @@ st.markdown("<br>", unsafe_allow_html=True)
 col_left, col_right = st.columns(2)
 
 with col_left:
-    st.subheader("一、 產業專家視角 (熱點量化)")
+    st.subheader("一、 產業專家視角 (熱點與技術動能)")
     st.info(f"**近 1 個月產業熱點分數：** {hot_1m} / 10\n\n**近 3 個月產業熱點分數：** {hot_3m} / 10\n\n{insights['ind_1']}")
+    
+    # 新增獨立的技術面動能參考指標區塊
+    st.markdown("📊 **技術面價格動能參考指標：**")
+    tm1, tm2 = st.columns(2)
+    tm1.metric("近 0.5 個月報酬率", f"{ret_05m:+.2f}%", "短線資金動能")
+    tm2.metric("近 3 個月報酬率", f"{ret_3m:+.2f}%", "中線趨勢基調")
+    
     st.success(f"**市場護城河：** (近1月熱點量化：{hot_1m}/10)\n\n產品線與市佔優勢：透過技術升級有效鞏固市場競爭壁壘。")
 
     st.subheader("二、 數學家視角 (動態參數放大模型)")
@@ -344,7 +360,7 @@ with col_left:
     sc1, sc2, sc3 = st.columns(3)
     sc1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x", delta_color="off")
     sc2.metric("基準 (Base)", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x", delta_color="normal")
-    sc3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x (動能PE+4x)", delta_color="normal")
+    sc3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {tp_upper:.1f}x (動能PE+4x)", delta_color="normal")
 
 with col_right:
     st.subheader("三、 財金專家視角 (財報成長檢核)")
@@ -364,4 +380,3 @@ with col_right:
     st.markdown("**下行風險追蹤 (Risk Matrix)**")
     df_risks = pd.DataFrame(insights['risks'], columns=['風險維度', '關鍵影響因子', '影響評估與應對建議'])
     st.dataframe(df_risks, use_container_width=True, hide_index=True)
-
