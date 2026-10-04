@@ -38,6 +38,13 @@ st.markdown("""
     }
     .up { color: #28a745; font-weight: bold; }
     .down { color: #dc3545; font-weight: bold; }
+    .sr-box {
+        background-color: #e9ecef;
+        padding: 10px 15px;
+        border-radius: 8px;
+        text-align: center;
+        font-weight: bold;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -71,7 +78,6 @@ selected_freq = st.sidebar.selectbox("選擇 K 棒頻率", list(interval_map.key
 # ==========================================
 # 2. 輔助函數：台股代號解析與中文對應字典
 # ==========================================
-# 常見台股公司中文對應字典（可依需求自行擴充）
 TW_STOCK_NAMES = {
     "3122": "笙泉",
     "2330": "台積電",
@@ -94,7 +100,6 @@ def resolve_yahoo_ticker(code):
   if code == "0000" or code.upper() == "^TWII":
     return "^TWII", "大盤加權指數", "台灣市場指數"
 
-  # 取得中文公司名稱
   company_name = TW_STOCK_NAMES.get(code, f"台股代號 {code}")
 
   if code.isdigit():
@@ -109,7 +114,6 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
     ticker = yf.Ticker(ticker_symbol)
     df = ticker.history(period=period, interval=interval)
     if df.empty and ".TW" in ticker_symbol:
-      # Fallback to 上櫃 (.TWO)
       alt_symbol = ticker_symbol.replace(".TW", ".TWO")
       ticker = yf.Ticker(alt_symbol)
       df = ticker.history(period=period, interval=interval)
@@ -133,7 +137,6 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         }
     )
 
-    # 統一轉為台灣時區 (Asia/Taipei)
     df["DateTime"] = pd.to_datetime(df["DateTime"])
     if df["DateTime"].dt.tz is not None:
       df["DateTime"] = df["DateTime"].dt.tz_convert("Asia/Taipei")
@@ -143,7 +146,6 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
       )
 
     df["DateTime"] = df["DateTime"].dt.strftime("%Y-%m-%d %H:%M:%S")
-
     return df, ticker_symbol
   except Exception as e:
     return None, str(e)
@@ -157,7 +159,6 @@ def run_quant_engine(df):
     df[col] = pd.to_numeric(df[col], errors="coerce")
 
   df = df.dropna(subset=["Close", "High", "Low"]).reset_index(drop=True)
-
   df["Return"] = np.log(df["Close"] / df["Close"].shift(1))
 
   def get_hurst_rs(ts):
@@ -247,7 +248,38 @@ def run_quant_engine(df):
 
 
 # ==========================================
-# 4. 智慧深度量化解析模組
+# 4. 數學動態支撐與壓力計算模組
+# ==========================================
+def calculate_support_resistance(latest):
+  p0 = latest["Close"]
+  garch_v = latest["GARCH_V"] if not pd.isna(latest["GARCH_V"]) else 0.01
+  slope_5 = latest["Slope_5"] if not pd.isna(latest["Slope_5"]) else 0.0
+  slope_acc = latest["Slope_Acc"] if not pd.isna(latest["Slope_Acc"]) else 0.0
+  delta_net_di = (
+      latest["Delta_Net_DI"] if not pd.isna(latest["Delta_Net_DI"]) else 0.0
+  )
+
+  v_safe = max(garch_v, 0.001)
+  garch_band = p0 * v_safe * 1.5
+  mom_direction = 1 if delta_net_di >= 0 else -1
+  momentum_adj = slope_5 + (mom_direction * abs(slope_acc))
+
+  r1 = p0 + garch_band + max(0, momentum_adj)
+  r2 = p0 + (2 * garch_band) + abs(slope_5)
+  s1 = p0 - garch_band - max(0, -momentum_adj)
+  s2 = p0 - (2 * garch_band) - abs(slope_5)
+
+  return {
+      "R2": round(r2, 2),
+      "R1": round(r1, 2),
+      "P0": round(p0, 2),
+      "S1": round(s1, 2),
+      "S2": round(s2, 2),
+  }
+
+
+# ==========================================
+# 5. 智慧深度量化解析模組
 # ==========================================
 def generate_deep_insights(latest, market_state):
   hurst = latest["Hurst"]
@@ -255,7 +287,6 @@ def generate_deep_insights(latest, market_state):
   net_di = latest["Net_DI"]
   delta_net_di = latest["Delta_Net_DI"]
   slope_acc = latest["Slope_Acc"]
-
   insights = []
 
   if hurst > 0.7:
@@ -301,7 +332,7 @@ def generate_deep_insights(latest, market_state):
     )
   elif delta_net_di < 0 and slope_acc > 0:
     insights.append(
-        "**⚠️️ 高檔多頭背離警訊：** 價格雖然維持慣性（加速度轉正/平緩）,但 $\\Delta"
+        "**⚠️ 高檔多頭背離警訊：** 價格雖然維持慣性（加速度轉正/平緩）,但 $\\Delta"
         " Net\_DI$ 動能變化量轉負,顯示高檔追價力道開始收斂,須防範短線過熱拉回。"
     )
   elif delta_net_di > 0 and slope_acc < 0:
@@ -340,7 +371,7 @@ def generate_deep_insights(latest, market_state):
 
 
 # ==========================================
-# 5. 主畫面執行與互動呈現
+# 6. 主畫面執行與互動呈現
 # ==========================================
 if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
   raw_ticker, default_name, market_attr = resolve_yahoo_ticker(
@@ -372,7 +403,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
     chg_class = "up" if chg >= 0 else "down"
     chg_str = f"↓ {chg:.2f} ({chg_pct:.2f}%)" if chg < 0 else f"↑ +{chg:.2f} (+{chg_pct:.2f}%)"
 
-    # --- 輸出個股資訊卡片（加入中文公司名稱） ---
+    # --- 輸出個股資訊卡片 ---
     st.markdown("### 📋 標的即時資訊摘要")
     c1, c2, c3, c4, c5 = st.columns(5)
 
@@ -392,7 +423,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       st.markdown(
           f"""
             <div class="metric-card">
-                <div class="metric-title">股票/指數代號</div>
+                <div class="metric-title">股票/指數代碼</div>
                 <div class="metric-value">{user_input_code}</div>
                 <div class="metric-sub">{used_ticker}</div>
             </div>
@@ -440,6 +471,43 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
           unsafe_allow_html=True,
       )
 
+    # --- 新增：動態數學支撐與壓力區間呈現 ---
+    sr = calculate_support_resistance(latest)
+    st.markdown("---")
+    st.markdown("### 🎯 GARCH & 碎形動態數學支撐與壓力模型")
+
+    sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+    with sc1:
+      st.markdown(
+          f"""<div class="sr-box" style="color: #dc3545;">極限強壓 (R2)<br><span"
+          f" style="font-size: 20px;">{sr['R2']}</span></div>""",
+          unsafe_allow_html=True,
+      )
+    with sc2:
+      st.markdown(
+          f"""<div class="sr-box" style="color: #fd7e14;">短線壓力 (R1)<br><span"
+          f" style="font-size: 20px;">{sr['R1']}</span></div>""",
+          unsafe_allow_html=True,
+      )
+    with sc3:
+      st.markdown(
+          f"""<div class="sr-box" style="color: #007bff;">目前價格 (P0)<br><span"
+          f" style="font-size: 22px;">{sr['P0']}</span></div>""",
+          unsafe_allow_html=True,
+      )
+    with sc4:
+      st.markdown(
+          f"""<div class="sr-box" style="color: #20c997;">短線支撐 (S1)<br><span"
+          f" style="font-size: 20px;">{sr['S1']}</span></div>""",
+          unsafe_allow_html=True,
+      )
+    with sc5:
+      st.markdown(
+          f"""<div class="sr-box" style="color: #28a745;">極限強支撐 (R2)<br><span"
+          f" style="font-size: 20px;">{sr['S2']}</span></div>""",
+          unsafe_allow_html=True,
+      )
+
     # --- 輸出量化模型分析結果表格 ---
     st.markdown("---")
     st.markdown("### 🔬 碎形推論時空組態矩陣分析結果")
@@ -457,7 +525,6 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
         "市場狀態分類",
     ]
     display_df = df_res[output_cols].tail(15).iloc[::-1]
-
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     # --- 輸出智慧推論與實證解析模組 ---
@@ -499,5 +566,5 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
 else:
   st.info(
       "👈 請在左側側邊欄輸入公司代碼（例如 3122、2330 或 0000 大盤），選擇 K"
-      " 棒頻率,然後點擊「開始執行碎形推論」後台引擎按鈕。"
+      " 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
   )
