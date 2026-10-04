@@ -4,10 +4,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import yfinance as yf
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 核心引擎 (加入公司全名與時脈資訊 v2.5)
+# 核心引擎 (時區校準版 v2.6)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str = "Daily"):
@@ -102,11 +103,11 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 2.5 版】實戰分析報告
+【易經三義量化時空分析 2.6 版】實戰分析報告
 ==================================================
 公司名稱: {self.company_name}
 標的代碼: {self.ticker} | 週期: {self.timeframe}
-最後交易日: {last_trading_date} | 報告產出時脈: {report_time}
+最後交易日: {last_trading_date} | 報告產出時脈 (台灣時區): {report_time}
 當前收盤/太極原點 P0: {buyi['p0']:.2f}
 --------------------------------------------------
 
@@ -175,7 +176,6 @@ class IChingTrinitySpatiotemporalEngine:
         return fig
 
 def fetch_taiwan_stock_data(raw_input: str, period: str) -> Tuple[Optional[pd.DataFrame], str, str]:
-    """智慧判斷代碼、抓取資料並取得公司中文/英文名稱"""
     clean_code = raw_input.strip()
     
     if clean_code.upper().endswith(('.TW', '.TWO', '.US')):
@@ -195,7 +195,6 @@ def fetch_taiwan_stock_data(raw_input: str, period: str) -> Tuple[Optional[pd.Da
             
             if not df.empty:
                 info = ticker_obj.info
-                # 嘗試取得公司名稱，若無則以代碼代替
                 company_name = info.get('longName') or info.get('shortName') or t
                 market_type = "上市公司" if ".TW" in t and ".TWO" not in t else "上櫃公司"
                 return df, f"{t} ({market_type})", company_name
@@ -226,9 +225,13 @@ if run_btn:
         if df_real is None or df_real.empty:
             st.error(f"⚠️ 無法獲取代碼 [{ticker_input}] 的資料，請確認代碼是否正確。")
         else:
-            # 取得時間資訊
+            # 強制使用台灣本地時區 (Asia/Taipei)
+            tw_timezone = ZoneInfo("Asia/Taipei")
+            now_tw = datetime.now(tw_timezone)
+            
             last_trading_date = df_real.index[-1].strftime('%Y-%m-%d')
-            report_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            report_time = now_tw.strftime('%Y-%m-%d %H:%M:%S %Z%z')
+            
             current_price = float(df_real['Close'].iloc[-1])
             prev_price = float(df_real['Close'].iloc[-2]) if len(df_real) > 1 else current_price
             price_change = current_price - prev_price
@@ -242,14 +245,14 @@ if run_btn:
             buyi_data = engine.analyze_bu_yi()
             bian_data = engine.analyze_bian_yi()
             
-            # 頂部顯示核心即時數據指標看板 (Metric Cards)
+            # 頂部顯示核心即時數據指標看板
             st.markdown("---")
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("公司名稱", company_name)
             m2.metric("股票代碼", resolved_ticker)
             m3.metric("目前收盤價 (P0)", f"{current_price:.2f} 元", f"{price_change:+.2f} ({price_change_pct:+.2f}%)")
             m4.metric("最後交易日", last_trading_date)
-            m5.metric("報告產出時間", report_time.split()[1]) # 顯示時分秒
+            m5.metric("報告產出時間 (CST)", now_tw.strftime('%H:%M:%S'))
             st.markdown("---")
             
             col1, col2 = st.columns([1.2, 2])
@@ -266,5 +269,5 @@ if run_btn:
                 1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}` 元。若價格回檔，此線具備強大的結構吸引與支撐防線。
                 2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}` 元。若價格逼近此區間，上檔易受引力約束。
                 3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
-                4. 👁️ **讀圖指引**：分析標的為 **{company_name}**，最後交易日為 **{last_trading_date}**。
+                4. 👁️ **讀圖指引**：分析標的為 **{company_name}**，最後交易日為 **{last_trading_date}**（本地產出時脈：{report_time}）。
                 """)
