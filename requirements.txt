@@ -24,4 +24,4 @@ openpyxl
 streamlit
 pandas
 yfinance
-fpdf2
+python-docx
