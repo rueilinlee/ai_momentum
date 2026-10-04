@@ -7,3 +7,7 @@ lightgbm
 shap
 scikit-learn
 matplotlib
+streamlit
+google-genai
+yfinance
+pandas
