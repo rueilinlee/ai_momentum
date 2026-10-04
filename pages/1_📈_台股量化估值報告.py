@@ -37,25 +37,29 @@ with col1:
     )
     submit_btn = st.button("🚀 生成專業報告", type="primary", use_container_width=True)
 
-# 數據抓取函式
+# 數據抓取函式 (加入防錯機制與上市上櫃自動判斷)
 @st.cache_data(ttl=300)
 def fetch_stock_data(ticker_symbol: str):
-    ticker = yf.Ticker(f"{ticker_symbol}.TW")
-    hist = ticker.history(period="5d")
+    ticker_symbol = ticker_symbol.strip()
     
-    if hist.empty:
-        ticker = yf.Ticker(f"{ticker_symbol}.TWO")
-        hist = ticker.history(period="5d")
-        if hist.empty:
-            return None
+    # 依序嘗試 上市 (.TW) 與 上櫃 (.TWO)
+    for suffix in [".TW", ".TWO"]:
+        try:
+            ticker = yf.Ticker(f"{ticker_symbol}{suffix}")
+            hist = ticker.history(period="5d")
             
-    latest_price = hist['Close'].iloc[-1]
-    latest_date = hist.index[-1].strftime("%Y 年 %m 月 %d 日")
-    
-    return {
-        "price": latest_price,
-        "date": latest_date
-    }
+            if not hist.empty:
+                latest_price = hist['Close'].iloc[-1]
+                latest_date = hist.index[-1].strftime("%Y 年 %m 月 %d 日")
+                return {
+                    "price": float(latest_price),
+                    "date": latest_date
+                }
+        except Exception as e:
+            # 發生 HTTPError 或連線失敗時忽略並嘗試下一個格式，防止 App 崩潰
+            continue
+            
+    return None
 
 # 執行分析
 if submit_btn:
@@ -68,7 +72,7 @@ if submit_btn:
             stock_info = fetch_stock_data(stock_id)
             
         if not stock_info:
-            st.error(f"無法取得代號 {stock_id} 的市場數據，請確認代號是否正確。")
+            st.error(f"⚠️ 無法取得代號 {stock_id} 的市場數據。可能是 Yahoo Finance 暫時限制存取，或請確認代號是否正確。")
         else:
             price = stock_info["price"]
             price_date = stock_info["date"]
