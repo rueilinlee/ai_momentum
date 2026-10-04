@@ -16,6 +16,7 @@ TAIWAN_STOCK_NAMES = {
     "2308": "台達電 (2308)",
     "2454": "聯發科 (2454)",
     "3105": "穩懋 (3105)",
+    "3122": "笙泉 (3122)",
     "3293": "鈊象 (3293)",
     "5483": "中美晶 (5483)",
     "2317": "鴻海 (2317)",
@@ -24,7 +25,7 @@ TAIWAN_STOCK_NAMES = {
 }
 
 # ==========================================
-# 核心引擎 (v3.3)
+# 核心引擎 (v3.4)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -120,7 +121,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 3.3 版】實戰分析報告
+【易經三義量化時空分析 3.4 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -236,7 +237,7 @@ def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Opt
             if not df.empty:
                 pure_digits = "0000" if t == '^TWII' else ''.join(filter(str.isdigit, t))
                 
-                # 優先從對照表取得簡潔乾淨的名稱
+                # 名稱解析優先序：1. 內建對照表 2. Yahoo Info 3. 代碼組合
                 if t in TAIWAN_STOCK_NAMES:
                     company_name = TAIWAN_STOCK_NAMES[t]
                 elif pure_digits in TAIWAN_STOCK_NAMES:
@@ -244,9 +245,9 @@ def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Opt
                 else:
                     info = ticker_obj.info
                     yf_name = info.get('longName') or info.get('shortName')
-                    # 清理過長的英文或冗長名稱
-                    if not yf_name or yf_name.upper() in t.upper() or len(yf_name) > 16:
-                        company_name = f"標的 ({pure_digits})"
+                    if not yf_name or yf_name.upper() in t.upper() or len(yf_name) > 16 or not any(('\u4e00' <= c <= '\u9fff') for c in yf_name):
+                        # 若無中文名稱或名稱過長，則以台股代碼標示
+                        company_name = f"台股標的 ({pure_digits})"
                     else:
                         company_name = yf_name
                     
@@ -267,7 +268,7 @@ st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)
 
 with st.sidebar:
     st.header("參數設定")
-    ticker_input = st.text_input("輸入股票代碼 (輸入 0000 代表大盤)", value="0000")
+    ticker_input = st.text_input("輸入股票代碼 (輸入 0000 代表大盤)", value="3122")
     
     timeframe_choice = st.selectbox(
         "選擇分析週期 (Timeframe)",
@@ -327,8 +328,8 @@ if run_btn:
                 
                 st.info(f"""
                 📌 **【圖表判讀重點摘要】**
-                1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔,此線具備強大的結構吸引與支撐防線。
-                2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間,上檔易受引力約束。
+                1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔，此線具備強大的結構吸引與支撐防線。
+                2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間，上檔易受引力約束。
                 3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
-                4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**,最後 K 棒時間：**{last_bar_time}**。
+                4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{last_bar_time}**。
                 """)
