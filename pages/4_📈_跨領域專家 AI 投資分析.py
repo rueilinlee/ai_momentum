@@ -8,27 +8,27 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import tempfile
 
 # ==========================================
-# 0. 頁面基本設定與正確中文公司名稱對應
+# 0. 頁面基本設定與智慧名稱解析 (格式：中文名稱 (公司代碼))
 # ==========================================
 st.set_page_config(page_title="跨領域專家 AI 投資分析", layout="wide", page_icon="📈")
 
 @st.cache_data(ttl=3600)
 def get_company_name_from_yahoo(symbol):
-    """透過代號精準對應台美股正確中文公司名稱"""
+    """透過代號精準對應中文公司名稱，格式為：中文名稱 (公司代碼)"""
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
     common_mapping = {
-        "2330": "台灣積體電路製造股份有限公司 (台積電)",
-        "2454": "聯發科技股份有限公司 (聯發科)",
-        "2317": "鴻海精密工業股份有限公司 (鴻海)",
-        "3105": "穩懋半導體股份有限公司 (穩懋)",
-        "2308": "台達電子工業股份有限公司 (台達電)",
-        "2881": "富邦金融控股股份有限公司 (富邦金)",
-        "2882": "國泰金融控股股份有限公司 (國泰金)",
-        "NVDA": "NVIDIA Corporation (輝達)",
-        "AAPL": "Apple Inc. (蘋果)",
-        "TSLA": "Tesla, Inc. (特斯拉)",
-        "MSFT": "Microsoft Corporation (微軟)",
-        "GOOGL": "Alphabet Inc. (Google)"
+        "2330": "台灣積體電路製造股份有限公司 (2330)",
+        "2454": "聯發科技股份有限公司 (2454)",
+        "2317": "鴻海精密工業股份有限公司 (2317)",
+        "3105": "穩懋半導體股份有限公司 (3105)",
+        "2308": "台達電子工業股份有限公司 (2308)",
+        "2881": "富邦金融控股股份有限公司 (2881)",
+        "2882": "國泰金融控股股份有限公司 (2882)",
+        "NVDA": "NVIDIA Corporation (NVDA)",
+        "AAPL": "Apple Inc. (AAPL)",
+        "TSLA": "Tesla, Inc. (TSLA)",
+        "MSFT": "Microsoft Corporation (MSFT)",
+        "GOOGL": "Alphabet Inc. (GOOGL)"
     }
     if clean_sym in common_mapping:
         return common_mapping[clean_sym]
@@ -37,10 +37,10 @@ def get_company_name_from_yahoo(symbol):
         info = tkr.info
         long_name = info.get('longName') or info.get('shortName')
         if long_name:
-            return long_name
+            return f"{long_name} ({clean_sym})"
     except Exception:
         pass
-    return f"公司代號: {symbol}"
+    return f"公司代號: {symbol} ({symbol})"
 
 # ==========================================
 # 1. 抓取近 4 季 EPS 並精準標註 2026Q2/Q1 等季度
@@ -140,7 +140,7 @@ def get_live_price(ticker_symbol):
 def generate_word_report(data, val, insights, comp_name, q_eps_list):
     doc = Document()
     
-    title = doc.add_heading(f"{comp_name} ({data['symbol']}) 跨領域專家綜合投資分析報告", 0)
+    title = doc.add_heading(f"{comp_name} 跨領域專家綜合投資分析報告", 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
     doc.add_paragraph(f"公司名稱：{comp_name}")
@@ -286,7 +286,7 @@ valuation_data = {
 }
 
 st.title("📈 跨領域專家 AI 投資分析生成器 (台/美股通用)")
-st.subheader(f"🏢 公司名稱：{company_display_name} ({resolved_symbol})")
+st.subheader(f"🏢 公司名稱：{company_display_name}")
 st.caption(f"報告生成時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 col1, col2, col3, col4 = st.columns(4)
@@ -297,11 +297,11 @@ col4.metric("目標價合理區間", f"${tp_lower:,.0f} ~ ${tp_upper:,.0f}")
 
 st.divider()
 
-with st.spinner("正在生成完整專家級 Word 報告（含 2026Q2/Q1 財報），請稍候..."):
+with st.spinner("正在生成完整專家級 Word 報告，請稍候..."):
     word_file_path = generate_word_report(report_data, valuation_data, insights, company_display_name, q_eps_data)
     with open(word_file_path, "rb") as word_file:
         st.download_button(
-            label="📝 下載完整版專家級 Word 報告 (含 2026Q2/Q1 財報)",
+            label="📝 下載完整版專家級 Word 報告",
             data=word_file,
             file_name=f"{resolved_symbol}_AI_Investment_Report.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
