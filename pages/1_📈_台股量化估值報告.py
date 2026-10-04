@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 from google import genai
 import pandas as pd
-import traceback # 新增：用於捕捉詳細錯誤日誌
+import traceback
 
 # 子頁面設定
 st.set_page_config(
@@ -19,10 +19,10 @@ with st.sidebar:
     st.header("⚙️ 模組參數設定")
     gemini_api_key = st.text_input("輸入 Gemini API Key", type="password", key="stock_report_api_key")
     
-    # 確保使用官方支援的最新模型名稱
+    # 【關鍵修正】：鎖定使用唯一被系統認可的最新模型
     selected_model = st.selectbox(
         "選擇 Gemini 模型",
-        ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"],
+        ["gemini-3.8-flash"], 
         key="stock_report_model"
     )
     st.markdown("---")
@@ -144,7 +144,6 @@ if submit_btn:
             report_placeholder = st.empty()
             
             try:
-                # 這裡確保 API Key 有正確傳入
                 client = genai.Client(api_key=gemini_api_key.strip())
                 response = client.models.generate_content_stream(
                     model=selected_model,
@@ -165,7 +164,10 @@ if submit_btn:
                     mime="text/markdown"
                 )
             except Exception as e:
-                # 錯誤捕捉與顯示區
-                st.error(f"❌ 報告生成失敗：{str(e)}")
-                with st.expander("🔍 點擊展開詳細錯誤代碼 (請將此處內容貼給我)"):
-                    st.code(traceback.format_exc(), language="python")
+                # 若遇到 503 會在此處友善提示
+                if "503" in str(e):
+                    st.warning("⚠️ 目前 Google AI 伺服器正在塞車 (503 High Demand)，這是暫時現象。請等待 10~30 秒後，再次點擊「生成專業報告」按鈕即可。")
+                else:
+                    st.error(f"❌ 報告生成失敗：{str(e)}")
+                    with st.expander("🔍 點擊展開詳細錯誤代碼"):
+                        st.code(traceback.format_exc(), language="python")
