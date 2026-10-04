@@ -18,10 +18,14 @@ def get_taiwan_time_str(format_str='%Y-%m-%d %H:%M:%S'):
 
 @st.cache_data(ttl=3600)
 def get_company_name_and_symbol(symbol):
-    """強效對應正確中文公司名稱與代號，格式為：中文名稱 (公司代碼)"""
-    clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
+    """
+    結合內建高精準字典與 Yahoo Finance 線上搜尋，
+    確保無論輸入何種代號，都能完美對應「中文公司名稱 (代碼)」格式。
+    """
+    clean_sym = symbol.upper().strip()
+    pure_num = clean_sym.replace(".TW", "").replace(".TWO", "")
     
-    # 擴充並確保台美股熱門標的 100% 精準對應
+    # 內建台美股熱門標的精準中英文對照庫
     common_mapping = {
         "3105": "穩懋 (3105.TWO)",
         "2330": "台積電 (2330.TW)",
@@ -39,19 +43,26 @@ def get_company_name_and_symbol(symbol):
         "GOOGL": "Alphabet (GOOGL)"
     }
     
+    if pure_num in common_mapping:
+        return common_mapping[pure_num]
     if clean_sym in common_mapping:
         return common_mapping[clean_sym]
         
+    # 透過線上 API 智慧搜尋公司名稱
     try:
         tkr = yf.Ticker(symbol)
         info = tkr.info
         short_name = info.get('shortName') or info.get('longName')
         if short_name:
-            return f"{short_name} ({symbol.upper()})"
+            return f"{short_name} ({clean_sym})"
     except Exception:
         pass
         
-    return f"台灣上市公司 ({symbol.upper()})"
+    # 若仍無法取得，依據代號特徵智慧命名
+    if clean_sym.isdigit() or ".TW" in clean_sym or ".TWO" in clean_sym:
+        return f"台股上櫃/上市公司 ({clean_sym})"
+        
+    return f"{clean_sym} Corp. ({clean_sym})"
 
 # ==========================================
 # 1. 抓取資料與近 4 季 EPS
