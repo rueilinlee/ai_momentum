@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import warnings
 import requests
+import re  # 新增：用來解析中文網頁標題
 
 warnings.filterwarnings('ignore')
 
@@ -39,30 +40,25 @@ def run_quant_system(stock_code, exchange="TW", window=252):
             st.error(f"❌ 找不到 {stock_code} 的股價資料，或遭遇 Yahoo Finance 暫時封鎖，請稍後再試。")
             return
 
-        # --- 修正版：擷取股價名稱、最新價格與時間 ---
+        # --- 升級版：直接去台灣 Yahoo 股市抓「中文名稱」 ---
         valid_stock_data = market_data[stock_yf].dropna()
         latest_price = valid_stock_data.iloc[-1]
         latest_date = valid_stock_data.index[-1].strftime('%Y-%m-%d')
         
         stock_name = stock_code
         try:
-            # 優先使用 Yahoo Search API (最穩定，可精準抓出中文或 KY 簡稱)
-            search_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={stock_yf}"
-            res = session.get(search_url, timeout=5)
-            data = res.json()
-            if 'quotes' in data and len(data['quotes']) > 0:
-                # 依序嘗試抓取短名或長名
-                stock_name = data['quotes'][0].get('shortname') or data['quotes'][0].get('longname') or stock_code
-            else:
-                # 備用方案：使用傳統的 info 屬性
-                info = yf.Ticker(stock_yf, session=session).info
-                stock_name = info.get('shortName') or info.get('longName') or stock_code
+            # 請求台灣 Yahoo 股市個股專頁
+            tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_code}"
+            res = session.get(tw_yahoo_url, timeout=5)
+            # 網頁的標題通常是: <title>台積電(2330) - 股價走勢...
+            match = re.search(r'<title>(.*?)\(', res.text)
+            if match:
+                extracted_name = match.group(1).strip()
+                # 確保沒有抓到預設的錯誤標題
+                if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
+                    stock_name = extracted_name
         except Exception:
             pass
-            
-        # 若抓取到的名稱仍與代碼完全相同，給予一個預設文字防呆
-        if str(stock_name) == str(stock_code):
-            stock_name = "台股標的"
 
         # 準備進行特徵工程的報酬率數據
         returns = market_data[[stock_yf, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
@@ -155,14 +151,14 @@ def run_quant_system(stock_code, exchange="TW", window=252):
         elif latest_proba < 0.45 and (beta3_trend_val < 0 or gamma_trend_val < 0):
             action_plan = "❄️ 強烈保守觀望：AI 不看好且純度或資金動能衰退，極高機率落後大盤，建議避開。"
         else:
-            action_plan = "⚖️ 中性震盪：多空訊號分歧 (可能正在築底或盤頭)，等待右側趨勢明朗。"
+            action_plan = "⚖️️ 中性震盪：多空訊號分歧 (可能正在築底或盤頭)，等待右側趨勢明朗。"
 
         # 顯示指標卡片
         st.markdown("### 🔮 未來 5 日預測與位階狀態")
         col1, col2, col3 = st.columns(3)
-        col1.metric("AI 預測擊敗大盤未來5日勝率", f"{latest_proba:.2%}")
-        col2.metric("NVDA含量純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
-        col3.metric("追隨NVDA資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
+        col1.metric("AI 預測擊敗大盤未來5日之勝率", f"{latest_proba:.2%}")
+        col2.metric("NDVA含量純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
+        col3.metric("追隨NDVA資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
         
         st.info(f"**💡 系統策略建議：** {action_plan}")
 
