@@ -17,9 +17,11 @@ st.caption("內建「投資報告專業 1.3 版」邏輯：自動判斷 P/E 與 
 with st.sidebar:
     st.header("⚙️ 模組參數設定")
     gemini_api_key = st.text_input("輸入 Gemini API Key", type="password", key="stock_report_api_key")
+    
+    # 這裡更新為最新的 Gemini 3.8 模型
     selected_model = st.selectbox(
         "選擇 Gemini 模型",
-        ["gemini-2.5-flash", "gemini-2.5-pro"],
+        ["gemini-3.8-flash", "gemini-3.8-pro"],
         key="stock_report_model"
     )
     st.markdown("---")
@@ -56,7 +58,6 @@ def fetch_stock_data(ticker_symbol: str):
                     "date": latest_date
                 }
         except Exception as e:
-            # 發生 HTTPError 或連線失敗時忽略並嘗試下一個格式，防止 App 崩潰
             continue
             
     return None
