@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 常見台股（上市櫃）名稱對照表
+# 常見台股（上市櫃）標準中文名稱對照表
 # ==========================================
 TAIWAN_STOCK_NAMES = {
     "^TWII": "台灣加權指數 (TAIEX)",
@@ -25,7 +25,7 @@ TAIWAN_STOCK_NAMES = {
 }
 
 # ==========================================
-# 核心引擎 (v3.4)
+# 核心引擎 (v3.5)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -121,7 +121,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 3.4 版】實戰分析報告
+【易經三義量化時空分析 3.5 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -193,6 +193,33 @@ class IChingTrinitySpatiotemporalEngine:
         plt.tight_layout()
         return fig
 
+def clean_and_format_company_name(pure_code: str, yf_name: Optional[str]) -> str:
+    """智慧將 Yahoo 傳回的名稱或代碼轉譯為標準中文公司名稱"""
+    # 1. 優先檢查內建對照表
+    if pure_code in TAIWAN_STOCK_NAMES:
+        return TAIWAN_STOCK_NAMES[pure_code]
+        
+    # 2. 檢查 Yahoo 傳回的名稱是否有包含中文字元
+    if yf_name:
+        has_chinese = any(('\u4e00' <= c <= '\u9fff') for c in yf_name)
+        if has_chinese and len(yf_name) <= 16:
+            # 清理常見冗長字眼
+            cleaned = yf_name.replace("股份有限公司", "").replace("公司", "").strip()
+            return f"{cleaned} ({pure_code})"
+            
+    # 3. 針對常見特定代碼手動對應備援
+    fallback_mapping = {
+        "3122": "笙泉 (3122)",
+        "3105": "穩懋 (3105)",
+        "3293": "鈊象 (3293)",
+        "5483": "中美晶 (5483)"
+    }
+    if pure_code in fallback_mapping:
+        return fallback_mapping[pure_code]
+        
+    # 4. 若全無中文，則以標準格式輸出
+    return f"台股標的 ({pure_code})"
+
 def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Optional[pd.DataFrame], str, str, str]:
     clean_code = raw_input.strip()
     
@@ -237,20 +264,10 @@ def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Opt
             if not df.empty:
                 pure_digits = "0000" if t == '^TWII' else ''.join(filter(str.isdigit, t))
                 
-                # 名稱解析優先序：1. 內建對照表 2. Yahoo Info 3. 代碼組合
-                if t in TAIWAN_STOCK_NAMES:
-                    company_name = TAIWAN_STOCK_NAMES[t]
-                elif pure_digits in TAIWAN_STOCK_NAMES:
-                    company_name = TAIWAN_STOCK_NAMES[pure_digits]
-                else:
-                    info = ticker_obj.info
-                    yf_name = info.get('longName') or info.get('shortName')
-                    if not yf_name or yf_name.upper() in t.upper() or len(yf_name) > 16 or not any(('\u4e00' <= c <= '\u9fff') for c in yf_name):
-                        # 若無中文名稱或名稱過長，則以台股代碼標示
-                        company_name = f"台股標的 ({pure_digits})"
-                    else:
-                        company_name = yf_name
-                    
+                info = ticker_obj.info
+                yf_name = info.get('longName') or info.get('shortName')
+                
+                company_name = clean_and_format_company_name(pure_digits, yf_name)
                 market_type = "大盤指數" if t == '^TWII' else ("上市公司" if ".TW" in t else "上櫃公司")
                 return df, pure_digits, market_type, company_name
         except Exception:
@@ -322,14 +339,13 @@ if run_btn:
                 st.subheader("📝 策略決策報告")
                 st.code(report_text, language="text")
                 
-            with col2:
-                st.subheader(f"📊 時空共振視覺化矩陣 ({timeframe_choice})")
-                st.pyplot(fig)
-                
-                st.info(f"""
-                📌 **【圖表判讀重點摘要】**
-                1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔，此線具備強大的結構吸引與支撐防線。
-                2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間，上檔易受引力約束。
-                3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
-                4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{last_bar_time}**。
-                """)
+            col2.subheader(f"📊 時空共振視覺化矩陣 ({timeframe_choice})")
+            col2.pyplot(fig)
+            
+            col2.info(f"""
+            📌 **【圖表判讀重點摘要】**
+            1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔，此線具備強大的結構吸引與支撐防線。
+            2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間，上檔易受引力約束。
+            3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
+            4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{last_bar_time}**。
+            """)
