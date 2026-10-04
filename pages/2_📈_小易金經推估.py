@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import yfinance as yf
 import urllib.request
 import urllib.parse
-import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
@@ -198,7 +197,6 @@ class IChingTrinitySpatiotemporalEngine:
         return fig
 
 def search_stock_name_via_google(pure_code: str) -> str:
-    """透過模擬 Google 搜尋引擎抓取台股代碼對應的正確中文公司名稱"""
     if pure_code in TAIWAN_STOCK_NAMES:
         return TAIWAN_STOCK_NAMES[pure_code]
         
@@ -312,14 +310,10 @@ if run_btn:
             tw_timezone = ZoneInfo("Asia/Taipei")
             now_tw = datetime.now(tw_timezone)
             
-            # 智慧拆分最後 K 棒的日期與時間，避免單一欄位過長被截斷
-            last_timestamp_str = df_real.index[-1].strftime('%Y-%m-%d %H:%M') if 'm' in timeframe_choice.lower() else df_real.index[-1].strftime('%Y-%m-%d')
-            if ' ' in last_timestamp_str:
-                last_bar_date, last_bar_time_only = last_timestamp_str.split(' ')
-            else:
-                last_bar_date, last_bar_time_only = last_timestamp_str, "收盤定價"
-
-            report_time = now_tw.strftime('%Y-%m-%d %H:%M:%S')
+            # 準備時間戳記字串
+            full_last_time = df_real.index[-1].strftime('%Y-%m-%d %H:%M') if 'm' in timeframe_choice.lower() else df_real.index[-1].strftime('%Y-%m-%d')
+            report_date_str = now_tw.strftime('%Y-%m-%d')
+            report_time_str = now_tw.strftime('%H:%M:%S')
             
             current_price = float(df_real['Close'].iloc[-1])
             prev_price = float(df_real['Close'].iloc[-2]) if len(df_real) > 1 else current_price
@@ -327,21 +321,28 @@ if run_btn:
             price_change_pct = (price_change / prev_price) * 100
             
             engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=pure_code, company_name=company_name, timeframe=timeframe_choice)
-            report_text = engine.generate_full_report(current_regime_bars=current_regime_bars, last_bar_time=last_timestamp_str, report_time=report_time)
-            fig = engine.plot_spatiotemporal_matrix(last_bar_time=last_timestamp_str)
+            report_text = engine.generate_full_report(current_regime_bars=current_regime_bars, last_bar_time=full_last_time, report_time=f"{report_date_str} {report_time_str}")
+            fig = engine.plot_spatiotemporal_matrix(last_bar_time=full_last_time)
             
             buyi_data = engine.analyze_bu_yi()
             bian_data = engine.analyze_bian_yi()
             
             st.markdown("---")
-            # 調整為 6 欄佈局，讓日期與時間上下分行，完美解決截斷問題
-            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            # 維持原本精準的五欄結構
+            m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("標的名稱", company_name)
             m2.metric("股票/指數代碼", pure_code)
             m3.metric("市場屬性", market_type)
             m4.metric("目前收盤價 (P0)", f"{current_price:.2f}", f"{price_change:+.2f} ({price_change_pct:+.2f}%)")
-            m5.metric("最後K棒日期", last_bar_date)
-            m6.metric("最後K棒時間 (CST)", last_bar_time_only)
+            
+            # 第五欄：以 HTML Markdown 達成上下分行（日期在上、時間在下）排版，防止省略號
+            with m5:
+                st.markdown(f"""
+                <div style="font-size: 14px; color: #a0a0a0; margin-bottom: 2px;">最後 K 棒時間</div>
+                <div style="font-size: 18px; font-weight: bold; color: #ffffff; line-height: 1.2;">{full_last_time}</div>
+                <div style="font-size: 14px; color: #a0a0a0; margin-top: 10px; margin-bottom: 2px;">報告產出時間 (CST)</div>
+                <div style="font-size: 16px; font-weight: bold; color: #00ffcc; line-height: 1.2;">{report_date_str}<br>{report_time_str}</div>
+                """, unsafe_allow_html=True)
                 
             st.markdown("---")
             
@@ -358,5 +359,5 @@ if run_btn:
             1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔，此線具備強大的結構吸引與支撐防線。
             2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間，上檔易受引力約束。
             3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
-            4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{last_timestamp_str}**。
+            4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{full_last_time}**。
             """)
