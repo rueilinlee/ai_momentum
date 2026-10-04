@@ -11,7 +11,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 import matplotlib.pyplot as plt
 from datetime import datetime
 import warnings
-import requests  # 新增 requests 模組來建立偽裝連線
+import requests
 
 warnings.filterwarnings('ignore')
 
@@ -27,19 +27,31 @@ def run_quant_system(stock_code, exchange="TW", window=252):
         end_date = datetime.today().strftime('%Y-%m-%d')
         fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
         
-        # --- 建立偽裝 Session，避免被 Yahoo 封鎖 (HTTP 429) ---
+        # --- 建立偽裝 Session，避免被 Yahoo 封鎖 ---
         session = requests.Session()
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
         })
         
-        # 將 session 參數加入 download 中，繞過阻擋機制
         market_data = yf.download(tickers, start=fetch_start, end=end_date, progress=False, session=session)['Close']
         
         if stock_yf not in market_data.columns or market_data[stock_yf].dropna().empty:
             st.error(f"❌ 找不到 {stock_code} 的股價資料，或遭遇 Yahoo Finance 暫時封鎖，請稍後再試。")
             return
 
+        # --- 新增：擷取股價名稱、最新價格與時間 ---
+        valid_stock_data = market_data[stock_yf].dropna()
+        latest_price = valid_stock_data.iloc[-1]
+        latest_date = valid_stock_data.index[-1].strftime('%Y-%m-%d')
+        
+        try:
+            # 嘗試抓取股票中文名稱，若抓不到則預設顯示代碼
+            stock_info = yf.Ticker(stock_yf, session=session).info
+            stock_name = stock_info.get('shortName', stock_code)
+        except:
+            stock_name = stock_code
+
+        # 準備進行特徵工程的報酬率數據
         returns = market_data[[stock_yf, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
         rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
         df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
@@ -102,6 +114,14 @@ def run_quant_system(stock_code, exchange="TW", window=252):
         # --- 輸出到 Web UI ---
         st.success(f"✅ AI 模型訓練完成！平均 Test ACC: {sum(cv_test_acc)/5:.2%} | 平均 Test AUC: {sum(cv_test_auc)/5:.4f}")
 
+        # --- 新增的標的資訊區塊 ---
+        st.markdown("### 📌 標的資訊與最新報價")
+        info_col1, info_col2, info_col3 = st.columns(3)
+        info_col1.metric("股價名稱 (代碼)", f"{stock_name} ({stock_code})")
+        info_col2.metric("最新收盤價", f"{latest_price:.2f}")
+        info_col3.metric("資料更新時間", f"{latest_date}")
+        st.markdown("---")
+
         # 5. 預測與策略邏輯
         latest_features = X.iloc[[-1]]
         latest_proba = model.predict_proba(latest_features)[:, 1][0]
@@ -127,9 +147,9 @@ def run_quant_system(stock_code, exchange="TW", window=252):
         # 顯示指標卡片
         st.markdown("### 🔮 未來 5 日預測與位階狀態")
         col1, col2, col3 = st.columns(3)
-        col1.metric("AI預測擊敗大盤未來5日勝率", f"{latest_proba:.2%}")
-        col2.metric("含NVDA純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
-        col3.metric("NVDA追隨者資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
+        col1.metric("AI 預測擊敗大盤勝率", f"{latest_proba:.2%}")
+        col2.metric("Beta_3 純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
+        col3.metric("Gamma 資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
         
         st.info(f"**💡 系統策略建議：** {action_plan}")
 
