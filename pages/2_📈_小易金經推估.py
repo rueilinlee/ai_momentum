@@ -8,22 +8,23 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 常見台股名稱對照表（支援 0000 對應大盤）
+# 常見台股（上市櫃）名稱對照表
 # ==========================================
 TAIWAN_STOCK_NAMES = {
     "^TWII": "台灣加權指數 (TAIEX)",
-    "2330": "台積電 (TSMC)",
-    "2308": "台達電 (Delta)",
-    "2454": "聯發科 (MediaTek)",
-    "5483": "中美晶 (中美矽晶)",
-    "3293": "鈊象 (IGS)",
-    "2317": "鴻海 (Hon Hai)",
-    "2881": "富邦金 (Fubon Financial)",
-    "2882": "國泰金 (Cathay Financial)"
+    "2330": "台積電 (2330)",
+    "2308": "台達電 (2308)",
+    "2454": "聯發科 (2454)",
+    "3105": "穩懋 (3105)",
+    "3293": "鈊象 (3293)",
+    "5483": "中美晶 (5483)",
+    "2317": "鴻海 (2317)",
+    "2881": "富邦金 (2881)",
+    "2882": "國泰金 (2882)"
 }
 
 # ==========================================
-# 核心引擎 (v3.2)
+# 核心引擎 (v3.3)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -119,7 +120,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 3.2 版】實戰分析報告
+【易經三義量化時空分析 3.3 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -194,7 +195,6 @@ class IChingTrinitySpatiotemporalEngine:
 def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Optional[pd.DataFrame], str, str, str]:
     clean_code = raw_input.strip()
     
-    # 智慧對應：如果輸入 0000，自動轉換為 Yahoo Finance 的大盤指數 ^TWII
     if clean_code == "0000":
         clean_code = "^TWII"
 
@@ -234,19 +234,24 @@ def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Opt
             df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
             
             if not df.empty:
-                info = ticker_obj.info
-                yf_name = info.get('longName') or info.get('shortName')
+                pure_digits = "0000" if t == '^TWII' else ''.join(filter(str.isdigit, t))
                 
+                # 優先從對照表取得簡潔乾淨的名稱
                 if t in TAIWAN_STOCK_NAMES:
                     company_name = TAIWAN_STOCK_NAMES[t]
-                elif not yf_name or yf_name.upper() in t.upper() or len(yf_name) > 30:
-                    company_name = TAIWAN_STOCK_NAMES.get(t.split('.')[0], f"金融標的 ({t})")
+                elif pure_digits in TAIWAN_STOCK_NAMES:
+                    company_name = TAIWAN_STOCK_NAMES[pure_digits]
                 else:
-                    company_name = yf_name
+                    info = ticker_obj.info
+                    yf_name = info.get('longName') or info.get('shortName')
+                    # 清理過長的英文或冗長名稱
+                    if not yf_name or yf_name.upper() in t.upper() or len(yf_name) > 16:
+                        company_name = f"標的 ({pure_digits})"
+                    else:
+                        company_name = yf_name
                     
                 market_type = "大盤指數" if t == '^TWII' else ("上市公司" if ".TW" in t else "上櫃公司")
-                display_code = "0000" if t == '^TWII' else pure_digits
-                return df, display_code, market_type, company_name
+                return df, pure_digits, market_type, company_name
         except Exception:
             continue
             
@@ -262,7 +267,6 @@ st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)
 
 with st.sidebar:
     st.header("參數設定")
-    # 預設輸入 0000
     ticker_input = st.text_input("輸入股票代碼 (輸入 0000 代表大盤)", value="0000")
     
     timeframe_choice = st.selectbox(
@@ -276,7 +280,7 @@ with st.sidebar:
 
 if run_btn:
     with st.spinner(f"正在智慧辨識與獲取代碼 [{ticker_input}] 的 [{timeframe_choice}] 歷史數據..."):
-        df_real, resolved_ticker, market_type, company_name = fetch_stock_or_index_data(ticker_input, timeframe_choice)
+        df_real, pure_code, market_type, company_name = fetch_stock_or_index_data(ticker_input, timeframe_choice)
         
         if df_real is None or df_real.empty:
             st.error(f"⚠️ 無法獲取代碼 [{ticker_input}] 的資料，請確認代碼是否正確。")
@@ -292,7 +296,7 @@ if run_btn:
             price_change = current_price - prev_price
             price_change_pct = (price_change / prev_price) * 100
             
-            engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=resolved_ticker, company_name=company_name, timeframe=timeframe_choice)
+            engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=pure_code, company_name=company_name, timeframe=timeframe_choice)
             report_text = engine.generate_full_report(current_regime_bars=current_regime_bars, last_bar_time=last_bar_time, report_time=report_time)
             fig = engine.plot_spatiotemporal_matrix(last_bar_time=last_bar_time)
             
@@ -302,7 +306,7 @@ if run_btn:
             st.markdown("---")
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("標的名稱", company_name)
-            m2.metric("股票/指數代碼", resolved_ticker)
+            m2.metric("股票/指數代碼", pure_code)
             m3.metric("市場屬性", market_type)
             m4.metric("目前收盤價 (P0)", f"{current_price:.2f}", f"{price_change:+.2f} ({price_change_pct:+.2f}%)")
             
@@ -323,8 +327,8 @@ if run_btn:
                 
                 st.info(f"""
                 📌 **【圖表判讀重點摘要】**
-                1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔，此線具備強大的結構吸引與支撐防線。
-                2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間，上檔易受引力約束。
+                1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔,此線具備強大的結構吸引與支撐防線。
+                2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間,上檔易受引力約束。
                 3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
-                4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({resolved_ticker})**，最後 K 棒時間：**{last_bar_time}**。
+                4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**,最後 K 棒時間：**{last_bar_time}**。
                 """)
