@@ -28,7 +28,7 @@ TAIWAN_STOCK_NAMES = {
 }
 
 # ==========================================
-# 核心引擎 (v3.8)
+# 核心引擎 (v3.9)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -124,7 +124,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 3.8 版】實戰分析報告
+【易經三義量化時空分析 3.9 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -319,6 +319,15 @@ if run_btn:
             price_change = current_price - prev_price
             price_change_pct = (price_change / prev_price) * 100
             
+            # 智慧解析名稱與括號代碼，用於第一欄上下換行顯示
+            if "(" in company_name and ")" in company_name:
+                parts = company_name.split("(")
+                pure_name_only = parts[0].strip()
+                code_bracket_part = f"({parts[1]}"
+            else:
+                pure_name_only = company_name
+                code_bracket_part = f"({pure_code})"
+
             engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=pure_code, company_name=company_name, timeframe=timeframe_choice)
             report_text = engine.generate_full_report(current_regime_bars=current_regime_bars, last_bar_time=full_last_time, report_time=f"{report_date_str} {report_time_str}")
             fig = engine.plot_spatiotemporal_matrix(last_bar_time=full_last_time)
@@ -329,12 +338,20 @@ if run_btn:
             st.markdown("---")
             # 維持原本五欄結構
             m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("標的名稱", company_name)
+            
+            # 第一欄：名稱在上、括號代碼在下（黑色字體、自動換行）
+            with m1:
+                st.markdown(f"""
+                <div style="font-size: 14px; color: #333333; margin-bottom: 2px; font-weight: 600;">標的名稱</div>
+                <div style="font-size: 20px; font-weight: bold; color: #111111; line-height: 1.2;">{pure_name_only}</div>
+                <div style="font-size: 16px; font-weight: bold; color: #333333; line-height: 1.2; margin-top: 2px;">{code_bracket_part}</div>
+                """, unsafe_allow_html=True)
+
             m2.metric("股票/指數代碼", pure_code)
             m3.metric("市場屬性", market_type)
             m4.metric("目前收盤價 (P0)", f"{current_price:.2f}", f"{price_change:+.2f} ({price_change_pct:+.2f}%)")
             
-            # 第五欄：以 HTML 排版，標題與時間戳記均採用黑色，並維持日期在上、時間在下的上下結構
+            # 第五欄：時間戳記（黑色字體、上下結構）
             with m5:
                 st.markdown(f"""
                 <div style="font-size: 14px; color: #333333; margin-bottom: 2px; font-weight: 600;">最後 K 棒時間</div>
@@ -358,5 +375,5 @@ if run_btn:
             1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}`。若價格回檔，此線具備強大的結構吸引與支撐防線。
             2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}`。若價格逼近此區間，上檔易受引力約束。
             3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
-            4. 👁️️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{full_last_time}**。
+            4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{full_last_time}**。
             """)
