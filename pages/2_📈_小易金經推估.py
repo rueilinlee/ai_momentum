@@ -6,7 +6,7 @@ import yfinance as yf
 from typing import Dict, Any
 
 # ==========================================
-# 核心引擎 (相容性與長度對齊修正版 v2.2)
+# 核心引擎 (加入圖表自動解說模組 v2.3)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, timeframe: str = "Daily"):
@@ -32,7 +32,6 @@ class IChingTrinitySpatiotemporalEngine:
         return (2.0 / (np.sqrt(3.0 * a) * (np.pi ** 0.25))) * (1.0 - x ** 2) * np.exp(-0.5 * x ** 2)
 
     def _custom_cwt(self, data: np.ndarray, widths: np.ndarray) -> np.ndarray:
-        """替代 scipy.signal.cwt 的高效卷積實作（加入嚴格長度對齊防呆）"""
         data_len = len(data)
         cwtmatr = np.zeros((len(widths), data_len))
         
@@ -41,7 +40,6 @@ class IChingTrinitySpatiotemporalEngine:
             if points % 2 == 0:
                 points += 1
             wavelet = self._ricker_wavelet(points, width)
-            
             conv_result = np.convolve(data, wavelet, mode='same')
             
             if len(conv_result) > data_len:
@@ -50,7 +48,6 @@ class IChingTrinitySpatiotemporalEngine:
                 conv_result = np.pad(conv_result, (0, data_len - len(conv_result)), 'edge')
                 
             cwtmatr[i, :] = conv_result
-            
         return cwtmatr
 
     def analyze_bian_yi(self) -> Dict[str, Any]:
@@ -103,7 +100,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 2.2 版】實戰分析報告
+【易經三義量化時空分析 2.3 版】實戰分析報告
 標的: {self.ticker} | 週期: {self.timeframe} | 太極原點 P0: {buyi['p0']:.2f}
 ==================================================
 
@@ -135,7 +132,7 @@ class IChingTrinitySpatiotemporalEngine:
    預計於 {turning['primary_window']} 進入動能耗散臨界點。
 2. 逆數策略: 靜待價格進入 {turning['primary_space_target']} 重力井，
    並觀察小波動能是否平鋪，作為高期望值 E[R] 之決策對位點。
-=================================================="""
+==================================================="""""
         return report
 
     def plot_spatiotemporal_matrix(self):
@@ -203,13 +200,27 @@ if run_btn:
                 report_text = engine.generate_full_report(current_regime_bars=current_regime_bars)
                 fig = engine.plot_spatiotemporal_matrix()
                 
+                # 取得內部數值供說明摘要使用
+                buyi_data = engine.analyze_bu_yi()
+                bian_data = engine.analyze_bian_yi()
+                
                 col1, col2 = st.columns([1.2, 2])
                 with col1:
                     st.subheader("📝 策略決策報告")
                     st.code(report_text, language="text")
+                    
                 with col2:
                     st.subheader("📊 時空共振視覺化矩陣")
                     st.pyplot(fig)
+                    
+                    # --- 新增：圖表簡短說明區塊 ---
+                    st.info(f"""
+                    📌 **【圖表判讀重點摘要】**
+                    1. 🟢 **核心重力井 (支撐)**：`{buyi_data['core_support']}` 元。若價格回檔，此線具備強大的結構吸引與支撐防線。
+                    2. 🔴 **極限/中繼壓力**：`{buyi_data['core_resistance']}` 元。若價格逼近此區間，上檔易受引力約束。
+                    3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
+                    4. 👁️ **讀圖指引**：上圖藍線觀察價格相對於上下虛線（重力井）的空間位階；下圖熱力圖越亮代表能量越強，深色代表進入蓄能或耗散期。
+                    """)
                     
         except Exception as e:
             st.error(f"執行時發生錯誤: {e}")
