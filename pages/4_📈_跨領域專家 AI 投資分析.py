@@ -121,7 +121,7 @@ def generate_dynamic_insights(symbol, comp_name, hot_1m, hot_3m):
         }
 
 # ==========================================
-# 2. 專家級 Word 報告完整生成函數
+# 2. 專家級 Word 報告完整生成函數 (修正特殊符號)
 # ==========================================
 def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date, hot_1m, hot_3m):
     doc = Document()
@@ -141,10 +141,10 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
     doc.add_paragraph(insights['ind_2'], style='List Bullet')
 
     doc.add_heading('二、 數學家視角：非線性指數成長與動能加權模型', level=1)
-    doc.add_paragraph("本模型導入非線性指數函數計算「成長展望溢價」 ($\Delta PE_{growth} = \alpha (e^{\beta \cdot G} - 1)$)，並結合熱點動能與 TTM 財報超越年報檢核：")
+    doc.add_paragraph("本模型導入非線性指數函數計算成長展望溢價，並結合熱點動能與 TTM 財報超越年報檢核：")
     doc.add_paragraph(f"• 熱點動能觸發狀態：{'【已觸發指數上修】(近1月熱點 > 近3月熱點)' if val['hot_triggered'] else '【標準狀態】'}")
     doc.add_paragraph(f"• 財報成長觸發狀態：{'【已觸發指數上修】(近4季 TTM EPS > 最近年度 EPS)' if val['eps_triggered'] else '【標準狀態】'}")
-    doc.add_paragraph(f"• 非線性指數成長溢價 ($\Delta PE_{growth}$)：+{val['growth_exp']:.2f} 倍")
+    doc.add_paragraph(f"• 非線性指數成長溢價 (Delta PE growth)：+{val['growth_exp']:.2f} 倍")
     doc.add_paragraph(f"• 綜合上修後調整預估 EPS：{val['adj_eps_fwd']:.2f} 元 (原始基礎: {data['raw_eps_fwd']} 元)")
     doc.add_paragraph(f"• 最終基準目標價 TP_base = {val['tp_base']:,.2f} 元 (潛在空間 {val['upside_base']:.1f}%)")
 
@@ -208,7 +208,7 @@ is_target = ("3105" in resolved_symbol)
 default_eps = 8.51 if is_target else 15.0
 default_pe = 35.0 if is_target else 22.0
 default_sen = 8.0 if is_target else 7.0
-default_gro_score = 7.5 if is_target else 6.0  # 成長展望評分 (0~10)
+default_gro_score = 7.5 if is_target else 6.0  
 default_ris = 1.5 if is_target else 1.0
 
 if live_price == 0.0:
@@ -227,16 +227,13 @@ risk = st.sidebar.slider("下行風險折價 (-PE)", min_value=0.0, max_value=10
 # ==========================================
 fin_ttm = round(sum([v for _, v in q_eps_data]), 2)
 
-# 觸發條件判斷
 hot_triggered = (hot_1m > hot_3m)
 eps_triggered = (fin_ttm > annual_eps_last)
 
-# 1. 成長展望溢價改採非線性指數函數計算：Delta_PE_growth = alpha * (exp(beta * G) - 1)
 alpha = 0.8
 beta = 0.22
 growth_exp = alpha * (math.exp(beta * growth_score) - 1)
 
-# 2. 採用指數函數進行 EPS 權重加乘與目標價上修
 multiplier = 1.0
 if hot_triggered:
     multiplier *= math.exp((hot_1m - hot_3m) * 0.08)
@@ -247,10 +244,8 @@ if eps_triggered:
 eps_fwd_adjusted = eps_fwd_base * multiplier
 
 delta_sentiment = (sentiment - 5.0) * 0.4
-# 總體本益比結合非線性指數成長溢價
 pe_target = pe_base + delta_sentiment + growth_exp - risk
 
-# 樂觀 PE 以模型動能 PE 為基準外加樂觀擴張溢價 (+4.0x)
 pe_upper = pe_target + 4.0      
 pe_lower = pe_base + 0 + 0 - 3.0                       
 
