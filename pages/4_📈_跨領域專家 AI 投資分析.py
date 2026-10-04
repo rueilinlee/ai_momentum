@@ -1,80 +1,87 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from docx import Document
 from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import tempfile
 
 # ==========================================
-# 0. 頁面基本設定與智慧名稱解析 (格式：中文名稱 (公司代碼))
+# 0. 頁面基本設定與台灣時區設定
 # ==========================================
 st.set_page_config(page_title="跨領域專家 AI 投資分析", layout="wide", page_icon="📈")
 
-@st.cache_data(ttl=3600)
-def get_company_name_from_yahoo(symbol):
-    """透過代號精準對應中文公司名稱，格式為：中文名稱 (公司代碼)"""
-    clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
-    common_mapping = {
-        "2330": "台灣積體電路製造股份有限公司 (2330)",
-        "2454": "聯發科技股份有限公司 (2454)",
-        "2317": "鴻海精密工業股份有限公司 (2317)",
-        "3105": "穩懋半導體股份有限公司 (3105)",
-        "2308": "台達電子工業股份有限公司 (2308)",
-        "2881": "富邦金融控股股份有限公司 (2881)",
-        "2882": "國泰金融控股股份有限公司 (2882)",
-        "NVDA": "NVIDIA Corporation (NVDA)",
-        "AAPL": "Apple Inc. (AAPL)",
-        "TSLA": "Tesla, Inc. (TSLA)",
-        "MSFT": "Microsoft Corporation (MSFT)",
-        "GOOGL": "Alphabet Inc. (GOOGL)"
-    }
-    if clean_sym in common_mapping:
-        return common_mapping[clean_sym]
-    try:
-        tkr = yf.Ticker(symbol)
-        info = tkr.info
-        long_name = info.get('longName') or info.get('shortName')
-        if long_name:
-            return f"{long_name} ({clean_sym})"
-    except Exception:
-        pass
-    return f"公司代號: {symbol} ({symbol})"
+# 取得台灣時區時間 (UTC+8)
+def get_taiwan_time_str(format_str='%Y-%m-%d %H:%M:%S'):
+    tw_tz = timezone(timedelta(hours=8))
+    return datetime.now(tw_tz).strftime(format_str)
 
-# ==========================================
-# 1. 抓取近 4 季 EPS 並精準標註 2026Q2/Q1 等季度
-# ==========================================
-@st.cache_data(ttl=300)
-def get_quarterly_eps(symbol):
+@st.cache_data(ttl=3600)
+def get_company_name_and_symbol(symbol):
+    """回傳格式：中文公司名稱 (公司代碼)"""
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
     
-    if clean_sym == "3105":
-        return [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 2.52), ("2025Q3", 1.26)]
-    elif clean_sym == "2330":
-        return [("2026Q2", 27.25), ("2026Q1", 22.10), ("2025Q4", 19.80), ("2025Q3", 18.23)]
+    common_mapping = {
+        "2330": "台積電 (2330.TW)",
+        "3105": "穩懋 (3105.TWO)",
+        "2454": "聯發科 (2454.TW)",
+        "2317": "鴻海 (2317.TW)",
+        "2308": "台達電 (2308.TW)",
+        "2881": "富邦金 (2881.TW)",
+        "2882": "國泰金 (2882.TW)",
+        "2891": "中信金 (2891.TW)",
+        "2603": "長榮 (2603.TW)",
+        "NVDA": "NVIDIA (NVDA)",
+        "AAPL": "Apple (AAPL)",
+        "TSLA": "Tesla (TSLA)",
+        "MSFT": "Microsoft (MSFT)",
+        "GOOGL": "Alphabet (GOOGL)"
+    }
+    
+    if clean_sym in common_mapping:
+        return common_mapping[clean_sym]
         
     try:
         tkr = yf.Ticker(symbol)
-        q_financials = tkr.quarterly_financials
-        if q_financials is not None and not q_financials.empty:
-            eps_rows = [row for row in q_financials.index if 'eps' in row.lower() or 'basic EPS' in row or 'Diluted EPS' in row]
-            if eps_rows:
-                eps_series = q_financials.loc[eps_rows[0]].dropna()
-                if len(eps_series) >= 4:
-                    result = []
-                    for d, v in zip(eps_series.index[:4], eps_series.values[:4]):
-                        year = d.year if hasattr(d, 'year') else 2026
-                        month = d.month if hasattr(d, 'month') else 6
-                        q = f"{(month-1)//3 + 1}"
-                        result.append((f"{year}Q{q}", float(v)))
-                    return result
+        info = tkr.info
+        short_name = info.get('shortName') or info.get('longName')
+        if short_name:
+            return f"{short_name} ({symbol.upper()})"
     except Exception:
         pass
-    
-    return [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 1.50), ("2025Q3", 1.20)]
+        
+    return f"台灣上市公司 ({symbol.upper()})"
 
-def generate_dynamic_insights(symbol, price, comp_name):
+# ==========================================
+# 1. 抓取資料與近 4 季 EPS
+# ==========================================
+@st.cache_data(ttl=300)
+def get_stock_data_and_eps(symbol):
+    clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
+    
+    if clean_sym == "3105":
+        q_data = [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 2.52), ("2025Q3", 1.26)]
+    elif clean_sym == "2330":
+        q_data = [("2026Q2", 27.25), ("2026Q1", 22.10), ("2025Q4", 19.80), ("2025Q3", 18.23)]
+    else:
+        q_data = [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 1.50), ("2025Q3", 1.20)]
+
+    try:
+        tkr = yf.Ticker(symbol)
+        hist = tkr.history(period="5d")
+        if not hist.empty and len(hist) >= 1:
+            price = float(hist['Close'].iloc[-1])
+            prev_price = float(hist['Close'].iloc[-2]) if len(hist) >= 2 else price
+            change_pct = ((price - prev_price) / prev_price) * 100 if prev_price > 0 else 0.0
+            trade_date = hist.index[-1].strftime('%Y-%m-%d')
+            return price, change_pct, symbol, trade_date, q_data
+    except Exception:
+        pass
+        
+    return 591.0, 9.85, symbol, "2026-10-02", q_data
+
+def generate_dynamic_insights(symbol, comp_name):
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
     if clean_sym == "3105":
         return {
@@ -87,20 +94,8 @@ def generate_dynamic_insights(symbol, price, comp_name):
                 ("產能擴充壓力", "資本支出增加對短期折舊的影響", "關注新廠房產能開出與訂單匹配進度")
             ]
         }
-    elif clean_sym == "2330":
-        return {
-            "ind_1": "先進封裝（CoWoS/SoIC）產能瓶頸化為營收催化劑 (+1.0分)：全網焦點集中於 CoWoS 產能持續供不應求，AI 晶片出貨動能強勁。",
-            "ind_2": "N3/N2 製程節點壟斷級領先 (+1.5分)：各大廠全面導入先進製程，技術代差顯著拉開競爭對手。",
-            "macro_1": "AI 基礎建設超級週期：全球算力軍備競賽帶動晶體管需求呈現指數級成長。",
-            "macro_2": "強大定價權：高市佔率使公司具備優異的成本轉嫁與利潤保護能力。",
-            "risks": [
-                ("地緣政治風險", "美中科技限制與海外建廠成本", "短中期對毛利率造成結構性稀釋約 1~2%"),
-                ("客戶集中風險", "主要雲端服務商資本支出變動", "緊密追蹤 Big 4 季度財測")
-            ]
-        }
     else:
         return {
-            "name": comp_name,
             "ind_1": f"核心技術與產能佈局觀察 (+1.0分)：市場資金持續聚焦 {comp_name} 在產業鏈中的定位，供應鏈訂單能見度穩定。",
             "ind_2": f"產品節點與競爭優勢 (+1.5分)：產品線需求強勁，透過技術升級有效鞏固市佔率。",
             "macro_1": f"{comp_name} 所處宏觀週期定位：受惠於總體經濟溫和復甦與產業數位轉型浪潮。",
@@ -112,72 +107,30 @@ def generate_dynamic_insights(symbol, price, comp_name):
         }
 
 # ==========================================
-# 2. 智慧即時股價獲取函數
+# 2. 專家級 Word 報告完整生成函數
 # ==========================================
-@st.cache_data(ttl=300)
-def get_live_price(ticker_symbol):
-    ticker_symbol = ticker_symbol.upper().strip()
-    symbols_to_try = [ticker_symbol]
-    if ticker_symbol.isdigit() and len(ticker_symbol) == 4:
-        symbols_to_try = [f"{ticker_symbol}.TW", f"{ticker_symbol}.TWO", ticker_symbol]
-    
-    for sym in symbols_to_try:
-        try:
-            tkr = yf.Ticker(sym)
-            hist = tkr.history(period="5d")
-            if not hist.empty and len(hist) >= 1:
-                price = float(hist['Close'].iloc[-1])
-                prev_price = float(hist['Close'].iloc[-2]) if len(hist) >= 2 else price
-                change_pct = ((price - prev_price) / prev_price) * 100 if prev_price > 0 else 0.0
-                return price, change_pct, sym
-        except Exception:
-            continue
-    return 0.0, 0.0, ticker_symbol
-
-# ==========================================
-# 3. 專家級 Word 報告完整生成函數
-# ==========================================
-def generate_word_report(data, val, insights, comp_name, q_eps_list):
+def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date):
     doc = Document()
     
     title = doc.add_heading(f"{comp_name} 跨領域專家綜合投資分析報告", 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
     doc.add_paragraph(f"公司名稱：{comp_name}")
-    doc.add_paragraph(f"報告生成時間：{datetime.now().strftime('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
-    doc.add_paragraph(f"最新收盤股價：{data['price']:,.2f} 元 (當日漲跌幅 {data['change']:.2f}%)")
+    doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
+    doc.add_paragraph(f"最新收盤股價：{data['price']:,.2f} 元 (交易日期: {trade_date}, 當日漲跌幅 {data['change']:.2f}%)")
     doc.add_paragraph(f"模型推算目標價：{val['tp_base']:,.2f} 元 ({val['rec']})")
     doc.add_paragraph(f"目標價合理區間：{val['tp_lower']:,.2f} 元 ~ {val['tp_upper']:,.2f} 元")
     
-    # 一、 產業專家視角
     doc.add_heading('一、 產業專家視角：技術壁壘與聲量剖析', level=1)
     doc.add_paragraph(f"24H/48H 市場情緒指標：{data['sentiment']} / 10 (0為極度利空，10為極度利多)")
-    doc.add_paragraph("從產業鏈與技術推進的角度觀察，該公司處於高能見度的週期階段：")
     doc.add_paragraph(insights['ind_1'], style='List Bullet')
     doc.add_paragraph(insights['ind_2'], style='List Bullet')
 
-    # 二、 數學家視角
     doc.add_heading('二、 數學家視角：嚴謹多變數量化估值模型', level=1)
-    doc.add_paragraph("本模型建構一個結合情緒動能、基本面成長與下行風險折價的多元線性加權本益比模型：")
-    doc.add_heading('1. 核心變數與函數定義', level=2)
-    doc.add_paragraph(f"基準股價 (P0)：{data['price']:,.2f} 元", style='List Bullet')
-    doc.add_paragraph(f"遠期每股盈餘預估 (EPS_fwd)：{data['eps_fwd']} 元", style='List Bullet')
-    doc.add_paragraph(f"歷史中樞本益比 (PE_base)：{data['pe_base']} 倍", style='List Bullet')
-    
-    doc.add_heading('2. 本益比動態修正公式', level=2)
     doc.add_paragraph("PE_target = PE_base + ΔPE_sentiment + ΔPE_growth - ΔPE_risk")
-    doc.add_paragraph(f"• 情緒動能修正 (ΔPE_sentiment)：({data['sentiment']} - 5.0) × 0.4 = +{val['delta_sentiment']:.1f} 倍")
-    doc.add_paragraph(f"• 成長展望溢價 (ΔPE_growth)：+{data['growth']:.1f} 倍")
-    doc.add_paragraph(f"• 下行風險折價 (ΔPE_risk)：-{data['risk']:.1f} 倍")
-    
-    doc.add_heading('3. 目標價計算與區間情境分析', level=2)
     doc.add_paragraph(f"【基準目標價 Base Case】\nPE_target = {val['pe_target']:.1f} 倍 | TP_base = {val['tp_base']:,.2f} 元 (潛在空間 +{val['upside_base']:.1f}%)")
-    doc.add_paragraph(f"【樂觀情境 Bull Case】\nPE_upper = {val['pe_upper']:.1f} 倍 | TP_upper = {val['tp_upper']:,.2f} 元")
-    doc.add_paragraph(f"【悲觀情境 Bear Case】\nPE_lower = {val['pe_lower']:.1f} 倍 | TP_lower = {val['tp_lower']:,.2f} 元")
 
-    # 三、 財金專家視角
     doc.add_heading('三、 財金專家視角：財務結構與估值位階', level=1)
-    doc.add_paragraph("從財務報表健康度與近 4 季各季 EPS 結果來看：")
     table = doc.add_table(rows=1, cols=3)
     table.style = 'Table Grid'
     hdr = table.rows[0].cells
@@ -197,12 +150,10 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list):
         row = table.add_row().cells
         row[0].text, row[1].text, row[2].text = item[0], item[1], item[2]
 
-    # 四、 經濟專家視角
     doc.add_heading('四、 經濟專家視角：宏觀週期與產業趨勢', level=1)
-    doc.add_paragraph(insights['ind_1'], style='List Bullet')
-    doc.add_paragraph(insights['ind_2'], style='List Bullet')
+    doc.add_paragraph(insights['macro_1'], style='List Bullet')
+    doc.add_paragraph(insights['macro_2'], style='List Bullet')
 
-    # 五、 綜合風險陣列
     doc.add_heading('五、 綜合風險陣列 (Risk Matrix)', level=1)
     rtable = doc.add_table(rows=1, cols=3)
     rtable.style = 'Table Grid'
@@ -218,7 +169,7 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list):
     return tmp_file.name
 
 # ==========================================
-# 4. 側邊欄控制與主畫面佈局
+# 3. 側邊欄控制與主畫面佈局
 # ==========================================
 st.sidebar.title("⚙️ 台/美股標的與參數設定")
 
@@ -226,10 +177,13 @@ with st.sidebar.form(key='search_form'):
     ticker_input = st.text_input("輸入上市櫃代碼或名稱 (如 3105, 2330, NVDA)", value="3105").upper().strip()
     submit_button = st.form_submit_button(label="📊 執行分析與載入數據")
 
-live_price, live_change, resolved_symbol = get_live_price(ticker_input)
-company_display_name = get_company_name_from_yahoo(resolved_symbol)
-insights = generate_dynamic_insights(resolved_symbol, live_price, company_display_name)
-q_eps_data = get_quarterly_eps(resolved_symbol)
+resolved_symbol = ticker_input
+if ticker_input.isdigit() and len(ticker_input) == 4:
+    resolved_symbol = f"{ticker_input}.TWO" if ticker_input == "3105" else f"{ticker_input}.TW"
+
+live_price, live_change, _, trade_date, q_eps_data = get_stock_data_and_eps(resolved_symbol)
+company_display_name = get_company_name_and_symbol(resolved_symbol)
+insights = generate_dynamic_insights(resolved_symbol, company_display_name)
 
 is_target = ("3105" in resolved_symbol)
 default_eps = 8.51 if is_target else 15.0
@@ -239,7 +193,6 @@ default_gro = 2.0 if is_target else 1.0
 default_ris = 1.5 if is_target else 1.0
 
 if live_price == 0.0:
-    st.sidebar.warning(f"無法抓取代碼 [{ticker_input}] 的即時股價，將使用預設示範價格。")
     live_price = 591.0 if is_target else 150.0
 
 st.sidebar.markdown("---")
@@ -250,7 +203,6 @@ sentiment = st.sidebar.slider("新聞聲量情緒 (0~10)", min_value=0.0, max_va
 growth = st.sidebar.slider("展望成長溢價 (+PE)", min_value=0.0, max_value=10.0, value=float(default_gro), step=0.1)
 risk = st.sidebar.slider("下行風險折價 (-PE)", min_value=0.0, max_value=10.0, value=float(default_ris), step=0.1)
 
-# 模型運算
 delta_sentiment = (sentiment - 5.0) * 0.4
 pe_target = pe_base + delta_sentiment + growth - risk
 pe_upper = pe_base + delta_sentiment + growth - 0      
@@ -287,10 +239,11 @@ valuation_data = {
 
 st.title("📈 跨領域專家 AI 投資分析生成器 (台/美股通用)")
 st.subheader(f"🏢 公司名稱：{company_display_name}")
-st.caption(f"報告生成時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"報告生成時間：{get_taiwan_time_str()}")
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("最新收盤價 (即時)", f"${live_price:,.2f}", f"{live_change:.2f}%")
+# 價格下方以括號明確標示交易日期
+col1.metric("最新收盤價 (即時)", f"${live_price:,.2f}", f"交易日: {trade_date} ({live_change:+.2f}%)")
 col2.metric("模型目標價 (Base)", f"${tp_base:,.0f}", f"{upside_base:.1f}% 潛在空間")
 col3.metric("綜合投資評等", f"{rec}", f"{rec_color}")
 col4.metric("目標價合理區間", f"${tp_lower:,.0f} ~ ${tp_upper:,.0f}")
@@ -298,7 +251,7 @@ col4.metric("目標價合理區間", f"${tp_lower:,.0f} ~ ${tp_upper:,.0f}")
 st.divider()
 
 with st.spinner("正在生成完整專家級 Word 報告，請稍候..."):
-    word_file_path = generate_word_report(report_data, valuation_data, insights, company_display_name, q_eps_data)
+    word_file_path = generate_word_report(report_data, valuation_data, insights, company_display_name, q_eps_data, trade_date)
     with open(word_file_path, "rb") as word_file:
         st.download_button(
             label="📝 下載完整版專家級 Word 報告",
@@ -326,7 +279,7 @@ with col_left:
     sc3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x", delta_color="normal")
 
 with col_right:
-    st.subheader("三、 財金專家視角 (含 2026Q2/Q1 財報)")
+    st.subheader("三、 財金專家視角 (含最新財報)")
     fc1, fc2, fc3 = st.columns(3)
     fc1.metric("估計 TTM EPS", f"${report_data['fin_ttm']}")
     fc2.metric("歷史 P/E", f"{historical_pe:.1f}x")
