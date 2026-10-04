@@ -13,22 +13,28 @@ import urllib.request
 st.set_page_config(page_title="跨領域專家 AI 投資分析", layout="wide", page_icon="📈")
 
 # ==========================================
-# 1. 自動下載 Google 開源中文字型函數
+# 1. 自動下載開源中文字型 (加入防阻擋機制)
 # ==========================================
 @st.cache_resource
 def get_chinese_font():
-    """確保雲端環境有中文字型可供 PDF 匯出使用"""
-    font_path = "NotoSansTC-Regular.ttf"
+    """確保雲端環境有中文字型可供 PDF 匯出使用，使用穩定開源的台北黑體"""
+    font_path = "TaipeiSansTC.ttf"
     if not os.path.exists(font_path):
-        # 從 Google Fonts 的 GitHub 儲存庫直接下載思源黑體
-        font_url = "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
-        urllib.request.urlretrieve(font_url, font_path)
+        try:
+            # 使用台北黑體穩定 Github 連結
+            font_url = "https://raw.githubusercontent.com/ACh-K/Taipei-Sans-TC/master/TaipeiSansTCBeta-Regular.ttf"
+            # 偽裝成瀏覽器發送請求，避免被伺服器阻擋 (解決 HTTPError)
+            req = urllib.request.Request(font_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response, open(font_path, 'wb') as out_file:
+                out_file.write(response.read())
+        except Exception as e:
+            st.error(f"字型下載失敗，PDF 中文可能無法正常顯示。錯誤訊息: {e}")
     return font_path
 
 # ==========================================
 # 2. 即時股價獲取函數
 # ==========================================
-@st.cache_data(ttl=300) # 快取 5 分鐘避免重複請求 API
+@st.cache_data(ttl=300)
 def get_live_price(ticker_symbol):
     try:
         tkr = yf.Ticker(ticker_symbol)
@@ -45,27 +51,28 @@ def get_live_price(ticker_symbol):
         return 0.0, 0.0
 
 # ==========================================
-# 3. PDF 完整報告生成函數 (完美支援中文)
+# 3. PDF 完整報告生成函數
 # ==========================================
 def generate_pdf_report(data_dict, valuation_dict):
     pdf = FPDF()
     pdf.add_page()
     
-    # 獲取並註冊中文字型
     font_path = get_chinese_font()
-    pdf.add_font("ChineseFont", "", font_path)
-    
-    # 設定大標題字型
-    pdf.set_font("ChineseFont", size=16)
+    if os.path.exists(font_path):
+        pdf.add_font("ChineseFont", "", font_path)
+        pdf.set_font("ChineseFont", size=16)
+    else:
+        pdf.set_font("Arial", size=16)
     
     # 標題與基本資料
     pdf.cell(200, 10, txt=f"跨領域專家 AI 投資分析報告 - {data_dict['symbol']}", ln=True, align='C')
-    pdf.set_font("ChineseFont", size=10)
+    
+    if os.path.exists(font_path): pdf.set_font("ChineseFont", size=10)
     pdf.cell(200, 8, txt=f"報告生成時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align='C')
     pdf.ln(5)
     
     # 核心數據區塊
-    pdf.set_font("ChineseFont", size=12)
+    if os.path.exists(font_path): pdf.set_font("ChineseFont", size=12)
     pdf.cell(200, 8, txt=f"【最新收盤價】 ${data_dict['price']:,.2f} (漲跌幅 {data_dict['change']:.2f}%)", ln=True)
     pdf.cell(200, 8, txt=f"【綜合投資評等】 {valuation_dict['rec']} (目標價區間: ${valuation_dict['tp_lower']:,.0f} ~ ${valuation_dict['tp_upper']:,.0f})", ln=True)
     pdf.cell(200, 8, txt=f"【基準目標價】 ${valuation_dict['tp_base']:,.0f} (潛在空間 {valuation_dict['upside_base']:.1f}%)", ln=True)
@@ -80,24 +87,26 @@ def generate_pdf_report(data_dict, valuation_dict):
     ]
     
     for title, content in sections:
-        pdf.set_font("ChineseFont", size=14)
+        if os.path.exists(font_path): pdf.set_font("ChineseFont", size=14)
         pdf.cell(200, 10, txt=title, ln=True)
-        pdf.set_font("ChineseFont", size=11)
+        if os.path.exists(font_path): pdf.set_font("ChineseFont", size=11)
         pdf.multi_cell(0, 8, txt=content)
         pdf.ln(3)
 
-    # 匯出為暫存檔並回傳路徑
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     pdf.output(tmp_file.name)
     return tmp_file.name
 
 # ==========================================
-# 4. 側邊欄：自由輸入與參數調校
+# 4. 側邊欄：自由輸入、按鈕與參數調校
 # ==========================================
 st.sidebar.title("⚙️ 標的與參數設定")
 
-# 自由輸入框 (預設帶入 NVDA)
-ticker_input = st.sidebar.text_input("輸入公司名稱或代碼 (如 NVDA, 2330.TW)", value="NVDA").upper().strip()
+# 【優化】加入 Form 表單與專屬查詢按鈕
+with st.sidebar.form(key='search_form'):
+    ticker_input = st.text_input("輸入公司名稱或代碼 (如 NVDA, 2330.TW)", value="NVDA").upper().strip()
+    # 只有按下這個按鈕，畫面才會重新刷新並抓取資料
+    submit_button = st.form_submit_button(label="📊 執行查詢")
 
 # 抓取即時報價
 live_price, live_change = get_live_price(ticker_input)
@@ -108,7 +117,6 @@ if live_price == 0.0:
 st.sidebar.markdown("---")
 st.sidebar.subheader("動態估值模型變數")
 
-# 互動拉桿 (Sliders)
 eps_fwd = st.sidebar.slider("預估 Forward EPS", min_value=1.0, max_value=200.0, value=4.8, step=0.5)
 pe_base = st.sidebar.number_input("產業中樞本益比 (PE)", value=35.0)
 sentiment = st.sidebar.slider("新聞聲量情緒 (0~10)", min_value=0.0, max_value=10.0, value=8.2, step=0.1)
@@ -138,7 +146,6 @@ elif upside_base <= -10:
 else:
     rec, rec_color = "中性持有", "🟡"
 
-# 打包資料供 UI 與 PDF 報告使用
 report_data = {
     "symbol": ticker_input,
     "price": live_price,
@@ -170,16 +177,17 @@ col4.metric("目標價合理區間", f"${tp_lower:,.0f} ~ ${tp_upper:,.0f}")
 
 st.divider()
 
-# 動態產生並提供 PDF 下載按鈕
-pdf_file_path = generate_pdf_report(report_data, valuation_data)
-with open(pdf_file_path, "rb") as pdf_file:
-    st.download_button(
-        label="📄 下載完整版 PDF 報告",
-        data=pdf_file,
-        file_name=f"{ticker_input}_AI_Investment_Report.pdf",
-        mime="application/pdf",
-        type="primary"
-    )
+# 動態產生 PDF 並提供下載按鈕
+with st.spinner("正在生成 PDF 報告，請稍候..."):
+    pdf_file_path = generate_pdf_report(report_data, valuation_data)
+    with open(pdf_file_path, "rb") as pdf_file:
+        st.download_button(
+            label="📄 下載完整版 PDF 報告",
+            data=pdf_file,
+            file_name=f"{ticker_input}_AI_Investment_Report.pdf",
+            mime="application/pdf",
+            type="primary"
+        )
 st.markdown("<br>", unsafe_allow_html=True)
 
 # 渲染四大專家視角
