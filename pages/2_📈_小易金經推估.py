@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 常見台股名稱對照表（作為備援，確保中文顯示正常）
+# 常見台股名稱對照表（作為備援）
 # ==========================================
 TAIWAN_STOCK_NAMES = {
     "2330": "台積電 (TSMC)",
@@ -22,7 +22,7 @@ TAIWAN_STOCK_NAMES = {
 }
 
 # ==========================================
-# 核心引擎 (v2.7)
+# 核心引擎 (v2.8)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str = "Daily"):
@@ -117,7 +117,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 2.7 版】實戰分析報告
+【易經三義量化時空分析 2.8 版】實戰分析報告
 ==================================================
 公司名稱: {self.company_name}
 標的代碼: {self.ticker} | 週期: {self.timeframe}
@@ -184,7 +184,7 @@ class IChingTrinitySpatiotemporalEngine:
         
         cbar = fig.colorbar(cax, ax=ax2, orientation='horizontal', pad=0.2, aspect=40)
         cbar.set_label('Energy Density (Volatility)', color='white')
-        cbar.ax.tick_params(colors['white'])
+        cbar.ax.tick_params(colors='white')  # <--- 已在此處修正 colors['white'] 為 'white'
         
         plt.tight_layout()
         return fig
@@ -210,7 +210,6 @@ def fetch_taiwan_stock_data(raw_input: str, period: str) -> Tuple[Optional[pd.Da
             
             if not df.empty:
                 info = ticker_obj.info
-                # 優先從 Yahoo info 抓取，若為空或僅回傳英文代碼，則查對照表
                 yf_name = info.get('longName') or info.get('shortName')
                 if not yf_name or yf_name.upper() in t.upper() or len(yf_name) > 30:
                     company_name = TAIWAN_STOCK_NAMES.get(pure_code, f"台灣標的 ({pure_code})")
@@ -259,7 +258,6 @@ if run_btn:
             
             resolved_ticker_display = f"{pure_code} ({market_type})"
             
-            # 初始化引擎
             engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=resolved_ticker_display, company_name=company_name, timeframe=f"Daily ({period})")
             report_text = engine.generate_full_report(current_regime_bars=current_regime_bars, last_trading_date=last_trading_date, report_time=report_time)
             fig = engine.plot_spatiotemporal_matrix(last_trading_date=last_trading_date)
@@ -267,7 +265,6 @@ if run_btn:
             buyi_data = engine.analyze_bu_yi()
             bian_data = engine.analyze_bian_yi()
             
-            # 頂部顯示 5 大獨立欄位看板（避免文字過長被卡住）
             st.markdown("---")
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("公司名稱", company_name)
