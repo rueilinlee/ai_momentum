@@ -1,301 +1,189 @@
-import warnings
-from datetime import datetime, timedelta
-
-import matplotlib.pyplot as plt
-import numpy as np
+import streamlit as st
+import yfinance as yf
 import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+from statsmodels.regression.rolling import RollingOLS
 import lightgbm as lgb
 import shap
-import statsmodels.api as sm
-import yfinance as yf
-from sklearn.base import clone
-from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
-from statsmodels.regression.rolling import RollingOLS
+from sklearn.metrics import accuracy_score, roc_auc_score
+import matplotlib.pyplot as plt
+from datetime import datetime
+import warnings
+import requests  # 新增 requests 模組來建立偽裝連線
 
 warnings.filterwarnings('ignore')
 
-# 台股交易成本：手續費 0.1425%（買賣各一次）＋ 證交稅 0.3%（僅賣出）
-FEE = 0.001425
-TAX = 0.003
-HORIZON = 5          # 預測天數
-THRESHOLD = 0.005    # 超額報酬門檻
+# 設定網頁標題與寬度
+st.set_page_config(page_title="台股 AI 量化預測系統", layout="wide")
 
-
-def AI_動能與機器學習預測系統(stock_code, exchange="TW", window=252, n_splits=5):
-    """
-    Rolling OLS 因子 + LightGBM 預測（修正版）
-    特徵規則：所有特徵只使用「T 日收盤前已知」的資訊，標籤為 T 收盤 -> T+5 收盤，
-    因此特徵一律不再額外 shift；美股資料則統一 shift(1) 對齊台股隔天。
-    """
-    print("\n" + "=" * 55)
-    print(f" 🚀 啟動【{stock_code}】AI 動能檢驗與機器學習預測系統")
-    print("=" * 55)
-
-    # ==========================================
-    # 1. 資料下載與時間對齊（以台股交易日為基準）
-    # ==========================================
-    end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')  # end 為開區間
-    fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
+def run_quant_system(stock_code, exchange="TW", window=252):
     stock_yf = f"{stock_code}.{exchange}"
     tickers = [stock_yf, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']
+    
+    # 1. 資料下載 (使用 st.spinner 顯示載入中)
+    with st.spinner(f'正在下載 {stock_yf} 與市場數據並萃取高階因子，這可能需要幾十秒...'):
+        end_date = datetime.today().strftime('%Y-%m-%d')
+        fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
+        
+        # --- 建立偽裝 Session，避免被 Yahoo 封鎖 (HTTP 429) ---
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
+        })
+        
+        # 將 session 參數加入 download 中，繞過阻擋機制
+        market_data = yf.download(tickers, start=fetch_start, end=end_date, progress=False, session=session)['Close']
+        
+        if stock_yf not in market_data.columns or market_data[stock_yf].dropna().empty:
+            st.error(f"❌ 找不到 {stock_code} 的股價資料，或遭遇 Yahoo Finance 暫時封鎖，請稍後再試。")
+            return
 
-    print(f"📥 [階段 1] 正在下載 {stock_yf} 與市場數據...")
-    raw = yf.download(tickers, start=fetch_start, end=end_date,
-                      progress=False, auto_adjust=True)['Close']
+        returns = market_data[[stock_yf, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
+        rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
+        df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
+        df['RF_TW'] = 0.017 / 365 
 
-    if stock_yf not in raw.columns or raw[stock_yf].dropna().empty:
-        print(f"❌ 找不到 {stock_code} 的股價資料，請確認代碼（上櫃股票請用 exchange='TWO'）。")
-        return
+        # 2. 特徵工程
+        df['Price_Mom_30D'] = (market_data[stock_yf].pct_change(30) - market_data['^TWII'].pct_change(30)).shift(1)
+        df['Price_Mom_5D'] = (market_data[stock_yf].pct_change(5) - market_data['^TWII'].pct_change(5)).shift(1)
+        df['Vol_10D'] = market_data[stock_yf].pct_change().rolling(10).std().shift(1)
 
-    # 以台股交易日為主，美股/利率用 ffill 補假日缺值
-    px = raw.dropna(subset=[stock_yf, '^TWII']).ffill().dropna()
+        delta = market_data[stock_yf].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI_14'] = (100 - (100 / (1 + rs))).shift(1)
+        df = df.dropna()
 
-    rets = px[[stock_yf, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change()
-    us_cols = ['NVDA', '^SOX', '^DJI']
-    rets[us_cols] = rets[us_cols].shift(1)  # 美股前一晚 -> 台股今天
+        # 3. 計量因子
+        Y_ortho = df['NVDA'] - df['RF_US']
+        X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']})
+        X_ortho = sm.add_constant(X_ortho)
+        df['NVDA_Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
 
-    df = rets.copy()
-    df['RF_US'] = ((px['^IRX'] / 100) / 365).shift(1)
-    df['RF_TW'] = 0.017 / 365
+        df['Interaction_Term'] = df['NVDA_Pure_Shock'] * df['Price_Mom_30D']
+        Y_rolling = df[stock_yf] - df['RF_TW']
+        X_rolling = df[['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term']]
+        X_rolling = sm.add_constant(X_rolling)
 
-    # ==========================================
-    # 2. 微觀特徵（皆為 T 日收盤已知）
-    # ==========================================
-    print("⚙️ [階段 2] 構建微觀特徵 (價格動能、RSI與波動率)...")
-    s = px[stock_yf]
-    m = px['^TWII']
-    df['Price_Mom_30D'] = s.pct_change(30) - m.pct_change(30)
-    df['Price_Mom_5D'] = s.pct_change(5) - m.pct_change(5)
-    df['Vol_10D'] = s.pct_change().rolling(10).std()
+        rolling_res = RollingOLS(Y_rolling, X_rolling, window=window).fit()
+        params_df = rolling_res.params
+        
+        df['Beta_3_Rolling'] = params_df['NVDA_Pure_Shock']
+        df['Gamma_Rolling'] = params_df['Interaction_Term']
+        df['Beta_3_Trend_5D'] = df['Beta_3_Rolling'].diff(5)
+        df['Gamma_Trend_5D'] = df['Gamma_Rolling'].diff(5)
+        
+        plot_gamma = params_df['Interaction_Term'].dropna()
+        plot_beta3 = params_df['NVDA_Pure_Shock'].dropna()
 
-    delta = s.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-    df['RSI_14'] = 100 - 100 / (1 + gain / loss)
+        # 4. 機器學習標籤與模型
+        threshold = 0.005 
+        df['Target_Label'] = ((market_data[stock_yf].pct_change(5).shift(-5) - market_data['^TWII'].pct_change(5).shift(-5)) > threshold).astype(int)
+        df_ai = df.dropna()
 
-    df = df.dropna(subset=['NVDA', '^SOX', '^DJI', 'RF_US', 'Price_Mom_30D',
-                           'Price_Mom_5D', 'Vol_10D', 'RSI_14'])
+        features = ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
+        X = df_ai[features]
+        y = df_ai['Target_Label']
 
-    # ==========================================
-    # 3. Rolling OLS 因子（無前視偏誤）
-    # ==========================================
-    print(f"⚙️ [階段 3] 執行 {window} 天 Rolling OLS 萃取計量因子與動能加速度...")
+        model = lgb.LGBMClassifier(n_estimators=80, learning_rate=0.03, max_depth=3, min_child_samples=40, subsample=0.7, colsample_bytree=0.7, reg_alpha=0.5, reg_lambda=0.5, random_state=42, verbose=-1)
+        tscv = TimeSeriesSplit(n_splits=5)
+        gap = 5 
+        cv_test_acc, cv_test_auc = [], []
 
-    # 3a. NVDA 純衝擊：用「前一日」的滾動係數預測今天，殘差即純衝擊
-    Y_ortho = df['NVDA'] - df['RF_US']
-    X_ortho = sm.add_constant(pd.DataFrame({
-        'DJI_Excess': df['^DJI'] - df['RF_US'],
-        'SOX_Excess': df['^SOX'] - df['RF_US'],
-    }))
-    r_ortho = RollingOLS(Y_ortho, X_ortho, window=window).fit()
-    pred = (r_ortho.params.shift(1) * X_ortho).sum(axis=1, min_count=X_ortho.shape[1])
-    df['NVDA_Pure_Shock'] = Y_ortho - pred
-    df = df.dropna(subset=['NVDA_Pure_Shock'])
+        for train_index, test_index in tscv.split(X):
+            safe_train_index = train_index[:-gap] if len(train_index) > gap else train_index
+            model.fit(X.iloc[safe_train_index], y.iloc[safe_train_index])
+            cv_test_acc.append(accuracy_score(y.iloc[test_index], model.predict(X.iloc[test_index])))
+            cv_test_auc.append(roc_auc_score(y.iloc[test_index], model.predict_proba(X.iloc[test_index])[:, 1]))
 
-    # 3b. 主回歸（X 也使用超額報酬，與 Y 定義一致）
-    df['Interaction_Term'] = df['NVDA_Pure_Shock'] * df['Price_Mom_30D']
-    Y_roll = df[stock_yf] - df['RF_TW']
-    X_roll = sm.add_constant(pd.DataFrame({
-        'TWII_Excess': df['^TWII'] - df['RF_TW'],
-        'SOX_Excess': df['^SOX'] - df['RF_US'],
-        'NVDA_Pure_Shock': df['NVDA_Pure_Shock'],
-        'Price_Mom_30D': df['Price_Mom_30D'],
-        'Interaction_Term': df['Interaction_Term'],
-    }))
+        # --- 輸出到 Web UI ---
+        st.success(f"✅ AI 模型訓練完成！平均 Test ACC: {sum(cv_test_acc)/5:.2%} | 平均 Test AUC: {sum(cv_test_auc)/5:.4f}")
 
-    if len(df) <= window + 60:
-        print("❌ 資料長度不足以執行回測與機器學習。")
-        return
+        # 5. 預測與策略邏輯
+        latest_features = X.iloc[[-1]]
+        latest_proba = model.predict_proba(latest_features)[:, 1][0]
+        
+        current_beta3 = plot_beta3.iloc[-1]
+        beta3_trend_val = df_ai['Beta_3_Trend_5D'].iloc[-1]
+        beta3_trend_str = "上升 ↗" if beta3_trend_val > 0 else "下降 ↘"
+        
+        current_gamma = plot_gamma.iloc[-1]
+        gamma_trend_val = df_ai['Gamma_Trend_5D'].iloc[-1]
+        gamma_trend_str = "加速湧入 ↗" if gamma_trend_val > 0 else "動能衰退 ↘"
+        gamma_status = f"過熱追高區 ({gamma_trend_str})" if current_gamma > 0 else f"冷卻/均值回歸區 ({gamma_trend_str})"
 
-    params_df = RollingOLS(Y_roll, X_roll, window=window).fit().params
-    df['Beta_3_Rolling'] = params_df['NVDA_Pure_Shock']
-    df['Gamma_Rolling'] = params_df['Interaction_Term']
-    df['Beta_3_Trend_5D'] = df['Beta_3_Rolling'].diff(5)
-    df['Gamma_Trend_5D'] = df['Gamma_Rolling'].diff(5)
-
-    plot_gamma = df['Gamma_Rolling'].dropna()
-    plot_beta3 = df['Beta_3_Rolling'].dropna()
-
-    # ==========================================
-    # 4. 標籤
-    # ==========================================
-    print(f"🎯 [階段 4] 標籤建構 (未來 {HORIZON} 日擊敗大盤 > {THRESHOLD:.1%})...")
-    df['Future_Excess_Ret'] = (s.pct_change(HORIZON).shift(-HORIZON)
-                               - m.pct_change(HORIZON).shift(-HORIZON))
-
-    features = ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D',
-                'NVDA_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
-    base_features = ['Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
-
-    # 「最新一列」不需要標籤，先取出供預測使用
-    df_feat = df.dropna(subset=features)
-    latest_row = df_feat.iloc[[-1]]
-
-    df_ai = df_feat.dropna(subset=['Future_Excess_Ret']).copy()
-    df_ai['Target_Label'] = (df_ai['Future_Excess_Ret'] > THRESHOLD).astype(int)
-    X, y = df_ai[features], df_ai['Target_Label']
-    base_rate = y.mean()
-    print(f"   樣本數: {len(X)} | 正類基準率 (擊敗大盤 > {THRESHOLD:.1%}): {base_rate:.2%}")
-
-    # ==========================================
-    # 5. 交叉驗證（gap 防重疊標籤洩漏）＋簡單基準模型
-    # ==========================================
-    print("🧠 [階段 5] 啟動防洩漏交叉驗證 (gap) 與正則化 LightGBM...")
-    model = lgb.LGBMClassifier(
-        n_estimators=80, learning_rate=0.03, max_depth=3, min_child_samples=40,
-        subsample=0.7, subsample_freq=1, colsample_bytree=0.7,
-        reg_alpha=0.5, reg_lambda=0.5, random_state=42, verbose=-1
-    )
-
-    tscv = TimeSeriesSplit(n_splits=n_splits, gap=HORIZON)
-    tr_acc, tr_auc, te_acc, te_auc, base_auc = [], [], [], [], []
-    oos_proba = pd.Series(np.nan, index=X.index)
-    last_fold = None
-
-    print("-" * 65)
-    for fold, (tr_idx, te_idx) in enumerate(tscv.split(X), 1):
-        X_tr, X_te = X.iloc[tr_idx], X.iloc[te_idx]
-        y_tr, y_te = y.iloc[tr_idx], y.iloc[te_idx]
-
-        if y_tr.nunique() < 2 or y_te.nunique() < 2:
-            print(f"Fold {fold} | 訓練或測試集只有單一類別，略過")
-            continue
-
-        fold_model = clone(model).fit(X_tr, y_tr)
-        p_tr = fold_model.predict_proba(X_tr)[:, 1]
-        p_te = fold_model.predict_proba(X_te)[:, 1]
-        oos_proba.iloc[te_idx] = p_te
-
-        tr_acc.append(accuracy_score(y_tr, p_tr > 0.5))
-        tr_auc.append(roc_auc_score(y_tr, p_tr))
-        te_acc.append(accuracy_score(y_te, p_te > 0.5))
-        te_auc.append(roc_auc_score(y_te, p_te))
-
-        base_model = clone(model).fit(X_tr[base_features], y_tr)
-        base_auc.append(roc_auc_score(y_te, base_model.predict_proba(X_te[base_features])[:, 1]))
-
-        last_fold = (fold_model, X_te, y_te, (p_te > 0.5).astype(int))
-
-        print(f"Fold {fold} | 樣本 (Train/Test): {len(X_tr):4d} / {len(X_te):4d}")
-        print(f"  👉 Train | ACC: {tr_acc[-1]:.4f} | AUC: {tr_auc[-1]:.4f}")
-        print(f"  👉 Test  | ACC: {te_acc[-1]:.4f} | AUC: {te_auc[-1]:.4f} "
-              f"| 基準模型 AUC: {base_auc[-1]:.4f}")
-
-    print("-" * 65)
-    if not te_auc:
-        print("❌ 所有 fold 皆無法評估，請拉長資料期間。")
-        return
-    mean_auc = float(np.mean(te_auc))
-    print(f"✅ 訓練完成！平均 Test ACC: {np.mean(te_acc):.4f} | 平均 Test AUC: {mean_auc:.4f} "
-          f"| 基準模型平均 AUC: {np.mean(base_auc):.4f}")
-    if mean_auc < 0.55:
-        print("⚠️ 平均 AUC < 0.55，訊號與雜訊難以區分，下方預測請勿過度解讀。")
-
-    # ==========================================
-    # 6. 可交易的樣本外回測（walk-forward 預測 + 交易成本）
-    # ==========================================
-    edge = 0.05
-    oos = oos_proba.dropna()
-    position = (oos > base_rate + edge).astype(int)          # T 收盤決策
-    next_ret = df[stock_yf].shift(-1).reindex(oos.index)     # T+1 報酬
-    valid = next_ret.notna()
-    position, next_ret = position[valid], next_ret[valid]
-
-    change = position.diff().fillna(position.iloc[0])
-    cost = change.clip(lower=0) * FEE + (-change).clip(lower=0) * (FEE + TAX)
-    strat_ret = position * next_ret - cost
-    bh_ret = next_ret
-    strat_cum = (1 + strat_ret).cumprod() - 1
-    bh_cum = (1 + bh_ret).cumprod() - 1
-    n_trades = int((change > 0).sum())
-
-    print("\n" + "=" * 75)
-    print(f" 💰 【{stock_code}】樣本外 walk-forward 回測 (訊號: 勝率 > 基準率 + {edge:.0%}, 含成本)")
-    print("=" * 75)
-    print(f"區間: {position.index[0].date()} ~ {position.index[-1].date()} ({len(position)} 天)")
-    print(f"策略累積報酬: {strat_cum.iloc[-1]:8.2%} | 買進持有: {bh_cum.iloc[-1]:8.2%} "
-          f"| 進場次數: {n_trades} | 持倉天數占比: {position.mean():.1%}")
-
-    if last_fold is not None:
-        f_model, X_te, y_te, pred_te = last_fold
-        print("\n🔍 最後一個 fold 的分類報告 (門檻 0.5，僅供參考):")
-        print(classification_report(y_te, pred_te, labels=[0, 1], zero_division=0,
-                                    target_names=['落後或微漲 (0)', '實質擊敗大盤 (1)']))
-
-    # ==========================================
-    # 7. 最新預測（用全部資料重訓 + 最新一列特徵）
-    # ==========================================
-    final_model = clone(model).fit(X, y)
-    latest_features = latest_row[features]
-    latest_proba = final_model.predict_proba(latest_features)[:, 1][0]
-    latest_date = latest_row.index[0].date()
-
-    current_beta3 = latest_row['Beta_3_Rolling'].iloc[0]
-    beta3_trend_val = latest_row['Beta_3_Trend_5D'].iloc[0]
-    current_gamma = latest_row['Gamma_Rolling'].iloc[0]
-    gamma_trend_val = latest_row['Gamma_Trend_5D'].iloc[0]
-
-    beta3_trend_str = "上升 ↗" if beta3_trend_val > 0 else "下降 ↘"
-    gamma_trend_str = "加速湧入 ↗" if gamma_trend_val > 0 else "動能衰退 ↘"
-    gamma_status = (f"過熱追高區 ({gamma_trend_str})" if current_gamma > 0
-                    else f"冷卻/均值回歸區 ({gamma_trend_str})")
-
-    diff = latest_proba - base_rate
-    if diff > 0.08 and beta3_trend_val > 0:
-        action_plan = "🔥 強烈作多訊號：預測勝率明顯高於基準率，且 Beta_3 趨勢向上。"
-    elif diff > 0.04:
-        action_plan = "📈 偏多觀察：預測略高於基準率，建議分批、嚴設停損。"
-    elif diff < -0.08 and (beta3_trend_val < 0 or gamma_trend_val < 0):
-        action_plan = "❄️ 保守觀望：預測明顯低於基準率，且因子趨勢轉弱。"
-    else:
-        action_plan = "⚖️ 中性：與基準率差距不大，訊號不明確。"
-
-    print("\n" + "=" * 75)
-    print(f" 🔮 【{stock_code}】AI 未來 {HORIZON} 日預測 (特徵日期: {latest_date})")
-    print("=" * 75)
-    print(f"🎯 預測勝率 (未來 {HORIZON} 日擊敗大盤 > {THRESHOLD:.1%}): {latest_proba:8.2%} "
-          f"(基準率 {base_rate:.2%}, 差距 {diff:+.2%})")
-    print(f"📊 Beta_3 近五日 【{beta3_trend_str}】 (當前值: {current_beta3:.4f})")
-    print(f"📊 Gamma 位處 【{gamma_status}】 (當前值: {current_gamma:.4f})")
-    print("-" * 75)
-    print(f"💡 系統策略建議:\n👉 {action_plan}")
-    print("   (僅為統計模型輸出，非投資建議)")
-    print("=" * 75 + "\n")
-
-    # ==========================================
-    # 8. 圖表
-    # ==========================================
-    fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=False)
-    ax1.plot(plot_gamma.index, plot_gamma, color='purple', label='Gamma (Crowding)')
-    ax1.axhline(0, color='red', linestyle='--'); ax1.legend(loc='upper left'); ax1.grid(True, alpha=0.3)
-
-    ax2.plot(plot_beta3.index, plot_beta3, color='forestgreen', label='Beta_3 (Pure AI Shock)')
-    ax2.axhline(0, color='red', linestyle='--'); ax2.legend(loc='upper left'); ax2.grid(True, alpha=0.3)
-
-    ax3.plot(strat_cum.index, strat_cum, color='darkred', label='Strategy (OOS, after costs)')
-    ax3.plot(bh_cum.index, bh_cum, color='gray', label='Buy & Hold')
-    ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: '{:.0%}'.format(v)))
-    ax3.legend(loc='upper left'); ax3.grid(True, alpha=0.3)
-    fig1.suptitle(f'[{stock_code}] Rolling Factors & Out-of-Sample Walk-Forward Backtest', fontsize=16)
-    plt.tight_layout()
-    plt.show()
-
-    if last_fold is not None:
-        f_model, X_te, _, _ = last_fold
-        shap_values = shap.TreeExplainer(f_model).shap_values(X_te)
-        if isinstance(shap_values, list):
-            shap_plot = shap_values[1]
-        elif getattr(shap_values, 'ndim', 2) == 3:
-            shap_plot = shap_values[:, :, 1]
+        if latest_proba > 0.55 and beta3_trend_val > 0:
+            action_plan = "🔥 強烈作多訊號：AI 預測勝率高，純度擴張且動能配合，可能為新波段起漲點。"
+        elif latest_proba > 0.52:
+            action_plan = "📈 偏多觀察：AI 預測略佔優勢，建議逢低分批佈局，嚴設停損。"
+        elif latest_proba < 0.45 and (beta3_trend_val < 0 or gamma_trend_val < 0):
+            action_plan = "❄️ 強烈保守觀望：AI 不看好且純度或資金動能衰退，極高機率落後大盤，建議避開。"
         else:
-            shap_plot = shap_values
-        plt.figure(figsize=(10, 6))
-        shap.summary_plot(shap_plot, X_te, feature_names=features, show=False)
-        plt.title(f"[{stock_code}] SHAP Decision Logic ({HORIZON}-Day Outperformance)", fontsize=14)
-        plt.tight_layout()
-        plt.show()
+            action_plan = "⚖️ 中性震盪：多空訊號分歧 (可能正在築底或盤頭)，等待右側趨勢明朗。"
 
+        # 顯示指標卡片
+        st.markdown("### 🔮 未來 5 日預測與位階狀態")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("AI 預測擊敗大盤勝率", f"{latest_proba:.2%}")
+        col2.metric("Beta_3 純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
+        col3.metric("Gamma 資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
+        
+        st.info(f"**💡 系統策略建議：** {action_plan}")
 
-if __name__ == "__main__":
-    AI_動能與機器學習預測系統('3231', exchange='TW')
+        # 6. 視覺化圖表繪製
+        st.markdown("---")
+        st.markdown("### 📊 歷史波段回測與 AI 決策邏輯")
+        
+        # 波段計算
+        min_beta3_date = plot_beta3.idxmin()
+        period_returns = df.loc[min_beta3_date:plot_beta3.loc[min_beta3_date:].idxmax(), stock_yf]
+        
+        # 建立兩個欄位並排放置圖表
+        fig_col1, fig_col2 = st.columns(2)
+        
+        with fig_col1:
+            fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+            ax1.plot(plot_gamma.index, plot_gamma, color='purple', label='Gamma (Crowding)')
+            ax1.axhline(0, color='red', linestyle='--'); ax1.legend(loc='upper left'); ax1.grid(True, alpha=0.3)
+            
+            ax2.plot(plot_beta3.index, plot_beta3, color='forestgreen', label='Beta_3 (Pure AI Shock)')
+            ax2.axvspan(period_returns.index[0], period_returns.index[-1], color='yellow', alpha=0.2, label='Surge Period')
+            ax2.axhline(0, color='red', linestyle='--'); ax2.legend(loc='upper left'); ax2.grid(True, alpha=0.3)
+
+            tsmc_cum_returns = (1 + period_returns).cumprod() - 1
+            ax3.plot(tsmc_cum_returns.index, tsmc_cum_returns, color='darkred', label='Cumulative Return')
+            ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0%}'.format(y)))
+            ax3.legend(loc='upper left'); ax3.grid(True, alpha=0.3)
+            fig1.suptitle(f'[{stock_code}] Econometric Surge Backtest', fontsize=14)
+            plt.tight_layout()
+            st.pyplot(fig1)
+
+        with fig_col2:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X.iloc[test_index])
+            shap_values_to_plot = shap_values[1] if isinstance(shap_values, list) else shap_values
+
+            fig2 = plt.figure(figsize=(10, 8))
+            shap.summary_plot(shap_values_to_plot, X.iloc[test_index], feature_names=features, show=False)
+            plt.title(f"[{stock_code}] SHAP AI Decision Logic", fontsize=14)
+            plt.tight_layout()
+            st.pyplot(fig2)
+
+# ==========================================
+# UI 介面設計 (側邊欄輸入區)
+# ==========================================
+st.sidebar.title("🤖 AI 資金動能檢驗系統")
+st.sidebar.markdown("請輸入欲分析的台股代號：")
+
+stock_input = st.sidebar.text_input("股票代號 (如: 3231, 2330)", value="3231")
+exchange_input = st.sidebar.selectbox("市場類別", options=["上市 (TW)", "上櫃 (TWO)"])
+
+# 解析上市櫃參數
+exch_val = "TW" if "上市" in exchange_input else "TWO"
+
+# 執行按鈕
+if st.sidebar.button("🚀 執行量化分析"):
+    run_quant_system(stock_input, exch_val)
