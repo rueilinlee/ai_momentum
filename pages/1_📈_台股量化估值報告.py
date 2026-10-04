@@ -17,8 +17,6 @@ st.caption("內建「投資報告專業 1.3 版」邏輯：自動判斷 P/E 與 
 with st.sidebar:
     st.header("⚙️ 模組參數設定")
     gemini_api_key = st.text_input("輸入 Gemini API Key", type="password", key="stock_report_api_key")
-    
-    # 這裡更新為最新的 Gemini 3.8 模型
     selected_model = st.selectbox(
         "選擇 Gemini 模型",
         ["gemini-3.8-flash", "gemini-3.8-pro"],
@@ -39,7 +37,7 @@ with col1:
     )
     submit_btn = st.button("🚀 生成專業報告", type="primary", use_container_width=True)
 
-# 數據抓取函式 (加入防錯機制與上市上櫃自動判斷)
+# 數據抓取函式 (加入防錯機制、名稱抓取與時間紀錄)
 @st.cache_data(ttl=300)
 def fetch_stock_data(ticker_symbol: str):
     ticker_symbol = ticker_symbol.strip()
@@ -53,9 +51,24 @@ def fetch_stock_data(ticker_symbol: str):
             if not hist.empty:
                 latest_price = hist['Close'].iloc[-1]
                 latest_date = hist.index[-1].strftime("%Y 年 %m 月 %d 日")
+                
+                # 嘗試取得公司名稱 (yfinance 有時會回傳英文名稱)
+                company_name = ""
+                try:
+                    info = ticker.info
+                    company_name = info.get('longName', '') or info.get('shortName', '')
+                except:
+                    pass
+                
+                # 紀錄當下抓取時間 (設定為台北時區)
+                current_time = pd.Timestamp.now(tz='Asia/Taipei').strftime("%Y-%m-%d %H:%M:%S")
+                
                 return {
                     "price": float(latest_price),
-                    "date": latest_date
+                    "date": latest_date,
+                    "time": current_time,
+                    "name": company_name,
+                    "symbol": ticker_symbol
                 }
         except Exception as e:
             continue
@@ -77,10 +90,15 @@ if submit_btn:
         else:
             price = stock_info["price"]
             price_date = stock_info["date"]
+            fetch_time = stock_info["time"]
+            company_name = stock_info["name"] if stock_info["name"] else "未知名稱"
             
+            # 在右側 UI 介面同時顯示代碼、名稱與時間
             with col2:
                 st.subheader("📊 即時市場數據")
+                st.markdown(f"**🎯 標的：** {company_name} ({stock_id})")
                 st.metric("當前市場股價", f"{price:.2f} TWD", delta=f"報價日期: {price_date}")
+                st.caption(f"🕒 資料更新時間：{fetch_time}")
                 
             prompt_template = f"""你是一位擁有台股推薦經驗的金融專家。
 以第三人稱陳述。不要提及你的專業資歷。
@@ -94,7 +112,7 @@ if submit_btn:
 
 請嚴格依據以下結構進行撰寫：
 
-以『投資報告：』開頭，撰寫一份關於該公司狀況的簡短投資報告，內容須包含以下章節：
+以『投資報告：{company_name} ({stock_id}) 投資價值分析』為標題開頭（若名稱為英文，請自動翻譯並使用中文公司名稱），撰寫一份關於該公司狀況的簡短投資報告，內容須包含以下章節：
 
 1. 近期新聞
 2. 財務狀況與次產業成長率
@@ -103,7 +121,7 @@ if submit_btn:
 5. 短期市場情緒與多空熱點分析（權重量化版）
 6. 量化估值分析（動態多場景推算）
 * 【強制帶入數據】：
-  - 當前市場股價標註格式必須為：當前市場股價：{price:.2f} TWD ({price_date})。
+  - 當前市場股價標註格式必須嚴格為：當前市場股價：{price:.2f} TWD (報價日期：{price_date}，資料擷取時間：{fetch_time})。
 * 【判定機制】：
   - 若「過去 4 季累計 EPS > 0」：採用【本益比 (P/E) 評價模型】。
   - 若「過去 4 季累計 EPS ≤ 0」：自動切換採用【股價淨值比 (P/B) 河流圖評價模型】。
