@@ -22,7 +22,6 @@ def get_company_name_and_symbol(symbol):
     clean_sym = symbol.upper().strip()
     pure_num = clean_sym.replace(".TW", "").replace(".TWO", "")
     
-    # 強制精準對應穩懋與其他熱門標的
     if pure_num == "3105" or "3105" in clean_sym:
         return "穩懋 (3105.TWO)"
     elif pure_num == "2330" or "2330" in clean_sym:
@@ -296,8 +295,11 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("最新收盤價 (即時)", f"${live_price:,.2f}", f"交易日: {trade_date} ({live_change:+.2f}%)")
 col2.metric("模型上修目標價 (Base)", f"${tp_base:,.0f}", f"{upside_base:.1f}% 潛在空間")
 col3.metric("綜合投資評等", f"{rec}", f"{rec_color}")
-# 嚴格確保兩數字以 "~" 做隔開
-col4.metric("目標價合理區間", f"${tp_lower:,.0f} ~${tp_upper:,.0f}")
+
+# 關鍵修正：透過 Markdown 卡片結構強制以波浪號 "~" 嚴格隔開合理區間，避免 metric 元件自動處理字串
+with col4:
+    st.markdown("目標價合理區間")
+    st.markdown(f"### ${tp_lower:,.0f} ~${tp_upper:,.0f}")
 
 st.divider()
 
@@ -333,7 +335,7 @@ with col_left:
     sc1, sc2, sc3 = st.columns(3)
     sc1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x", delta_color="off")
     sc2.metric("基準 (Base)", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x", delta_color="normal")
-    sc3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x (動能PE+4x)", delta_color="normal")
+    sc3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {tp_upper:.1f}x (動能PE+4x)", delta_color="normal")
 
 with col_right:
     st.subheader("三、 財金專家視角 (財報成長檢核)")
