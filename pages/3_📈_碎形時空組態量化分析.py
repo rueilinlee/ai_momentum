@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -61,8 +62,8 @@ st.sidebar.header("⚙️ 參數設定面板")
 
 user_input_code = st.sidebar.text_input(
     "輸入公司/指數代號",
-    value="8028",
-    help="例如: 8028, 3105, 3122, 2330, 0000(大盤)",
+    value="3016",
+    help="例如: 3016, 8028, 3105, 3122, 2330, 0000(大盤)",
 )
 
 interval_map = {
@@ -76,10 +77,10 @@ selected_freq = st.sidebar.selectbox("選擇 K 棒頻率", list(interval_map.key
 
 
 # ==========================================
-# 2. 智慧對應尋找中文公司名稱模組
+# 2. 智慧對應與英文中文化轉譯模組
 # ==========================================
-# 常用台股快取字典（確保秒開與高命中率）
 TW_STOCK_NAMES_CACHE = {
+    "3016": "嘉晶",
     "8028": "昇陽半導體",
     "3105": "穩懋",
     "3122": "笙泉",
@@ -97,6 +98,16 @@ TW_STOCK_NAMES_CACHE = {
     "0056": "元大高股息",
 }
 
+# 英文公司名稱到中文的對應對照表
+ENGLISH_TO_CHINESE_MAP = {
+    "Episil-Precision": "嘉晶",
+    "Sunny Friend Intercontinental": "昇陽半導體",
+    "Win Semiconductors": "穩懋",
+    "Taiwan Semiconductor": "台積電",
+    "Hon Hai Precision": "鴻海",
+    "MediaTek": "聯發科",
+}
+
 
 @st.cache_data(ttl=3600)
 def get_smart_company_name(code):
@@ -104,24 +115,37 @@ def get_smart_company_name(code):
   if code == "0000" or code.upper() == "^TWII":
     return "大盤加權指數"
 
-  # 1. 先從快取字典尋找
+  # 1. 優先從快取字典尋找
   if code in TW_STOCK_NAMES_CACHE:
     return TW_STOCK_NAMES_CACHE[code]
 
-  # 2. 若不在快取中，智慧透過 yfinance API 尋找官方名稱
+  # 2. 若不在快取中，透過 yfinance 抓取官方名稱
   try:
     for suffix in [".TW", ".TWO"]:
       ticker_obj = yf.Ticker(f"{code}{suffix}")
       info = ticker_obj.info
-      # 嘗試抓取 longName 或 shortName
-      name = info.get("longName") or info.get("shortName")
-      if name:
-        # 如果 Yahoo 回傳的是中文，直接採用；若是英文，可轉譯或保留
-        return name
+      raw_name = info.get("longName") or info.get("shortName")
+      if raw_name:
+        # 檢查是否含有英文字母，若有則進行轉譯與清洗
+        translated_name = raw_name
+        for eng_key, zh_val in ENGLISH_TO_CHINESE_MAP.items():
+          if eng_key.lower() in raw_name.lower():
+            translated_name = zh_val
+            break
+
+        if translated_name == raw_name:
+          # 若無對應字典，進行自動清洗 (移除 Inc., Corp., Co. 等字樣)
+          cleaned = re.sub(
+              r"(?i)\b(inc\.?|corp\.?|co\.?|ltd\.?|corporation|company)\b",
+              "",
+              raw_name,
+          ).strip()
+          translated_name = cleaned if cleaned else raw_name
+
+        return translated_name
   except Exception:
     pass
 
-  # 3. 若皆無法取得，回傳預設代號格式
   return f"台股代號 {code}"
 
 
@@ -455,7 +479,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       st.markdown(
           f"""
             <div class="metric-card">
-                <div class="metric-title">股票/指數代號</div>
+                <div class="metric-title">股票/指數代碼</div>
                 <div class="metric-value">{user_input_code}</div>
                 <div class="metric-sub">{used_ticker}</div>
             </div>
@@ -599,6 +623,6 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       )
 else:
   st.info(
-      "👈 請在左側側邊欄輸入公司代碼（例如 8028、3105、3122、2330 或 0000"
+      "👈 請在左側側邊欄輸入公司代碼（例如 3016、8028、3105、3122 或 0000"
       " 大盤），選擇 K 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
   )
