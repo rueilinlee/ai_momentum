@@ -11,7 +11,7 @@ import math
 # ==========================================
 # 0. 頁面基本設定與台灣時區設定
 # ==========================================
-st.set_page_config(page_title="跨領域專家 AI 投資分析 (動態指數量化升級版)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="跨領域專家 AI 投資分析 (指數量化升級版)", layout="wide", page_icon="📈")
 
 def get_taiwan_time_str(format_str='%Y-%m-%d %H:%M:%S'):
     tw_tz = timezone(timedelta(hours=8))
@@ -67,9 +67,9 @@ def get_stock_data_and_metrics(symbol):
     
     if clean_sym == "3105":
         q_data = [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 2.52), ("2025Q3", 1.26)]
-        annual_eps_last = 4.10
-        hot_1m = 7.5
-        hot_3m = 6.8
+        annual_eps_last = 4.10  
+        hot_1m = 8.8  
+        hot_3m = 7.2  
     elif clean_sym == "2330":
         q_data = [("2026Q2", 27.25), ("2026Q1", 22.10), ("2025Q4", 19.80), ("2025Q3", 18.23)]
         annual_eps_last = 65.40
@@ -93,19 +93,19 @@ def get_stock_data_and_metrics(symbol):
     except Exception:
         pass
         
-    return 591.0, 9.85, symbol, "2026-10-02", q_data, 4.10, 7.5, 6.8
+    return 591.0, 9.85, symbol, "2026-10-02", q_data, 4.10, 8.8, 7.2
 
 def generate_dynamic_insights(symbol, comp_name, hot_1m, hot_3m):
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
     if clean_sym == "3105":
         return {
-            "ind_1": f"產業熱點與動能追蹤 (近1月熱點：{hot_1m}/10, 近3月：{hot_3m}/10)：市場資金持續聚焦 穩懋(3105.TWO) 在產業鏈中的戰略定位。",
-            "ind_2": "產品線與市佔優勢：透過技術升級有效鞏固市場競爭壁壘。",
-            "macro_1": "穩懋(3105.TWO) 宏觀週期定位：受惠於總體經濟溫和復甦與數位轉型浪潮。",
-            "macro_2": "定價能力與成本結構：展現良好的成本轉嫁能力。",
+            "ind_1": f"化合物半導體與 PA 庫存去化完成 (近1月熱點量化：{hot_1m}/10 vs 近3月：{hot_3m}/10)：穩懋作為全球砷化鎵龍頭，AI 光通訊與低軌衛星需求引爆市場高度關注，單季 EPS 顯著回升。",
+            "ind_2": "技術節點與新應用佈局：光通訊元件良率穩定，毛利率持續修復，營運由谷底強勢翻揚。",
+            "macro_1": "通訊基礎建設升級週期：全球 5G、Wi-Fi 7 及光纖基礎建設加速，推動高頻元件長期需求。",
+            "macro_2": "產能利用率回升：訂單能見度改善，固定成本分攤效益顯現。",
             "risks": [
-                ("總體經濟風險", "利率與匯率波動風險", "可能對財務毛利造成波動"),
-                ("市場競爭風險", "同業產能擴張", "需追蹤市佔率變化")
+                ("終端需求波動", "消費性電子換機潮變化", "需追蹤非手機應用之營收占比"),
+                ("產能擴充壓力", "資本支出對短中期折舊影響", "關注新廠房產能開出進度")
             ]
         }
     else:
@@ -133,7 +133,7 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
     doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
     doc.add_paragraph(f"最新收盤股價：{data['price']:,.2f} 元 (交易日期: {trade_date}, 當日漲跌幅 {data['change']:.2f}%)")
     doc.add_paragraph(f"模型推算目標價：{val['tp_base']:,.2f} 元 ({val['rec']}) [含熱點動能與財報指數加權]")
-    doc.add_paragraph(f"目標價合理區間：{val['tp_lower']:,.2f} 元 ~ {val['tp_upper']:,.2f} 元 (樂觀情境已同步採用模型動能 P/E 上修)")
+    doc.add_paragraph(f"目標價合理區間：{val['tp_lower']:,.2f} 元 ~ {val['tp_upper']:,.2f} 元")
     
     doc.add_heading('一、 產業專家視角：技術壁壘與熱點量化', level=1)
     doc.add_paragraph(f"近 1 個月產業熱點量化分數：{hot_1m} / 10 | 近 3 個月熱點分數：{hot_3m} / 10")
@@ -226,9 +226,11 @@ risk = st.sidebar.slider("下行風險折價 (-PE)", min_value=0.0, max_value=10
 # ==========================================
 fin_ttm = round(sum([v for _, v in q_eps_data]), 2)
 
+# 觸發條件判斷
 hot_triggered = (hot_1m > hot_3m)
 eps_triggered = (fin_ttm > annual_eps_last)
 
+# 採用指數函數進行權重加乘與目標價上修
 multiplier = 1.0
 if hot_triggered:
     multiplier *= math.exp((hot_1m - hot_3m) * 0.08)
@@ -236,13 +238,14 @@ if eps_triggered:
     eps_growth_ratio = (fin_ttm / annual_eps_last) if annual_eps_last > 0 else 1.0
     multiplier *= math.pow(eps_growth_ratio, 0.35)
 
+# 調整後的預估 EPS
 eps_fwd_adjusted = eps_fwd_base * multiplier
 
 delta_sentiment = (sentiment - 5.0) * 0.4
 pe_target = pe_base + delta_sentiment + growth - risk
 
-# 修正：樂觀情境 PE 同步納入動能與熱點加權後的調整後 Forward EPS 進行計算
-pe_upper = pe_base + delta_sentiment + growth - 0      
+# 修正：樂觀 PE 改以模型動能 PE (`pe_target`) 為基準外加樂觀擴張溢價 (+4.0x)
+pe_upper = pe_target + 4.0      
 pe_lower = pe_base + 0 + 0 - 3.0                       
 
 tp_base = eps_fwd_adjusted * pe_target
@@ -307,16 +310,18 @@ with col_left:
     st.success(f"**市場護城河：**\n\n{insights['ind_2']}")
 
     st.subheader("二、 數學家視角 (指數動能加權模型)")
-    st.markdown(f"🔥 **熱點動能觸發：** `{'已上修 (+)' if hot_triggered else '未觸發'}` (近1月 > 近3月)")
-    st.markdown(f"📈 **財報成長觸發：** `{'已上修 (+)' if eps_triggered else '未觸發'}` (TTM EPS > 年報 EPS)")
-    st.markdown(f"✨ **調整後 Forward EPS：** **`{eps_fwd_adjusted:.2f} 元`** (基礎: {eps_fwd_base} 元)")
+    # 依照您的要求：在各變數後方以括號表示模型計算數值
+    st.markdown(f"🔥 **熱點動能觸發：** `{'已上修 (+)' if hot_triggered else '未觸發'}` (近1月分數: {hot_1m} > 近3月分數: {hot_3m})")
+    st.markdown(f"📈 **財報成長觸發：** `{'已上修 (+)' if eps_triggered else '未觸發'}` (近4季 TTM EPS: {fin_ttm} > 最近年報 EPS: {annual_eps_last})")
+    st.markdown(f"✨ **調整後 Forward EPS：** **`{eps_fwd_adjusted:.2f} 元`** (基礎: {eps_fwd_base} 元, 指數加權乘數: {multiplier:.3f}x)")
+    st.markdown(f"📊 **動態本益比 ($PE_{{target}}$)：** **`{pe_target:.1f} 倍`** (基礎PE: {pe_base} + 情緒修正: {delta_sentiment:+.1f} + 成長溢價: +{growth} - 風險折價: -{risk})")
+    
     st.latex(r"""PE_{target} = PE_{base} + \Delta PE_{sentiment} + \Delta PE_{growth} - \Delta PE_{risk}""")
     
-    # 各變數後方以括號精準標示模型計算數值
     sc1, sc2, sc3 = st.columns(3)
-    sc1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x (基底:{pe_base}-折價:3)", delta_color="off")
-    sc2.metric("基準 (Base)", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x (基底:{pe_base}+情緒:{delta_sentiment:.1f}+成長:{growth}-風險:{risk})", delta_color="normal")
-    sc3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x (基底:{pe_base}+情緒:{delta_sentiment:.1f}+成長:{growth}-風險:0)", delta_color="normal")
+    sc1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x", delta_color="off")
+    sc2.metric("基準 (Base)", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x", delta_color="normal")
+    sc3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x (動能PE+4x)", delta_color="normal")
 
 with col_right:
     st.subheader("三、 財金專家視角 (財報成長檢核)")
