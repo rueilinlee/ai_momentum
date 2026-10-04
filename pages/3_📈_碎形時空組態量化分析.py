@@ -61,8 +61,8 @@ st.sidebar.header("⚙️ 參數設定面板")
 
 user_input_code = st.sidebar.text_input(
     "輸入公司/指數代號",
-    value="3122",
-    help="例如: 3122, 2330, 6213, 0000(大盤)",
+    value="3105",
+    help="例如: 3105, 3122, 2330, 6213, 0000(大盤)",
 )
 
 interval_map = {
@@ -79,6 +79,7 @@ selected_freq = st.sidebar.selectbox("選擇 K 棒頻率", list(interval_map.key
 # 2. 輔助函數：台股代號解析與中文對應字典
 # ==========================================
 TW_STOCK_NAMES = {
+    "3105": "穩懋",
     "3122": "笙泉",
     "2330": "台積電",
     "2317": "鴻海",
@@ -114,6 +115,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
     ticker = yf.Ticker(ticker_symbol)
     df = ticker.history(period=period, interval=interval)
     if df.empty and ".TW" in ticker_symbol:
+      # Fallback to 上櫃 (.TWO)
       alt_symbol = ticker_symbol.replace(".TW", ".TWO")
       ticker = yf.Ticker(alt_symbol)
       df = ticker.history(period=period, interval=interval)
@@ -388,9 +390,11 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
     st.error(f"資料取得失敗：{used_ticker}")
   else:
     if ".TWO" in used_ticker:
-      market_attr = "櫃買中心 (上櫃公司)"
+      market_attr = "櫃買中心<br>(上櫃公司)"
     elif ".TW" in used_ticker:
-      market_attr = "證交所 (上市公司)"
+      market_attr = "證交所<br>(上市公司)"
+    else:
+      market_attr = "國際/美股標的"
 
     df_res = run_quant_engine(df_raw)
     latest = df_res.iloc[-1]
@@ -436,7 +440,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
           f"""
             <div class="metric-card">
                 <div class="metric-title">市場屬性</div>
-                <div class="metric-value" style="font-size: 18px;">{market_attr}</div>
+                <div class="metric-value" style="font-size: 18px; line-height: 1.3;">{market_attr}</div>
                 <div class="metric-sub">Yahoo Finance 串接</div>
             </div>
             """,
@@ -567,6 +571,7 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       )
 else:
   st.info(
-      "👈 請在左側側邊欄輸入公司代碼（例如 3122、2330 或 0000 大盤），選擇 K"
+      "👈 請在左側側邊欄輸入公司代碼（例如 3105、3122、2330 或 0000 大盤），選擇 K"
       " 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
   )
+
