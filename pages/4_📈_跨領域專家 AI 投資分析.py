@@ -49,7 +49,6 @@ def get_company_name_from_yahoo(symbol):
 def get_quarterly_eps(symbol):
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
     
-    # 針對穩懋 (3105) 提供 2026 年最新對齊財報數據範例
     if clean_sym == "3105":
         return [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 2.52), ("2025Q3", 1.26)]
     elif clean_sym == "2330":
@@ -63,7 +62,6 @@ def get_quarterly_eps(symbol):
             if eps_rows:
                 eps_series = q_financials.loc[eps_rows[0]].dropna()
                 if len(eps_series) >= 4:
-                    # 依據實際日期解析並標註對應季度
                     result = []
                     for d, v in zip(eps_series.index[:4], eps_series.values[:4]):
                         year = d.year if hasattr(d, 'year') else 2026
@@ -74,7 +72,6 @@ def get_quarterly_eps(symbol):
     except Exception:
         pass
     
-    # 預設通用近四季對齊格式
     return [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 1.50), ("2025Q3", 1.20)]
 
 def generate_dynamic_insights(symbol, price, comp_name):
@@ -138,7 +135,7 @@ def get_live_price(ticker_symbol):
     return 0.0, 0.0, ticker_symbol
 
 # ==========================================
-# 3. 專家級 Word 報告完整生成函數 (含對齊的 2026Q2/Q1 財報)
+# 3. 專家級 Word 報告完整生成函數
 # ==========================================
 def generate_word_report(data, val, insights, comp_name, q_eps_list):
     doc = Document()
@@ -178,7 +175,7 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list):
     doc.add_paragraph(f"【樂觀情境 Bull Case】\nPE_upper = {val['pe_upper']:.1f} 倍 | TP_upper = {val['tp_upper']:,.2f} 元")
     doc.add_paragraph(f"【悲觀情境 Bear Case】\nPE_lower = {val['pe_lower']:.1f} 倍 | TP_lower = {val['tp_lower']:,.2f} 元")
 
-    # 三、 財金專家視角 (精準對應 2026Q2, 2026Q1 等季度)
+    # 三、 財金專家視角
     doc.add_heading('三、 財金專家視角：財務結構與估值位階', level=1)
     doc.add_paragraph("從財務報表健康度與近 4 季各季 EPS 結果來看：")
     table = doc.add_table(rows=1, cols=3)
@@ -194,7 +191,7 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list):
 
     for item in [
         ("近 4 季累計 EPS (TTM)", f"{data['fin_ttm']} 元", "實質基本面支撐營運表現"),
-        ("歷史本益比 (Historical P/E)", f"{val['historical_pe']:.1f} 倍", "處於歷史評價河流圖區間中高位"),
+        ("歷史本益比 (Historical P/E)", f"{val['historical_pe']:.1f} 倍", "處於歷史評價河流圖中高位"),
         ("遠期本益比 (Forward P/E)", f"{val['forward_pe']:.1f} 倍", "已接近模型悲觀下限，下檔具備強烈支撐")
     ]:
         row = table.add_row().cells
@@ -310,7 +307,7 @@ with st.spinner("正在生成完整專家級 Word 報告（含 2026Q2/Q1 財報�
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             type="primary"
         )
-st.markdown("<br>", unsafe_angle_html=True) if hasattr(st, 'markdown') else None
+st.markdown("<br>", unsafe_allow_html=True)
 
 col_left, col_right = st.columns(2)
 
@@ -346,5 +343,3 @@ with col_right:
     st.markdown("**下行風險追蹤 (Risk Matrix)**")
     df_risks = pd.DataFrame(insights['risks'], columns=['風險維度', '關鍵影響因子', '影響評估與應對建議'])
     st.dataframe(df_risks, use_container_width=True, hide_index=True)
-
-
