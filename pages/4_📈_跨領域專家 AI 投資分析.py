@@ -63,7 +63,11 @@ def resolve_symbol(user_input):
     return text  # 美股等其他代號
 
 @st.cache_data(ttl=3600)
-def get_company_name(symbol, session):
+def get_company_name(symbol):
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
+    })
     try:
         tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{symbol.split('.')[0]}"
         res = session.get(tw_yahoo_url, timeout=5)
@@ -74,7 +78,7 @@ def get_company_name(symbol, session):
                 return f"{extracted_name} ({symbol})"
     except Exception:
         pass
-    
+        
     try:
         info = yf.Ticker(symbol, session=session).info
         name = info.get("longName") or info.get("shortName")
@@ -196,7 +200,7 @@ st.sidebar.title("⚙️ 標的與參數設定")
 
 with st.sidebar.form(key="search_form"):
     user_query = st.text_input(
-        "輸入公司名稱或代號（如 6109, 3105, 2330, 3443）", value="3231"
+        "輸入公司名稱或代號（如 6109, 3105, 2330, 3443）", value="6109"
     ).strip()
     st.form_submit_button("📊 執行 AI 與基本面綜合分析")
 
@@ -210,7 +214,7 @@ session.headers.update({
 })
 
 symbol = resolve_symbol(user_query)
-company_name = get_company_name(symbol, session)
+company_name = get_company_name(symbol)
 
 # ==========================================
 # 6. 主程式執行與計量模型運算
@@ -442,7 +446,6 @@ st.download_button(
 )
 st.divider()
 
-# 左右分頁排版
 left, right = st.columns(2)
 
 with left:
