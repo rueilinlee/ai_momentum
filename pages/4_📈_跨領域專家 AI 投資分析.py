@@ -31,11 +31,13 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 代號解析（自動探測上市 .TW / 上櫃 .TWO）
+# 1. 代號與公司名稱智慧解析（支援中文名稱自動對應）
 # ==========================================
 NAME_TO_CODE = {
-    "穩懋": "3105", "亞元": "6109", "台積電": "2330",
-    "聯發科": "2454", "鴻海": "2317", "台達電": "2308", "創意": "3443",
+    "穩懋": "3105.TWO", "亞元": "6109.TWO", "台積電": "2330.TW",
+    "聯發科": "2454.TW", "鴻海": "2317.TW", "台達電": "2308.TW", 
+    "創意": "3443.TW", "長榮": "2603.TW", "聯電": "2303.TW",
+    "廣達": "2382.TW", "緯創": "3231.TW", "緯穎": "6669.TW"
 }
 
 def _has_price(symbol):
@@ -50,17 +52,28 @@ def _has_price(symbol):
 
 @st.cache_data(ttl=3600)
 def resolve_symbol(user_input):
-    text = user_input.strip().upper()
-    text = NAME_TO_CODE.get(user_input.strip(), text)
+    text = user_input.strip()
+    
+    # 1. 直接精準對應中文名稱
+    if text in NAME_TO_CODE:
+        return NAME_TO_CODE[text]
+        
+    # 2. 模糊搜尋：若使用者輸入的文字包含在字典的鍵中
+    for name, code in NAME_TO_CODE.items():
+        if name in text:
+            return code
 
-    if text.endswith(".TW") or text.endswith(".TWO"):
-        return text
-    if text.isdigit() and len(text) in (4, 5, 6):
+    # 3. 處理代號輸入（如 6109, 2330）
+    upper_text = text.upper()
+    if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
+        return upper_text
+    if upper_text.isdigit() and len(upper_text) in (4, 5, 6):
         for suffix in (".TW", ".TWO"):
-            if _has_price(text + suffix):
-                return text + suffix
-        return text + ".TW"
-    return text  # 美股等其他代號
+            if _has_price(upper_text + suffix):
+                return upper_text + suffix
+        return upper_text + ".TW"
+        
+    return upper_text  # 美股等其他代號
 
 @st.cache_data(ttl=3600)
 def get_company_name(symbol):
@@ -200,7 +213,7 @@ st.sidebar.title("⚙️ 標的與參數設定")
 
 with st.sidebar.form(key="search_form"):
     user_query = st.text_input(
-        "輸入公司名稱或代號（如 6109, 3105, 2330, 3443）", value="6109"
+        "輸入公司名稱或代號（如 亞元, 6109, 3105, 2330）", value="亞元"
     ).strip()
     st.form_submit_button("📊 執行 AI 與基本面綜合分析")
 
