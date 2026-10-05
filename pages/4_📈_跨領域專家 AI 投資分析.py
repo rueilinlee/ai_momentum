@@ -31,7 +31,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 動態聯網搜尋與「先測 .TW、再測 .TWO」代號解析機制
+# 1. 動態聯網搜尋與「先測 .TW、再測 .TWO」代號解析機制（支援中文名稱強效搜尋）
 # ==========================================
 def _has_price(symbol):
     try:
@@ -58,7 +58,29 @@ def resolve_symbol(user_input):
                 return test_sym
         return upper_text + ".TW"
 
-    # 2. 透過 Yahoo Finance 搜尋 API 動態聯網查詢名稱（如「今國光」、「台積電」）
+    # 2. 優先透過 Yahoo 奇摩股市專用搜尋 API 完美支援中文名稱（如「今國光」）
+    try:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
+        })
+        tw_search_url = f"https://tw.quote.yahoo.com/v1/search?q={text}&category=stock"
+        res = session.get(tw_search_url, timeout=5)
+        data = res.json()
+        
+        if "data" in data and len(data["data"]) > 0:
+            for item in data["data"]:
+                sym_raw = item.get("symbol", "")
+                clean_digits = ''.join(filter(str.isdigit, sym_raw))
+                if len(clean_digits) in (4, 5):
+                    for suffix in (".TW", ".TWO"):
+                        test_sym = clean_digits + suffix
+                        if _has_price(test_sym):
+                            return test_sym
+    except Exception:
+        pass
+
+    # 3. 備援：透過 Yahoo Finance 全球搜尋 API
     try:
         session = requests.Session()
         session.headers.update({
@@ -69,14 +91,11 @@ def resolve_symbol(user_input):
         data = res.json()
         
         if "quotes" in data and len(data["quotes"]) > 0:
-            # 優先檢查搜尋結果中已經自帶 .TW 或 .TWO 的標的
             for q in data["quotes"]:
                 sym = q.get("symbol", "")
                 if ".TW" in sym or ".TWO" in sym:
                     if _has_price(sym):
                         return sym
-            
-            # 從搜尋結果中萃取出數字代號，嚴格執行「先測 .TW，再測 .TWO」
             for q in data["quotes"]:
                 sym = q.get("symbol", "")
                 clean_digits = ''.join(filter(str.isdigit, sym))
@@ -85,24 +104,10 @@ def resolve_symbol(user_input):
                         test_sym = clean_digits + suffix
                         if _has_price(test_sym):
                             return test_sym
-                    return clean_digits + ".TW"
-                    
-            # 檢查第一筆搜尋結果
-            first_sym = data["quotes"][0].get("symbol", "")
-            if first_sym:
-                clean_digits = ''.join(filter(str.isdigit, first_sym))
-                if len(clean_digits) in (4, 5):
-                    for suffix in (".TW", ".TWO"):
-                        test_sym = clean_digits + suffix
-                        if _has_price(test_sym):
-                            return test_sym
-                    return clean_digits + ".TW"
-                if _has_price(first_sym):
-                    return first_sym
     except Exception:
         pass
         
-    # 3. 最後防線：若輸入含有數字，自動萃取並依序測試 .TW 與 .TWO
+    # 4. 最後防線：若輸入含有數字，自動萃取並依序測試 .TW 與 .TWO
     clean_input_digits = ''.join(filter(str.isdigit, text))
     if clean_input_digits:
         for suffix in (".TW", ".TWO"):
