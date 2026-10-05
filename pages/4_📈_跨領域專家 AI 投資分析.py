@@ -25,7 +25,7 @@ st.set_page_config(page_title="跨領域專家 AI 投資分析與量化預測系
 
 DISCLAIMER = (
     "免責聲明：本報告由程式依公開資料與使用者設定之參數自動試算，僅供研究與學習參考，"
-    "不構成任何投資建議。資料來源為 Yahoo Finance，可能有延遲或缺漏；標示「手動」者為使用者自行輸入。"
+    "不構成任何投資建議。資料來源為 Yahoo Finance 與各大財經媒體，可能有延遲或缺漏；標示「手動」者為使用者自行輸入。"
 )
 
 def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
@@ -141,110 +141,117 @@ def get_company_name(symbol):
         pass
     return symbol
 
-@st.cache_data(ttl=1800)
-def fetch_news_sentiment_recent(symbol, company_full_name, hours=48):
+# ==========================================
+# 2. 多管道真實新聞與情緒、展望量化模組
+# ==========================================
+def clean_text(text):
+    return re.sub(r'\s+', '', text)
+
+def calculate_score_from_titles(titles, bullish_words, bearish_words, base_adj=3.0):
+    if not titles:
+        return 5.0, 0
+    score_sum = 5.0
+    count = 0
+    for title in titles:
+        b_hits = sum(1 for w in bullish_words if w in title)
+        r_hits = sum(1 for w in bearish_words if w in title)
+        if b_hits > r_hits:
+            score_sum += 1.5 * b_hits
+        elif r_hits > b_hits:
+            score_sum -= 1.5 * r_hits
+        count += 1
+    final_score = max(0.0, min(10.0, round(score_sum / max(1, count) + base_adj, 1)))
+    return final_score, count
+
+def fetch_anue(stock_code, hours=168):
+    titles = []
     try:
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
-        })
-        clean_sym = symbol.split('.')[0]
-        query_kw = company_full_name.split('(')[0].strip() or clean_sym
-        
-        news_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={query_kw}&quotesCount=0&newsCount=15"
-        res = session.get(news_url, timeout=5)
+        clean_code = stock_code.split('.')[0]
+        url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={clean_code}&limit=10"
+        res = requests.get(url, timeout=5)
         data = res.json()
-        
-        news_items = data.get("news", [])
-        if not news_items:
-            return 5.0, "無近期新聞，給予中性分"
-            
-        now_timestamp = datetime.now().timestamp()
-        time_threshold = now_timestamp - (hours * 3600)
-        
-        filtered_items = []
-        for item in news_items:
-            pub_time = item.get("providerPublishTime", 0)
-            if pub_time >= time_threshold:
-                filtered_items.append(item)
-                
-        if not filtered_items:
-            return 5.0, f"近 {hours}H 內無相關新聞，給予中性分"
-            
-        bullish_words = ["漲", "高", "強", "買超", "創高", "突破", "擴產", "營收揚升", "暢旺", "多方", "利多", "成長"]
-        bearish_words = ["跌", "殺", "跌停", "衰退", "利空", "縮減", "賣超", "低迷", "修正", "震盪", "壓力"]
-        
-        score_sum = 5.0
-        count = 0
-        for item in filtered_items:
-            title = item.get("title", "")
-            b_hits = sum(1 for w in bullish_words if w in title)
-            r_hits = sum(1 for w in bearish_words if w in title)
-            
-            if b_hits > r_hits:
-                score_sum += 1.5 * b_hits
-            elif r_hits > b_hits:
-                score_sum -= 1.5 * r_hits
-            count += 1
-            
-        final_score = max(0.0, min(10.0, round(score_sum / max(1, count) + 3.0, 1)))
-        return final_score, f"成功篩選近 {hours}H 內 {count} 篇新聞計算情緒"
+        items = data.get("items", {}).get("data", [])
+        time_threshold = datetime.now().timestamp() - (hours * 3600)
+        for item in items:
+            if item.get("publishAt", 0) >= time_threshold:
+                titles.append(item.get("title", ""))
     except Exception:
-        return 5.0, f"聯網抓取近 {hours}H 情緒異常，採用預設值"
+        pass
+    return titles
+
+def fetch_yahoo_tw(stock_code, hours=168):
+    titles = []
+    try:
+        clean_code = stock_code.split('.')[0]
+        url = f"https://tw.stock.yahoo.com/class-html?category=qsp-news&stock_id={clean_code}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        news_elements = soup.find_all(['h3', 'a'], class_=lambda c: c and ('convert' in c or 'Fw' in c))
+        for el in news_elements:
+            title = el.get_text().strip()
+            if title and len(title) > 5:
+                titles.append(title)
+    except Exception:
+        pass
+    return list(set(titles))[:10]
+
+def fetch_moneydj(stock_code, hours=168):
+    titles = []
+    try:
+        clean_code = stock_code.split('.')[0]
+        url = f"https://www.moneydj.com/KMDJ/search/list.aspx?SearchType=A&SearchKey={clean_code}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        grid = soup.find('table', class_='maintable')
+        if grid:
+            for a in grid.find_all('a'):
+                title = a.get_text().strip()
+                if title and len(title) > 5:
+                    titles.append(title)
+    except Exception:
+        pass
+    return list(set(titles))[:10]
+
+def fetch_news_papers(stock_code, hours=168):
+    titles = []
+    try:
+        clean_code = stock_code.split('.')[0]
+        url = f"https://www.chinatimes.com/search/{clean_code}?chdtv"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        for h3 in soup.find_all('h3', class_='title'):
+            title = h3.get_text().strip()
+            if title:
+                titles.append(title)
+    except Exception:
+        pass
+    return list(set(titles))[:10]
 
 @st.cache_data(ttl=1800)
-def fetch_growth_score_recent(symbol, company_full_name, hours=48):
-    try:
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
-        })
-        clean_sym = symbol.split('.')[0]
-        query_kw = company_full_name.split('(')[0].strip() or clean_sym
-        
-        news_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={query_kw}&quotesCount=0&newsCount=15"
-        res = session.get(news_url, timeout=5)
-        data = res.json()
-        
-        news_items = data.get("news", [])
-        if not news_items:
-            return 5.0, "無近期新聞，給予中性成長評分"
-            
-        now_timestamp = datetime.now().timestamp()
-        time_threshold = now_timestamp - (hours * 3600)
-        
-        filtered_items = []
-        for item in news_items:
-            pub_time = item.get("providerPublishTime", 0)
-            if pub_time >= time_threshold:
-                filtered_items.append(item)
-                
-        if not filtered_items:
-            return 5.0, f"近 {hours}H 內無相關新聞，給予中性成長評分"
-            
-        growth_positive_words = ["展望佳", "成長", "擴產", "訂單滿", "創高", "突破", "上修", "法人看好", "強勁", "增溫"]
-        growth_negative_words = ["下修", "衰退", "保守", "庫存調整", "壓力", "疲弱", "下滑"]
-        
-        score_sum = 5.0
-        count = 0
-        for item in filtered_items:
-            title = item.get("title", "")
-            p_hits = sum(1 for w in growth_positive_words if w in title)
-            n_hits = sum(1 for w in growth_negative_words if w in title)
-            
-            if p_hits > n_hits:
-                score_sum += 2.0 * p_hits
-            elif n_hits > p_hits:
-                score_sum -= 2.0 * n_hits
-            count += 1
-            
-        final_score = max(0.0, min(10.0, round(score_sum / max(1, count) + 2.0, 1)))
-        return final_score, f"成功篩選近 {hours}H 內 {count} 篇新聞展望"
-    except Exception:
-        return 5.0, f"聯網抓取近 {hours}H 展望異常，採用預設值"
+def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
+    anue_titles = fetch_anue(stock_code, hours)
+    yahoo_titles = fetch_yahoo_tw(stock_code, hours)
+    dj_titles = fetch_moneydj(stock_code, hours)
+    paper_titles = fetch_news_papers(stock_code, hours)
+    
+    all_titles = list(set(anue_titles + yahoo_titles + dj_titles + paper_titles))
+    
+    bullish = ["漲", "高", "強", "買超", "創高", "突破", "擴產", "營收揚升", "暢旺", "多方", "利多", "成長", "大賺", "雙增"]
+    bearish = ["跌", "殺", "跌停", "衰退", "利空", "縮減", "賣超", "低迷", "修正", "震盪", "壓力"]
+    growth_pos = ["展望佳", "成長", "擴產", "訂單滿", "創高", "突破", "上修", "看好", "強勁", "增溫", "新單"]
+    growth_neg = ["下修", "衰退", "保守", "庫存", "壓力", "疲弱", "下滑", "淡季"]
+    
+    s_score, s_cnt = calculate_score_from_titles(all_titles, bullish, bearish, base_adj=3.0)
+    g_score, g_cnt = calculate_score_from_titles(all_titles, growth_pos, growth_neg, base_adj=2.0)
+    
+    status_msg = f"成功從鉅亨網、Yahoo、MoneyDJ 與工商時報等管道取得 {len(all_titles)} 篇獨特新聞進行文本量化分析"
+    return s_score, g_score, status_msg, all_titles
 
 # ==========================================
-# 2. 行情與財報數據擷取
+# 3. 行情與財報數據擷取
 # ==========================================
 def _eps_series(df):
     if df is None or getattr(df, "empty", True):
@@ -257,7 +264,7 @@ def _eps_series(df):
     return None
 
 # ==========================================
-# 3. 藍紅動能區建議價格模擬器
+# 4. 藍紅動能區建議價格模擬器
 # ==========================================
 def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     last_close = close_prices.iloc[-1]
@@ -296,7 +303,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 4. Word 報告生成（整合多期報酬率）
+# 5. Word 報告生成（整合多期報酬率與多管道輿情）
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -353,9 +360,14 @@ def generate_word_report(ctx):
         r = table.add_row().cells
         r[0].text, r[1].text, r[2].text = a, b, c
 
-    doc.add_heading("五、即時新聞情緒與展望成長評分 (聯網真實數據)", level=1)
-    doc.add_paragraph(f"近 48H 聯網新聞聲量情緒分數：{ctx['sentiment']:.1f} / 10（狀態說明：{ctx['news_status']}）", style="List Bullet")
-    doc.add_paragraph(f"近 48H 聯網展望成長評分：{ctx['growth_score']:.1f} / 10（狀態說明：{ctx['growth_status']}）", style="List Bullet")
+    doc.add_heading("五、多管道財經新聞輿情與展望成長評分 (真實聯網)", level=1)
+    doc.add_paragraph(f"多管道綜合輿情情緒分數：{ctx['sentiment']:.1f} / 10（狀態：{ctx['news_status']}）", style="List Bullet")
+    doc.add_paragraph(f"多管道綜合未來展望評分：{ctx['growth_score']:.1f} / 10", style="List Bullet")
+    
+    if ctx['news_titles']:
+        doc.add_paragraph("近期抓取之代表性新聞標題：")
+        for title in ctx['news_titles'][:5]:
+            doc.add_paragraph(f"• {title}", style="List Bullet")
 
     doc.add_heading("六、風險提示", level=1)
     for r in ctx["risks"]:
@@ -369,13 +381,13 @@ def generate_word_report(ctx):
     return buf.getvalue()
 
 # ==========================================
-# 5. 側邊欄參數設定
+# 6. 側邊欄參數設定
 # ==========================================
 st.sidebar.title("⚙️ 標的與參數設定")
 
 with st.sidebar.form(key="search_form"):
     user_query = st.text_input(
-        "輸入公司名稱或代號（如 今國光, 6209, 聯電, 2303, NVDA）", value="今國光"
+        "輸入公司名稱或代號（如 今國光, 6209, 台積電, 2330, NVDA）", value="2330"
     ).strip()
     st.form_submit_button("📊 執行 AI 與基本面綜合分析")
 
@@ -391,12 +403,11 @@ session.headers.update({
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 🌟 自動聯網抓取近 48 小時內新聞並計算情緒與展望成長分數
-auto_sentiment_score, news_status_msg = fetch_news_sentiment_recent(symbol, company_name, hours=48)
-auto_growth_score, growth_status_msg = fetch_growth_score_recent(symbol, company_name, hours=48)
+# 🌟 執行多管道真實新聞爬蟲與量化評分
+auto_sentiment_score, auto_growth_score, news_status_msg, fetched_titles = comprehensive_quant_evaluation(symbol, company_name, hours=168)
 
 # ==========================================
-# 6. 主程式執行與即時行情、計量模型運算
+# 7. 主程式執行與即時行情、計量模型運算
 # ==========================================
 with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料（NVDA、SOX 等），並進行機器學習訓練與價格模擬...'):
     stock_code = symbol.split('.')[0]
@@ -527,7 +538,7 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     gamma_trend_str = "加速湧入 ↗" if gamma_trend_val > 0 else "動能衰退 ↘"
 
 # ==========================================
-# 7. 側邊欄財報與估值覆寫設定
+# 8. 側邊欄財報與估值覆寫設定
 # ==========================================
 st.sidebar.markdown("---")
 st.sidebar.subheader("財報 EPS 設定")
@@ -551,16 +562,14 @@ st.sidebar.subheader("估值模型變數")
 eps_fwd_base = st.sidebar.number_input("基礎預估 Forward EPS (模擬範例數據)", min_value=0.01, value=float(max(0.5, round(ttm_eps_val * 1.1, 2))), step=0.1, format="%.2f")
 pe_base = st.sidebar.number_input("產業中樞本益比 (PE) (模擬範例數據)", min_value=1.0, value=22.0)
 
-st.sidebar.info(f"📰 新聞情緒狀態：{news_status_msg}")
-sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) (近 48H 聯網真實新聞情緒)", 0.0, 10.0, float(auto_sentiment_score), 0.1)
-
-st.sidebar.info(f"📈 展望成長狀態：{growth_status_msg}")
-growth_score = st.sidebar.slider("展望成長評分 (0~10) (近 48H 聯網真實展望評分)", 0.0, 10.0, float(auto_growth_score), 0.1)
+st.sidebar.info(f"📰 輿情狀態：{news_status_msg}")
+sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) (多管道真實輿情)", 0.0, 10.0, float(auto_sentiment_score), 0.1)
+growth_score = st.sidebar.slider("展望成長評分 (0~10) (多管道真實展望)", 0.0, 10.0, float(auto_growth_score), 0.1)
 
 risk_val = st.sidebar.slider("下行風險折價 (-PE) (模擬範例數據)", 0.0, 10.0, 1.0, 0.1)
 
 # ==========================================
-# 8. 估值核心計算
+# 9. 估值核心計算
 # ==========================================
 hot_triggered = beta3_trend_val > 0
 eps_triggered = ttm_eps_val > annual_eps_val > 0
@@ -609,7 +618,7 @@ def fmt_pct(v):
     return "資料不足" if v is None else f"{v:+.2f}%"
 
 # ==========================================
-# 9. 主畫面呈現
+# 10. 主畫面呈現
 # ==========================================
 st.title("📈 跨領域專家 AI 投資分析與量化預測")
 st.subheader(f"🏢 {company_name}")
@@ -623,7 +632,7 @@ c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間
 c3.metric("AI 綜合評等", rec, rec_icon)
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
 
-# 🌟 主畫面呈現多期報酬率
+# 多期報酬率呈現
 st.markdown("---")
 st.markdown("### ⏱️ 多期報酬率表現 (自動計算模組)")
 r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns(5)
@@ -645,7 +654,7 @@ ctx = {
     "pe_target": pe_target, "pe_linear": pe_linear, "eps_adj": eps_adj,
     "hist_pe": hist_pe, "fwd_pe": fwd_pe, "risks": risks,
     "sentiment": sentiment, "growth_score": growth_score,
-    "news_status": news_status_msg, "growth_status": growth_status_msg
+    "news_status": news_status_msg, "news_titles": fetched_titles
 }
 
 st.download_button(
@@ -691,11 +700,16 @@ with right:
     col_m3.metric("資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
 
     st.markdown("---")
-    st.markdown("**📰 近 48H 聯網即時情緒與展望評分 (真實聯網數據)：**")
+    st.markdown("**📰 多管道財經新聞輿情與展望評分 (真實聯網數據)：**")
     ns1, ns2 = st.columns(2)
     ns1.metric("新聞聲量情緒", f"{sentiment:.1f} / 10")
     ns2.metric("展望成長評分", f"{growth_score:.1f} / 10")
-    st.caption(f"• 情緒狀態：{news_status_msg}\n• 展望狀態：{growth_status_msg}")
+    st.caption(f"• 狀態：{news_status_msg}")
+
+    if fetched_titles:
+        with st.expander("🔍 檢視抓取到的近期新聞標題清單"):
+            for idx, t_title in enumerate(fetched_titles[:10]):
+                st.write(f"{idx+1}. {t_title}")
 
     st.markdown("**近 4 季單季 EPS：**")
     if q_eps_list:
@@ -707,7 +721,7 @@ with right:
     st.dataframe(pd.DataFrame(risks, columns=["風險維度", "關鍵影響因子", "影響評估"]), hide_index=True)
 
 # ==========================================
-# 10. 歷史回測與 SHAP 決策圖表
+# 11. 歷史回測與 SHAP 決策圖表
 # ==========================================
 st.markdown("---")
 st.markdown("### 📊 歷史波段回測與 SHAP AI 決策邏輯")
@@ -746,3 +760,4 @@ with fig_col2:
     plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14)
     plt.tight_layout()
     st.pyplot(fig2)
+
