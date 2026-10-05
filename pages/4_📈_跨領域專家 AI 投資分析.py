@@ -31,7 +31,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 動態聯網搜尋與「先測 .TW、再測 .TWO」代號解析機制（支援中文名稱強效搜尋）
+# 1. 採用您提供的標的解析與名稱抓取架構
 # ==========================================
 def _has_price(symbol):
     try:
@@ -43,106 +43,96 @@ def _has_price(symbol):
     except Exception:
         return False
 
-@st.cache_data(ttl=3600)
-def resolve_symbol(user_input):
-    text = user_input.strip()
-    upper_text = text.upper()
-    
-    # 1. 若已經是標準代號格式
-    if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
-        return upper_text
-    if upper_text.isdigit() and len(upper_text) in (4, 5, 6):
-        for suffix in (".TW", ".TWO"):
-            test_sym = upper_text + suffix
-            if _has_price(test_sym):
-                return test_sym
-        return upper_text + ".TW"
-
-    # 2. 優先透過 Yahoo 奇摩股市專用搜尋 API 完美支援中文名稱（如「今國光」）
+def yahoo_search_stock(text):
+    """
+    輔助 Yahoo 搜尋 API，支援中文公司名稱（如「今國光」、「台積電」）查詢
+    """
     try:
         session = requests.Session()
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
         })
+        # 優先嘗試台灣 Yahoo 股市專用搜尋
         tw_search_url = f"https://tw.quote.yahoo.com/v1/search?q={text}&category=stock"
         res = session.get(tw_search_url, timeout=5)
         data = res.json()
-        
         if "data" in data and len(data["data"]) > 0:
-            for item in data["data"]:
-                sym_raw = item.get("symbol", "")
-                clean_digits = ''.join(filter(str.isdigit, sym_raw))
-                if len(clean_digits) in (4, 5):
-                    for suffix in (".TW", ".TWO"):
-                        test_sym = clean_digits + suffix
-                        if _has_price(test_sym):
-                            return test_sym
+            return [{"symbol": item.get("symbol", "")} for item in data["data"]]
     except Exception:
         pass
 
-    # 3. 備援：透過 Yahoo Finance 全球搜尋 API
     try:
         session = requests.Session()
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
         })
+        # 備援：Yahoo Finance 全球搜尋 API
         search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={text}&quotesCount=10&newsCount=0"
         res = session.get(search_url, timeout=5)
         data = res.json()
-        
-        if "quotes" in data and len(data["quotes"]) > 0:
-            for q in data["quotes"]:
-                sym = q.get("symbol", "")
-                if ".TW" in sym or ".TWO" in sym:
-                    if _has_price(sym):
-                        return sym
-            for q in data["quotes"]:
-                sym = q.get("symbol", "")
-                clean_digits = ''.join(filter(str.isdigit, sym))
-                if len(clean_digits) in (4, 5):
-                    for suffix in (".TW", ".TWO"):
-                        test_sym = clean_digits + suffix
-                        if _has_price(test_sym):
-                            return test_sym
+        if "quotes" in data:
+            return data["quotes"]
     except Exception:
         pass
         
-    # 4. 最後防線：若輸入含有數字，自動萃取並依序測試 .TW 與 .TWO
-    clean_input_digits = ''.join(filter(str.isdigit, text))
-    if clean_input_digits:
-        for suffix in (".TW", ".TWO"):
-            test_sym = clean_input_digits + suffix
-            if _has_price(test_sym):
-                return test_sym
-        return clean_input_digits + ".TW"
-        
-    return text
+    return []
+
+@st.cache_data(ttl=3600)
+def resolve_symbol(user_input):
+    text = user_input.strip()
+    # 已是 Yahoo 格式
+    if text.upper().endswith(".TW"):
+        return text.upper()
+    if text.upper().endswith(".TWO"):
+        return text.upper()
+    # 純數字
+    if text.isdigit():
+        for suffix in [".TW", ".TWO"]:
+            symbol = text + suffix
+            if _has_price(symbol):
+                return symbol
+        return None
+    # 中文名稱搜尋
+    quotes = yahoo_search_stock(text)
+    for q in quotes:
+        symbol = q.get("symbol", "")
+        if symbol.endswith(".TW"):
+            if _has_price(symbol):
+                return symbol
+    for q in quotes:
+        symbol = q.get("symbol", "")
+        if symbol.endswith(".TWO"):
+            if _has_price(symbol):
+                return symbol
+    # 備援：從 symbol 中抽數字
+    for q in quotes:
+        raw_symbol = q.get("symbol", "")
+        digits = "".join(
+            c for c in raw_symbol
+            if c.isdigit()
+        )
+        if len(digits) in [4, 5]:
+            for suffix in [".TW", ".TWO"]:
+                symbol = digits + suffix
+                if _has_price(symbol):
+                    return symbol
+    return text # 若皆未命中則回傳原輸入
 
 @st.cache_data(ttl=3600)
 def get_company_name(symbol):
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
-    })
     try:
-        tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{symbol.split('.')[0]}"
-        res = session.get(tw_yahoo_url, timeout=5)
-        match = re.search(r'<title>(.*?)\(', res.text)
-        if match:
-            extracted_name = match.group(1).strip()
-            if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
-                return f"{extracted_name} ({symbol})"
-    except Exception:
-        pass
-        
-    try:
-        info = yf.Ticker(symbol, session=session).info
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
+        })
+        stock = yf.Ticker(symbol, session=session)
+        info = stock.info
         name = info.get("longName") or info.get("shortName")
         if name:
             return f"{name} ({symbol})"
     except Exception:
         pass
-    return f"{symbol}"
+    return symbol
 
 @st.cache_data(ttl=1800)
 def fetch_news_sentiment_recent(symbol, company_full_name, hours=48):
