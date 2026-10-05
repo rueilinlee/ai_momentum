@@ -142,7 +142,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 多管道真實新聞與情緒、展望量化模組
+# 2. 多管道真實新聞與多時間維度輿情評分模組
 # ==========================================
 def clean_text(text):
     return re.sub(r'\s+', '', text)
@@ -167,7 +167,7 @@ def fetch_anue(stock_code, hours=168):
     titles = []
     try:
         clean_code = stock_code.split('.')[0]
-        url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={clean_code}&limit=10"
+        url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={clean_code}&limit=20"
         res = requests.get(url, timeout=5)
         data = res.json()
         items = data.get("items", {}).get("data", [])
@@ -194,7 +194,7 @@ def fetch_yahoo_tw(stock_code, hours=168):
                 titles.append(title)
     except Exception:
         pass
-    return list(set(titles))[:10]
+    return list(set(titles))[:15]
 
 def fetch_moneydj(stock_code, hours=168):
     titles = []
@@ -212,7 +212,7 @@ def fetch_moneydj(stock_code, hours=168):
                     titles.append(title)
     except Exception:
         pass
-    return list(set(titles))[:10]
+    return list(set(titles))[:15]
 
 def fetch_news_papers(stock_code, hours=168):
     titles = []
@@ -228,7 +228,7 @@ def fetch_news_papers(stock_code, hours=168):
                 titles.append(title)
     except Exception:
         pass
-    return list(set(titles))[:10]
+    return list(set(titles))[:15]
 
 @st.cache_data(ttl=1800)
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
@@ -247,7 +247,7 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     s_score, s_cnt = calculate_score_from_titles(all_titles, bullish, bearish, base_adj=3.0)
     g_score, g_cnt = calculate_score_from_titles(all_titles, growth_pos, growth_neg, base_adj=2.0)
     
-    status_msg = f"成功從鉅亨網、Yahoo、MoneyDJ 與工商時報等管道取得 {len(all_titles)} 篇獨特新聞進行文本量化分析"
+    status_msg = f"成功獲取 {len(all_titles)} 篇新聞進行文本量化分析 (時段: {hours}H)"
     return s_score, g_score, status_msg, all_titles
 
 # ==========================================
@@ -303,7 +303,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 5. Word 報告生成（整合多期報酬率與多管道輿情）
+# 5. Word 報告生成（整合多期報酬率與多時段輿情）
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -332,17 +332,37 @@ def generate_word_report(ctx):
         r = ret_table.add_row().cells
         r[0].text, r[1].text = period_name, ("資料不足" if val is None else f"{val:+.2f}%")
 
-    doc.add_heading("二、AI 模型預測與動能區間", level=1)
+    doc.add_heading("二、多時段財經新聞輿情與展望成長評分", level=1)
+    sent_table = doc.add_table(rows=1, cols=3)
+    sent_table.style = "Table Grid"
+    sh = sent_table.rows[0].cells
+    sh[0].text, sh[1].text, sh[2].text = "時間維度", "新聞情緒分數 (0~10)", "未來展望成長分數 (0~10)"
+    
+    sent_rows_data = [
+        ("近 1 週 (168H)", ctx['sent_1w'], ctx['growth_1w']),
+        ("近 2 週 (336H)", ctx['sent_2w'], ctx['growth_2w']),
+        ("近 1 個月 (720H)", ctx['sent_1m'], ctx['growth_1m']),
+    ]
+    for p_name, s_val, g_val in sent_rows_data:
+        sr = sent_table.add_row().cells
+        sr[0].text, sr[1].text, sr[2].text = p_name, f"{s_val:.1f} 分", f"{g_val:.1f} 分"
+
+    if ctx['news_titles']:
+        doc.add_paragraph("近期抓取之代表性新聞標題：")
+        for title in ctx['news_titles'][:5]:
+            doc.add_paragraph(f"• {title}", style="List Bullet")
+
+    doc.add_heading("三、AI 模型預測與動能區間", level=1)
     doc.add_paragraph(f"未來 5 日擊敗大盤勝率預測：{ctx['latest_proba']:.2%}")
     doc.add_paragraph(f"AI 建議逢低買點：{ctx['blue_price']:,.2f} 元（預估 RSI 降至 {ctx['blue_rsi']:.1f}）")
     doc.add_paragraph(f"AI 建議逢高賣出價：{ctx['red_price']:,.2f} 元（預估 RSI 升至 {ctx['red_rsi']:.1f}）")
 
-    doc.add_heading("三、基本面估值模型", level=1)
+    doc.add_heading("四、基本面估值模型", level=1)
     doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x，目標價 {ctx['tp_base']:,.2f}")
     doc.add_paragraph(f"線性基準 PE = {ctx['pe_linear']:.1f}x，目標價 {ctx['tp_linear']:,.2f}")
     doc.add_paragraph(f"調整後預估 EPS：{ctx['eps_adj']:.2f}")
 
-    doc.add_heading("四、財務檢核數據", level=1)
+    doc.add_heading("五、財務檢核數據", level=1)
     table = doc.add_table(rows=1, cols=3)
     table.style = "Table Grid"
     h = table.rows[0].cells
@@ -359,15 +379,6 @@ def generate_word_report(ctx):
     for a, b, c in rows:
         r = table.add_row().cells
         r[0].text, r[1].text, r[2].text = a, b, c
-
-    doc.add_heading("五、多管道財經新聞輿情與展望成長評分 (真實聯網)", level=1)
-    doc.add_paragraph(f"多管道綜合輿情情緒分數：{ctx['sentiment']:.1f} / 10（狀態：{ctx['news_status']}）", style="List Bullet")
-    doc.add_paragraph(f"多管道綜合未來展望評分：{ctx['growth_score']:.1f} / 10", style="List Bullet")
-    
-    if ctx['news_titles']:
-        doc.add_paragraph("近期抓取之代表性新聞標題：")
-        for title in ctx['news_titles'][:5]:
-            doc.add_paragraph(f"• {title}", style="List Bullet")
 
     doc.add_heading("六、風險提示", level=1)
     for r in ctx["risks"]:
@@ -403,8 +414,10 @@ session.headers.update({
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 🌟 執行多管道真實新聞爬蟲與量化評分
-auto_sentiment_score, auto_growth_score, news_status_msg, fetched_titles = comprehensive_quant_evaluation(symbol, company_name, hours=168)
+# 🌟 執行多時段（近1週、近2週、近1個月）真實新聞爬蟲與量化評分
+sent_1w, growth_1w, status_1w, titles_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
+sent_2w, growth_2w, status_2w, titles_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
+sent_1m, growth_1m, status_1m, titles_1m = comprehensive_quant_evaluation(symbol, company_name, hours=720)
 
 # ==========================================
 # 7. 主程式執行與即時行情、計量模型運算
@@ -435,7 +448,7 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
 
     change = (price / float(valid_stock_data.iloc[-2]) - 1) * 100 if len(valid_stock_data) >= 2 else 0.0
 
-    # 🌟 多期報酬率自動計算模組
+    # 多期報酬率自動計算模組
     def get_ret(n):
         return (price / float(valid_stock_data.iloc[-1 - n]) - 1) * 100 if len(valid_stock_data) > n else None
 
@@ -562,9 +575,9 @@ st.sidebar.subheader("估值模型變數")
 eps_fwd_base = st.sidebar.number_input("基礎預估 Forward EPS (模擬範例數據)", min_value=0.01, value=float(max(0.5, round(ttm_eps_val * 1.1, 2))), step=0.1, format="%.2f")
 pe_base = st.sidebar.number_input("產業中樞本益比 (PE) (模擬範例數據)", min_value=1.0, value=22.0)
 
-st.sidebar.info(f"📰 輿情狀態：{news_status_msg}")
-sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) (多管道真實輿情)", 0.0, 10.0, float(auto_sentiment_score), 0.1)
-growth_score = st.sidebar.slider("展望成長評分 (0~10) (多管道真實展望)", 0.0, 10.0, float(auto_growth_score), 0.1)
+st.sidebar.info(f"📰 輿情狀態：{status_1w}")
+sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) [以近1週為基準]", 0.0, 10.0, float(sent_1w), 0.1)
+growth_score = st.sidebar.slider("展望成長評分 (0~10) [以近1週為基準]", 0.0, 10.0, float(growth_1w), 0.1)
 
 risk_val = st.sidebar.slider("下行風險折價 (-PE) (模擬範例數據)", 0.0, 10.0, 1.0, 0.1)
 
@@ -642,6 +655,20 @@ r_col3.metric("近 1 個月 (20日)", fmt_pct(ret_1m))
 r_col4.metric("近 2 個月 (40日)", fmt_pct(ret_2m))
 r_col5.metric("近 3 個月 (60日)", fmt_pct(ret_3m))
 
+# 多時段輿情情緒與展望成長呈現
+st.markdown("---")
+st.markdown("### 📰 多時段財經新聞輿情與展望成長評分")
+s_col1, s_col2, s_col3 = st.columns(3)
+with s_col1:
+    st.metric("近 1 週輿情情緒", f"{sent_1w:.1f} 分")
+    st.metric("近 1 週展望成長", f"{growth_1w:.1f} 分")
+with s_col2:
+    st.metric("近 2 週輿情情緒", f"{sent_2w:.1f} 分")
+    st.metric("近 2 週展望成長", f"{growth_2w:.1f} 分")
+with s_col3:
+    st.metric("近 1 個月輿情情緒", f"{sent_1m:.1f} 分")
+    st.metric("近 1 個月展望成長", f"{growth_1m:.1f} 分")
+
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
@@ -649,12 +676,15 @@ ctx = {
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
     "blue_rsi": blue_rsi, "red_rsi": red_rsi,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
+    "sent_1w": sent_1w, "growth_1w": growth_1w,
+    "sent_2w": sent_2w, "growth_2w": growth_2w,
+    "sent_1m": sent_1m, "growth_1m": growth_1m,
     "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
     "ttm_src": ttm_src, "annual_src": annual_src,
     "pe_target": pe_target, "pe_linear": pe_linear, "eps_adj": eps_adj,
     "hist_pe": hist_pe, "fwd_pe": fwd_pe, "risks": risks,
     "sentiment": sentiment, "growth_score": growth_score,
-    "news_status": news_status_msg, "news_titles": fetched_titles
+    "news_status": status_1w, "news_titles": titles_1w
 }
 
 st.download_button(
@@ -699,16 +729,9 @@ with right:
     col_m2.metric("AI 晶片純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
     col_m3.metric("資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
 
-    st.markdown("---")
-    st.markdown("**📰 多管道財經新聞輿情與展望評分 (真實聯網數據)：**")
-    ns1, ns2 = st.columns(2)
-    ns1.metric("新聞聲量情緒", f"{sentiment:.1f} / 10")
-    ns2.metric("展望成長評分", f"{growth_score:.1f} / 10")
-    st.caption(f"• 狀態：{news_status_msg}")
-
-    if fetched_titles:
-        with st.expander("🔍 檢視抓取到的近期新聞標題清單"):
-            for idx, t_title in enumerate(fetched_titles[:10]):
+    if titles_1w:
+        with st.expander("🔍 檢視近 1 週抓取到的新聞標題清單"):
+            for idx, t_title in enumerate(titles_1w[:10]):
                 st.write(f"{idx+1}. {t_title}")
 
     st.markdown("**近 4 季單季 EPS：**")
@@ -760,4 +783,3 @@ with fig_col2:
     plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14)
     plt.tight_layout()
     st.pyplot(fig2)
-
