@@ -52,14 +52,13 @@ def resolve_symbol(user_input):
     if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
         return upper_text
     if upper_text.isdigit() and len(upper_text) in (4, 5, 6):
-        # 嚴格順序：先測 .TW，若不行再測 .TWO
         for suffix in (".TW", ".TWO"):
             test_sym = upper_text + suffix
             if _has_price(test_sym):
                 return test_sym
         return upper_text + ".TW"
 
-    # 2. 透過 Yahoo Finance 搜尋 API 動態聯網查詢名稱對應代號
+    # 2. 透過 Yahoo Finance 搜尋 API 動態聯網查詢名稱（如「今國光」、「台積電」）
     try:
         session = requests.Session()
         session.headers.update({
@@ -77,7 +76,7 @@ def resolve_symbol(user_input):
                     if _has_price(sym):
                         return sym
             
-            # 若搜尋結果包含數字代號，萃取後嚴格先測 .TW 再測 .TWO
+            # 從搜尋結果中萃取出數字代號，嚴格執行「先測 .TW，再測 .TWO」
             for q in data["quotes"]:
                 sym = q.get("symbol", "")
                 clean_digits = ''.join(filter(str.isdigit, sym))
@@ -103,14 +102,15 @@ def resolve_symbol(user_input):
     except Exception:
         pass
         
-    # 3. 最後防線：若輸入含有數字，自動依序測試 .TW 與 .TWO
+    # 3. 最後防線：若輸入含有數字，自動萃取並依序測試 .TW 與 .TWO
     clean_input_digits = ''.join(filter(str.isdigit, text))
     if clean_input_digits:
         for suffix in (".TW", ".TWO"):
             test_sym = clean_input_digits + suffix
             if _has_price(test_sym):
                 return test_sym
-                
+        return clean_input_digits + ".TW"
+        
     return text
 
 @st.cache_data(ttl=3600)
@@ -357,7 +357,7 @@ st.sidebar.title("⚙️ 標的與參數設定")
 
 with st.sidebar.form(key="search_form"):
     user_query = st.text_input(
-        "輸入公司名稱或代號（如 聯電, 2303, 台積電, 2330）", value="台積電"
+        "輸入公司名稱或代號（如 今國光, 6209, 聯電, 2303）", value="今國光"
     ).strip()
     st.form_submit_button("📊 執行 AI 與基本面綜合分析")
 
