@@ -304,7 +304,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 5. Word 報告生成（整合多期報酬率、多時段輿情與實質風險量化模組）
+# 5. Word 報告生成
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -417,7 +417,7 @@ session.headers.update({
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 🌟 執行多時段真實新聞爬蟲與量化評分
+# 執行多時段真實新聞爬蟲與量化評分
 sent_1w, growth_1w, status_1w, titles_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
 sent_2w, growth_2w, status_2w, titles_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
 sent_1m, growth_1m, status_1m, titles_1m = comprehensive_quant_evaluation(symbol, company_name, hours=720)
@@ -481,9 +481,7 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     except Exception:
         pass
 
-    # ==========================================
-    # 7.1 實質風險與波動率動態量化模組運算
-    # ==========================================
+    # 實質風險與波動率動態量化模組運算
     fx_latest, fx_annual_vol, fx_low, fx_high = 32.0, 4.5, 30.5, 33.5
     try:
         fx_data = yf.download("USDTWD=X", period="1y", progress=False, session=session)
@@ -673,11 +671,14 @@ fwd_pe = price / eps_adj if eps_adj > 0 else 0.0
 hist_pe = price / ttm_eps_val if ttm_eps_val > 0 else 0.0
 
 if latest_proba > 0.55 and beta3_trend_val > 0:
-    rec, rec_icon = "強烈作多 (建議買進)", "🟢"
+    rec_title, rec_desc = "強烈作多", "建議買進"
 elif latest_proba < 0.45:
-    rec, rec_icon = "保守觀望 (建議賣出)", "🔴"
+    rec_title, rec_desc = "保守觀望", "建議賣出"
 else:
-    rec, rec_icon = "中性震盪 (持有)", "🟡"
+    rec_title, rec_desc = "中性震盪", "建議持有"
+
+rec_combined = f"{rec_title}\n({rec_desc})"
+rec_icon = "🟢" if "買" in rec_desc else ("🔴" if "賣" in rec_desc else "🟡")
 
 def fmt_pct(v):
     return "資料不足" if v is None else f"{v:+.2f}%"
@@ -694,7 +695,7 @@ change_txt = fmt_pct(change)
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("最新即時成交價", f"${price:,.2f}", f"{trade_date} ({change_txt})")
 c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間")
-c3.metric("AI 綜合評等", rec, rec_icon)
+c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
 
 # 多期報酬率呈現
@@ -724,7 +725,7 @@ with s_col3:
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
-    "tp_lower": tp_lower, "tp_upper": tp_upper, "rec": rec,
+    "tp_lower": tp_lower, "tp_upper": tp_upper, "rec": f"{rec_title} ({rec_desc})",
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
     "blue_rsi": blue_rsi, "red_rsi": red_rsi,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
@@ -762,14 +763,14 @@ with left:
     st.subheader("二、估值模型對照（動態非線性 vs 線性）")
     st.markdown(f"🚀 **動態非線性模型：** PE **{pe_target:.1f}x** → 目標價 **${tp_base:,.0f}**")
     if pe_capped:
-        st.caption(f"⚠️️ 原始 PE {pe_target_raw:.1f}x 超出範圍，已自動套用上下限保護。")
+        st.caption(f"⚠️ 原始 PE {pe_target_raw:.1f}x 超出範圍，已自動套用上下限保護。")
     st.markdown(f"📉 **線性基準模型：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**")
     st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
 
     s1, s2, s3 = st.columns(3)
     s1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x", delta_color="off")
     s2.metric("基準 (Base)", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x", delta_color="off")
-    s3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {tp_upper:.1f}x (動能PE+4x)", delta_color="off")
+    s3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x (動能PE+4x)", delta_color="off")
 
 with right:
     st.subheader("三、財務檢核與 AI 預測指標")
