@@ -31,7 +31,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 動態聯網搜尋公司代號與即時情緒/成長評分計算
+# 1. 動態聯網搜尋公司代號與即時新聞情緒/展望計算
 # ==========================================
 def _has_price(symbol):
     try:
@@ -103,7 +103,10 @@ def get_company_name(symbol):
     return f"{symbol}"
 
 @st.cache_data(ttl=1800)
-def fetch_news_sentiment(symbol, company_full_name):
+def fetch_news_sentiment_recent(symbol, company_full_name, hours=48):
+    """
+    動態聯網抓取指定時間內（預設 48 小時）的新聞並計算情緒分數 (0~10分)
+    """
     try:
         session = requests.Session()
         session.headers.update({
@@ -112,7 +115,7 @@ def fetch_news_sentiment(symbol, company_full_name):
         clean_sym = symbol.split('.')[0]
         query_kw = company_full_name.split('(')[0].strip() or clean_sym
         
-        news_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={query_kw}&quotesCount=0&newsCount=10"
+        news_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={query_kw}&quotesCount=0&newsCount=15"
         res = session.get(news_url, timeout=5)
         data = res.json()
         
@@ -120,12 +123,24 @@ def fetch_news_sentiment(symbol, company_full_name):
         if not news_items:
             return 5.0, "無近期新聞，給予中性分"
             
+        now_timestamp = datetime.now().timestamp()
+        time_threshold = now_timestamp - (hours * 3600)
+        
+        filtered_items = []
+        for item in news_items:
+            pub_time = item.get("providerPublishTime", 0)
+            if pub_time >= time_threshold:
+                filtered_items.append(item)
+                
+        if not filtered_items:
+            return 5.0, f"近 {hours}H 內無相關新聞，給予中性分"
+            
         bullish_words = ["漲", "高", "強", "買超", "創高", "突破", "擴產", "營收揚升", "暢旺", "多方", "利多", "成長"]
         bearish_words = ["跌", "殺", "跌停", "衰退", "利空", "縮減", "賣超", "低迷", "修正", "震盪", "壓力"]
         
         score_sum = 5.0
         count = 0
-        for item in news_items:
+        for item in filtered_items:
             title = item.get("title", "")
             b_hits = sum(1 for w in bullish_words if w in title)
             r_hits = sum(1 for w in bearish_words if w in title)
@@ -137,12 +152,15 @@ def fetch_news_sentiment(symbol, company_full_name):
             count += 1
             
         final_score = max(0.0, min(10.0, round(score_sum / max(1, count) + 3.0, 1)))
-        return final_score, f"成功解析 {count} 篇近期新聞情緒"
+        return final_score, f"成功篩選近 {hours}H 內 {count} 篇新聞計算情緒"
     except Exception:
-        return 5.0, "聯網抓取情緒異常，採用預設值"
+        return 5.0, f"聯網抓取近 {hours}H 情緒異常，採用預設值"
 
 @st.cache_data(ttl=1800)
-def fetch_growth_score(symbol, company_full_name):
+def fetch_growth_score_recent(symbol, company_full_name, hours=48):
+    """
+    動態聯網抓取指定時間內（預設 48 小時）的新聞計算展望成長評分 (0~10分)
+    """
     try:
         session = requests.Session()
         session.headers.update({
@@ -151,7 +169,7 @@ def fetch_growth_score(symbol, company_full_name):
         clean_sym = symbol.split('.')[0]
         query_kw = company_full_name.split('(')[0].strip() or clean_sym
         
-        news_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={query_kw}&quotesCount=0&newsCount=10"
+        news_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={query_kw}&quotesCount=0&newsCount=15"
         res = session.get(news_url, timeout=5)
         data = res.json()
         
@@ -159,12 +177,24 @@ def fetch_growth_score(symbol, company_full_name):
         if not news_items:
             return 5.0, "無近期新聞，給予中性成長評分"
             
+        now_timestamp = datetime.now().timestamp()
+        time_threshold = now_timestamp - (hours * 3600)
+        
+        filtered_items = []
+        for item in news_items:
+            pub_time = item.get("providerPublishTime", 0)
+            if pub_time >= time_threshold:
+                filtered_items.append(item)
+                
+        if not filtered_items:
+            return 5.0, f"近 {hours}H 內無相關新聞，給予中性成長評分"
+            
         growth_positive_words = ["展望佳", "成長", "擴產", "訂單滿", "創高", "突破", "上修", "法人看好", "強勁", "增溫"]
         growth_negative_words = ["下修", "衰退", "保守", "庫存調整", "壓力", "疲弱", "下滑"]
         
         score_sum = 5.0
         count = 0
-        for item in news_items:
+        for item in filtered_items:
             title = item.get("title", "")
             p_hits = sum(1 for w in growth_positive_words if w in title)
             n_hits = sum(1 for w in growth_negative_words if w in title)
@@ -176,9 +206,9 @@ def fetch_growth_score(symbol, company_full_name):
             count += 1
             
         final_score = max(0.0, min(10.0, round(score_sum / max(1, count) + 2.0, 1)))
-        return final_score, f"成功解析 {count} 篇近期新聞展望"
+        return final_score, f"成功篩選近 {hours}H 內 {count} 篇新聞展望"
     except Exception:
-        return 5.0, "聯網抓取展望異常，採用預設值"
+        return 5.0, f"聯網抓取近 {hours}H 展望異常，採用預設值"
 
 # ==========================================
 # 2. 行情與財報數據擷取
@@ -233,7 +263,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 4. Word 報告生成（已加入即時情緒與成長評分）
+# 4. Word 報告生成
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -275,8 +305,8 @@ def generate_word_report(ctx):
         r[0].text, r[1].text, r[2].text = a, b, c
 
     doc.add_heading("四、即時新聞情緒與展望成長評分 (聯網真實數據)", level=1)
-    doc.add_paragraph(f"聯網新聞聲量情緒分數：{ctx['sentiment']:.1f} / 10（狀態說明：{ctx['news_status']}）", style="List Bullet")
-    doc.add_paragraph(f"聯網展望成長評分：{ctx['growth_score']:.1f} / 10（狀態說明：{ctx['growth_status']}）", style="List Bullet")
+    doc.add_paragraph(f"近 48H 聯網新聞聲量情緒分數：{ctx['sentiment']:.1f} / 10（狀態說明：{ctx['news_status']}）", style="List Bullet")
+    doc.add_paragraph(f"近 48H 聯網展望成長評分：{ctx['growth_score']:.1f} / 10（狀態說明：{ctx['growth_status']}）", style="List Bullet")
 
     doc.add_heading("五、風險提示", level=1)
     for r in ctx["risks"]:
@@ -312,9 +342,9 @@ session.headers.update({
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 🌟 自動聯網抓取近期新聞並計算情緒與展望成長分數
-auto_sentiment_score, news_status_msg = fetch_news_sentiment(symbol, company_name)
-auto_growth_score, growth_status_msg = fetch_growth_score(symbol, company_name)
+# 🌟 自動聯網抓取近 48 小時內新聞並計算情緒與展望成長分數
+auto_sentiment_score, news_status_msg = fetch_news_sentiment_recent(symbol, company_name, hours=48)
+auto_growth_score, growth_status_msg = fetch_growth_score_recent(symbol, company_name, hours=48)
 
 # ==========================================
 # 6. 主程式執行與即時行情、計量模型運算
@@ -335,6 +365,7 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
 
     valid_stock_data = market_data[symbol].dropna()
     
+    # 🌟 即時報價抓取
     try:
         tkr = yf.Ticker(symbol, session=session)
         price = float(tkr.fast_info['last_price'])
@@ -465,10 +496,10 @@ eps_fwd_base = st.sidebar.number_input("基礎預估 Forward EPS (模擬範例�
 pe_base = st.sidebar.number_input("產業中樞本益比 (PE) (模擬範例數據)", min_value=1.0, value=22.0)
 
 st.sidebar.info(f"📰 新聞情緒狀態：{news_status_msg}")
-sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) (聯網真實新聞情緒)", 0.0, 10.0, float(auto_sentiment_score), 0.1)
+sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) (近 48H 聯網真實新聞情緒)", 0.0, 10.0, float(auto_sentiment_score), 0.1)
 
 st.sidebar.info(f"📈 展望成長狀態：{growth_status_msg}")
-growth_score = st.sidebar.slider("展望成長評分 (0~10) (聯網真實展望評分)", 0.0, 10.0, float(auto_growth_score), 0.1)
+growth_score = st.sidebar.slider("展望成長評分 (0~10) (近 48H 聯網真實展望評分)", 0.0, 10.0, float(auto_growth_score), 0.1)
 
 risk_val = st.sidebar.slider("下行風險折價 (-PE) (模擬範例數據)", 0.0, 10.0, 1.0, 0.1)
 
@@ -536,7 +567,6 @@ c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間
 c3.metric("AI 綜合評等", rec, rec_icon)
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
 
-# 🌟 將即時情緒與成長評分加入 ctx 以供介面與 Word 報告使用
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
@@ -593,9 +623,8 @@ with right:
     col_m2.metric("AI 晶片純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
     col_m3.metric("資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
 
-    # 🌟 新增：於主畫面右側即時展示聯網新聞情緒與展望成長評分
     st.markdown("---")
-    st.markdown("**📰 聯網即時情緒與展望評分 (真實聯網數據)：**")
+    st.markdown("**📰 近 48H 聯網即時情緒與展望評分 (真實聯網數據)：**")
     ns1, ns2 = st.columns(2)
     ns1.metric("新聞聲量情緒", f"{sentiment:.1f} / 10")
     ns2.metric("展望成長評分", f"{growth_score:.1f} / 10")
