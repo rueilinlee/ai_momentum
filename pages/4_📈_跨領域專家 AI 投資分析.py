@@ -49,11 +49,9 @@ def resolve_symbol(user_input):
     text = user_input.strip()
     upper_text = text.upper()
     
-    # 1. 已是 Yahoo 格式 (.TW / .TWO)
     if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
         return upper_text
         
-    # 2. 若輸入為純數字代號
     if upper_text.isdigit():
         for suffix in [".TW", ".TWO"]:
             symbol = upper_text + suffix
@@ -61,7 +59,6 @@ def resolve_symbol(user_input):
                 return symbol
         return upper_text + ".TW"
 
-    # 3. 透過 BeautifulSoup 精準查詢台股官方上市 (strMode=2) 與上櫃 (strMode=4) 清單
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
     }
@@ -87,7 +84,6 @@ def resolve_symbol(user_input):
         except Exception:
             continue
 
-    # 4. 備援：若官方清單沒抓到，嘗試呼叫 Yahoo 搜尋 API
     try:
         session = requests.Session()
         session.headers.update(headers)
@@ -112,19 +108,11 @@ def resolve_symbol(user_input):
 
 @st.cache_data(ttl=3600)
 def get_company_name(symbol):
-    # 常見美股與跨國標的中英文對照對應表
     cn_mapping = {
-        "NVDA": "輝達 (NVIDIA)",
-        "AAPL": "蘋果 (Apple)",
-        "TSLA": "特斯拉 (Tesla)",
-        "MSFT": "微軟 (Microsoft)",
-        "GOOGL": "谷歌 (Alphabet)",
-        "AMZN": "亞馬遜 (Amazon)",
-        "META": "Meta (臉書)",
-        "AMD": "超微 (AMD)",
-        "TSM": "台積電 ADR (TSMC)"
+        "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
+        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
+        "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)"
     }
-    
     clean_sym = symbol.upper().strip()
     if clean_sym in cn_mapping:
         return cn_mapping[clean_sym]
@@ -134,8 +122,6 @@ def get_company_name(symbol):
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
         })
-        
-        # 若為台股代號，嘗試從 Yahoo 股市網頁抓取中文名稱
         if ".TW" in symbol or ".TWO" in symbol:
             stock_id = symbol.split('.')[0]
             tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
@@ -153,7 +139,6 @@ def get_company_name(symbol):
             return f"{name} ({symbol})"
     except Exception:
         pass
-        
     return symbol
 
 @st.cache_data(ttl=1800)
@@ -311,7 +296,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 4. Word 報告生成
+# 4. Word 報告生成（整合多期報酬率）
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -324,17 +309,33 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"藍色動能區（建議買點）：{ctx['blue_price']:,.2f} 元 | 紅色動能區（建議賣價）：{ctx['red_price']:,.2f} 元")
     doc.add_paragraph(f"目標價區間：[{ctx['tp_lower']:,.0f}, {ctx['tp_upper']:,.0f}]")
 
-    doc.add_heading("一、AI 模型預測與動能區間", level=1)
+    doc.add_heading("一、多期報酬率表現", level=1)
+    ret_table = doc.add_table(rows=1, cols=2)
+    ret_table.style = "Table Grid"
+    rh = ret_table.rows[0].cells
+    rh[0].text, rh[1].text = "期間", "報酬率 (%)"
+    returns_data = [
+        ("近 1 週 (5日)", ctx['ret_1w']),
+        ("近 2 週 (10日)", ctx['ret_2w']),
+        ("近 1 個月 (20日)", ctx['ret_1m']),
+        ("近 2 個月 (40日)", ctx['ret_2m']),
+        ("近 3 個月 (60日)", ctx['ret_3m']),
+    ]
+    for period_name, val in returns_data:
+        r = ret_table.add_row().cells
+        r[0].text, r[1].text = period_name, ("資料不足" if val is None else f"{val:+.2f}%")
+
+    doc.add_heading("二、AI 模型預測與動能區間", level=1)
     doc.add_paragraph(f"未來 5 日擊敗大盤勝率預測：{ctx['latest_proba']:.2%}")
     doc.add_paragraph(f"AI 建議逢低買點：{ctx['blue_price']:,.2f} 元（預估 RSI 降至 {ctx['blue_rsi']:.1f}）")
     doc.add_paragraph(f"AI 建議逢高賣出價：{ctx['red_price']:,.2f} 元（預估 RSI 升至 {ctx['red_rsi']:.1f}）")
 
-    doc.add_heading("二、基本面估值模型", level=1)
+    doc.add_heading("三、基本面估值模型", level=1)
     doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x，目標價 {ctx['tp_base']:,.2f}")
     doc.add_paragraph(f"線性基準 PE = {ctx['pe_linear']:.1f}x，目標價 {ctx['tp_linear']:,.2f}")
     doc.add_paragraph(f"調整後預估 EPS：{ctx['eps_adj']:.2f}")
 
-    doc.add_heading("三、財務檢核數據", level=1)
+    doc.add_heading("四、財務檢核數據", level=1)
     table = doc.add_table(rows=1, cols=3)
     table.style = "Table Grid"
     h = table.rows[0].cells
@@ -352,11 +353,11 @@ def generate_word_report(ctx):
         r = table.add_row().cells
         r[0].text, r[1].text, r[2].text = a, b, c
 
-    doc.add_heading("四、即時新聞情緒與展望成長評分 (聯網真實數據)", level=1)
+    doc.add_heading("五、即時新聞情緒與展望成長評分 (聯網真實數據)", level=1)
     doc.add_paragraph(f"近 48H 聯網新聞聲量情緒分數：{ctx['sentiment']:.1f} / 10（狀態說明：{ctx['news_status']}）", style="List Bullet")
     doc.add_paragraph(f"近 48H 聯網展望成長評分：{ctx['growth_score']:.1f} / 10（狀態說明：{ctx['growth_status']}）", style="List Bullet")
 
-    doc.add_heading("五、風險提示", level=1)
+    doc.add_heading("六、風險提示", level=1)
     for r in ctx["risks"]:
         doc.add_paragraph(f"{r[0]}：{r[1]} — {r[2]}", style="List Bullet")
 
@@ -422,8 +423,16 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
         trade_date = valid_stock_data.index[-1].strftime('%Y-%m-%d')
 
     change = (price / float(valid_stock_data.iloc[-2]) - 1) * 100 if len(valid_stock_data) >= 2 else 0.0
-    ret_05m = (price / float(valid_stock_data.iloc[-11]) - 1) * 100 if len(valid_stock_data) > 10 else None
-    ret_3m = (price / float(valid_stock_data.iloc[-61]) - 1) * 100 if len(valid_stock_data) > 60 else None
+
+    # 🌟 多期報酬率自動計算模組
+    def get_ret(n):
+        return (price / float(valid_stock_data.iloc[-1 - n]) - 1) * 100 if len(valid_stock_data) > n else None
+
+    ret_1w = get_ret(5)    # 近 1 週 (5日)
+    ret_2w = get_ret(10)   # 近 2 週 (10日)
+    ret_1m = get_ret(20)   # 近 1 個月 (20日)
+    ret_2m = get_ret(40)   # 近 2 個月 (40日)
+    ret_3m = get_ret(60)   # 近 3 個月 (60日)
 
     # 財報數據抓取
     tkr_fin = yf.Ticker(symbol, session=session)
@@ -614,12 +623,23 @@ c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間
 c3.metric("AI 綜合評等", rec, rec_icon)
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
 
+# 🌟 主畫面呈現多期報酬率
+st.markdown("---")
+st.markdown("### ⏱️ 多期報酬率表現 (自動計算模組)")
+r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns(5)
+r_col1.metric("近 1 週 (5日)", fmt_pct(ret_1w))
+r_col2.metric("近 2 週 (10日)", fmt_pct(ret_2w))
+r_col3.metric("近 1 個月 (20日)", fmt_pct(ret_1m))
+r_col4.metric("近 2 個月 (40日)", fmt_pct(ret_2m))
+r_col5.metric("近 3 個月 (60日)", fmt_pct(ret_3m))
+
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
     "tp_lower": tp_lower, "tp_upper": tp_upper, "rec": rec,
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
     "blue_rsi": blue_rsi, "red_rsi": red_rsi,
+    "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
     "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
     "ttm_src": ttm_src, "annual_src": annual_src,
     "pe_target": pe_target, "pe_linear": pe_linear, "eps_adj": eps_adj,
