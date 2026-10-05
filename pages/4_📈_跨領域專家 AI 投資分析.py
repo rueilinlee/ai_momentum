@@ -14,6 +14,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 import matplotlib.pyplot as plt
 import requests
 import re
+from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
@@ -31,7 +32,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 採用您提供的標的解析與名稱抓取架構
+# 1. 採用 BeautifulSoup 精準解析證交所與櫃買中心官方清單
 # ==========================================
 def _has_price(symbol):
     try:
@@ -43,80 +44,73 @@ def _has_price(symbol):
     except Exception:
         return False
 
-def yahoo_search_stock(text):
-    """
-    輔助 Yahoo 搜尋 API，支援中文公司名稱（如「今國光」、「台積電」）查詢
-    """
-    try:
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
-        })
-        # 優先嘗試台灣 Yahoo 股市專用搜尋
-        tw_search_url = f"https://tw.quote.yahoo.com/v1/search?q={text}&category=stock"
-        res = session.get(tw_search_url, timeout=5)
-        data = res.json()
-        if "data" in data and len(data["data"]) > 0:
-            return [{"symbol": item.get("symbol", "")} for item in data["data"]]
-    except Exception:
-        pass
-
-    try:
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
-        })
-        # 備援：Yahoo Finance 全球搜尋 API
-        search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={text}&quotesCount=10&newsCount=0"
-        res = session.get(search_url, timeout=5)
-        data = res.json()
-        if "quotes" in data:
-            return data["quotes"]
-    except Exception:
-        pass
-        
-    return []
-
 @st.cache_data(ttl=3600)
 def resolve_symbol(user_input):
     text = user_input.strip()
-    # 已是 Yahoo 格式
-    if text.upper().endswith(".TW"):
-        return text.upper()
-    if text.upper().endswith(".TWO"):
-        return text.upper()
-    # 純數字
-    if text.isdigit():
+    upper_text = text.upper()
+    
+    # 1. 已是 Yahoo 格式 (.TW / .TWO)
+    if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
+        return upper_text
+        
+    # 2. 若輸入為純數字代號
+    if upper_text.isdigit():
         for suffix in [".TW", ".TWO"]:
-            symbol = text + suffix
+            symbol = upper_text + suffix
             if _has_price(symbol):
                 return symbol
-        return None
-    # 中文名稱搜尋
-    quotes = yahoo_search_stock(text)
-    for q in quotes:
-        symbol = q.get("symbol", "")
-        if symbol.endswith(".TW"):
-            if _has_price(symbol):
-                return symbol
-    for q in quotes:
-        symbol = q.get("symbol", "")
-        if symbol.endswith(".TWO"):
-            if _has_price(symbol):
-                return symbol
-    # 備援：從 symbol 中抽數字
-    for q in quotes:
-        raw_symbol = q.get("symbol", "")
-        digits = "".join(
-            c for c in raw_symbol
-            if c.isdigit()
-        )
-        if len(digits) in [4, 5]:
-            for suffix in [".TW", ".TWO"]:
-                symbol = digits + suffix
-                if _has_price(symbol):
-                    return symbol
-    return text # 若皆未命中則回傳原輸入
+        return upper_text + ".TW"
+
+    # 3. 透過 BeautifulSoup 精準查詢台股官方上市 (strMode=2) 與上櫃 (strMode=4) 清單
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+    }
+    
+    for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
+        try:
+            url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
+            response = requests.get(url, headers=headers, timeout=5)
+            response.encoding = 'big5'
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for row in soup.find_all('tr'):
+                tds = row.find_all('td')
+                if tds:
+                    cell_text = tds[0].get_text().strip()
+                    # 格式通常為 "6209 今國光" 或包含代號與名稱
+                    if text in cell_text:
+                        parts = cell_text.split()
+                        if parts and parts[0].isdigit() and len(parts[0]) in (4, 5):
+                            candidate = parts[0] + suffix
+                            if _has_price(candidate):
+                                return candidate
+                            # 即使歷史價暫時沒抓到，也直接回傳對應的正確後綴
+                            return candidate
+        except Exception:
+            continue
+
+    # 4. 備援：若官方清單沒抓到，嘗試呼叫 Yahoo 搜尋 API
+    try:
+        session = requests.Session()
+        session.headers.update(headers)
+        search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={text}&quotesCount=5&newsCount=0"
+        res = session.get(search_url, timeout=5)
+        data = res.json()
+        if "quotes" in data:
+            for q in data["quotes"]:
+                sym = q.get("symbol", "")
+                if sym.endswith(".TW") or sym.endswith(".TWO"):
+                    return sym
+                digits = "".join(c for c in sym if c.isdigit())
+                if len(digits) in [4, 5]:
+                    for suffix in [".TW", ".TWO"]:
+                        symbol = digits + suffix
+                        if _has_price(symbol):
+                            return symbol
+    except Exception:
+        pass
+
+    return text
 
 @st.cache_data(ttl=3600)
 def get_company_name(symbol):
@@ -619,8 +613,8 @@ left, right = st.columns(2)
 
 with left:
     st.subheader("一、AI 決策動能區間 (買賣點建議)")
-    st.info(f"**🟦 藍色動能區 (建議逢低試單點)**\n\n預估跌至 **{blue_price_target:.2f} 元** 時，RSI 將降至 {blue_rsi:.1f} (超賣區)。歷史數據顯示此時模型勝率最高，為極佳的防守反擊點。")
-    st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**\n\n預估漲至 **{red_price_target:.2f} 元** 時，RSI 將飆至 {red_rsi:.1f} (過熱區)。系統判定此時追高勝率極差，容易遭遇主力倒貨，建議分批停利。")
+    st.info(f"**🟦 藍色動能區 (建議逢低試單點)**\n\n預估跌至 **{blue_price_target:.2f} 元** 時, RSI 將降至 {blue_rsi:.1f} (超賣區)。歷史數據顯示此時模型勝率最高，為極佳的防守反擊點。")
+    st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**\n\n預估漲至 **{red_price_target:.2f} 元** 時, RSI 將飆至 {red_rsi:.1f} (過熱區)。系統判定此時追高勝率極差，容易遭遇主力倒貨，建議分批停利。")
     
     st.markdown("---")
     st.subheader("二、估值模型對照（動態非線性 vs 線性）")
