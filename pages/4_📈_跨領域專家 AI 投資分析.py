@@ -31,7 +31,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 完全不內建、純聯網動態搜尋公司代號與新聞情緒/展望計算
+# 1. 動態聯網搜尋與「先測 .TW、再測 .TWO」代號解析機制
 # ==========================================
 def _has_price(symbol):
     try:
@@ -52,12 +52,14 @@ def resolve_symbol(user_input):
     if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
         return upper_text
     if upper_text.isdigit() and len(upper_text) in (4, 5, 6):
+        # 嚴格順序：先測 .TW，若不行再測 .TWO
         for suffix in (".TW", ".TWO"):
-            if _has_price(upper_text + suffix):
-                return upper_text + suffix
+            test_sym = upper_text + suffix
+            if _has_price(test_sym):
+                return test_sym
         return upper_text + ".TW"
 
-    # 2. 透過 Yahoo Finance 搜尋 API 動態聯網查詢
+    # 2. 透過 Yahoo Finance 搜尋 API 動態聯網查詢名稱對應代號
     try:
         session = requests.Session()
         session.headers.update({
@@ -68,13 +70,14 @@ def resolve_symbol(user_input):
         data = res.json()
         
         if "quotes" in data and len(data["quotes"]) > 0:
-            # 優先挑選帶有 .TW 或 .TWO 的標的
+            # 優先檢查搜尋結果中已經自帶 .TW 或 .TWO 的標的
             for q in data["quotes"]:
                 sym = q.get("symbol", "")
                 if ".TW" in sym or ".TWO" in sym:
-                    return sym
+                    if _has_price(sym):
+                        return sym
             
-            # 若搜尋結果為純數字代號（例如 2303），自動組合後綴並檢測是否存在股價
+            # 若搜尋結果包含數字代號，萃取後嚴格先測 .TW 再測 .TWO
             for q in data["quotes"]:
                 sym = q.get("symbol", "")
                 clean_digits = ''.join(filter(str.isdigit, sym))
@@ -85,19 +88,29 @@ def resolve_symbol(user_input):
                             return test_sym
                     return clean_digits + ".TW"
                     
-            # 若第一筆結果包含代號
+            # 檢查第一筆搜尋結果
             first_sym = data["quotes"][0].get("symbol", "")
             if first_sym:
                 clean_digits = ''.join(filter(str.isdigit, first_sym))
                 if len(clean_digits) in (4, 5):
                     for suffix in (".TW", ".TWO"):
-                        if _has_price(clean_digits + suffix):
-                            return clean_digits + suffix
+                        test_sym = clean_digits + suffix
+                        if _has_price(test_sym):
+                            return test_sym
                     return clean_digits + ".TW"
-                return first_sym
+                if _has_price(first_sym):
+                    return first_sym
     except Exception:
         pass
         
+    # 3. 最後防線：若輸入含有數字，自動依序測試 .TW 與 .TWO
+    clean_input_digits = ''.join(filter(str.isdigit, text))
+    if clean_input_digits:
+        for suffix in (".TW", ".TWO"):
+            test_sym = clean_input_digits + suffix
+            if _has_price(test_sym):
+                return test_sym
+                
     return text
 
 @st.cache_data(ttl=3600)
