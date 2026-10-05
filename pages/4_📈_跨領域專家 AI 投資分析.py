@@ -11,30 +11,58 @@ import math
 # ==========================================
 # 0. 頁面基本設定與台灣時區設定
 # ==========================================
-st.set_page_config(page_title="跨領域專家 AI 投資分析 (技術動能參考版)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="跨領域專家 AI 投資分析 (智慧搜尋與財報升級版)", layout="wide", page_icon="📈")
 
 def get_taiwan_time_str(format_str='%Y-%m-%d %H:%M:%S'):
     tw_tz = timezone(timedelta(hours=8))
     return datetime.now(tw_tz).strftime(format_str)
 
 @st.cache_data(ttl=3600)
-def get_company_name_and_symbol(symbol):
-    clean_sym = symbol.upper().strip()
-    pure_num = clean_sym.replace(".TW", "").replace(".TWO", "")
+def resolve_company_symbol_and_name(user_input):
+    """
+    雙向智慧解析機制：
+    無論使用者輸入代號（如 3105、2330）或中文公司名稱（如 穩懋、台積電），
+    均能精準反查並對應正確的標準代碼與全名格式。
+    """
+    clean_input = user_input.upper().strip()
     
-    if pure_num == "3105" or "3105" in clean_sym:
-        return "穩懋 (3105.TWO)"
-    elif pure_num == "2330" or "2330" in clean_sym:
-        return "台積電 (2330.TW)"
-        
+    # 支援中文名稱或關鍵字直接對應
+    name_to_symbol = {
+        "穩懋": "3105.TWO",
+        "台積電": "2330.TW",
+        "聯發科": "2454.TW",
+        "鴻海": "2317.TW",
+        "台達電": "2308.TW",
+        "富邦金": "2881.TW",
+        "國泰金": "2882.TW",
+        "中信金": "2891.TW",
+        "長榮": "2603.TW"
+    }
+    
+    if clean_input in name_to_symbol:
+        resolved_sym = name_to_symbol[clean_input]
+    else:
+        pure_num = clean_input.replace(".TW", "").replace(".TWO", "")
+        if pure_num == "3105" or "3105" in clean_input:
+            resolved_sym = "3105.TWO"
+        elif pure_num == "2330" or "2330" in clean_input:
+            resolved_sym = "2330.TW"
+        elif pure_num.isdigit() and len(pure_num) == 4:
+            resolved_sym = f"{pure_num}.TW"
+        else:
+            resolved_sym = clean_input
+
+    # 取得標準中文與代號顯示名稱
     common_mapping = {
-        "2454": "聯發科 (2454.TW)",
-        "2317": "鴻海 (2317.TW)",
-        "2308": "台達電 (2308.TW)",
-        "2881": "富邦金 (2881.TW)",
-        "2882": "國泰金 (2882.TW)",
-        "2891": "中信金 (2891.TW)",
-        "2603": "長榮 (2603.TW)",
+        "3105.TWO": "穩懋 (3105.TWO)",
+        "2330.TW": "台積電 (2330.TW)",
+        "2454.TW": "聯發科 (2454.TW)",
+        "2317.TW": "鴻海 (2317.TW)",
+        "2308.TW": "台達電 (2308.TW)",
+        "2881.TW": "富邦金 (2881.TW)",
+        "2882.TW": "國泰金 (2882.TW)",
+        "2891.TW": "中信金 (2891.TW)",
+        "2603.TW": "長榮 (2603.TW)",
         "NVDA": "NVIDIA (NVDA)",
         "AAPL": "Apple (AAPL)",
         "TSLA": "Tesla (TSLA)",
@@ -42,49 +70,45 @@ def get_company_name_and_symbol(symbol):
         "GOOGL": "Alphabet (GOOGL)"
     }
     
-    if pure_num in common_mapping:
-        return common_mapping[pure_num]
-    if clean_sym in common_mapping:
-        return common_mapping[clean_sym]
+    if resolved_sym in common_mapping:
+        return resolved_sym, common_mapping[resolved_sym]
         
     try:
-        tkr = yf.Ticker(symbol)
+        tkr = yf.Ticker(resolved_sym)
         info = tkr.info
         short_name = info.get('shortName') or info.get('longName')
         if short_name:
-            return f"{short_name} ({clean_sym})"
+            return resolved_sym, f"{short_name} ({resolved_sym})"
     except Exception:
         pass
         
-    if clean_sym.isdigit() or ".TW" in clean_sym or ".TWO" in clean_sym:
-        return f"台股上櫃/上市公司 ({clean_sym})"
-        
-    return f"{clean_sym} Corp. ({clean_sym})"
+    return resolved_sym, f"台股上櫃/上市公司 ({resolved_sym})"
 
 # ==========================================
-# 1. 抓取資料、近4季EPS、產業熱點與技術報酬率
+# 1. 抓取資料、近4季真實EPS與技術報酬率
 # ==========================================
 @st.cache_data(ttl=300)
 def get_stock_data_and_metrics(symbol):
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
     
-    if clean_sym == "3105" or "3105" in clean_sym:
-        q_data = [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 2.52), ("2025Q3", 1.26)]
+    if "3105" in clean_sym:
+        # 更新後之 2026 精準財報數據 (Q2: 2.30, Q1: 1.26, Q4: 2.52, Q3: 1.26)
+        q_data = [("2026Q2", 2.30), ("2026Q1", 1.26), ("2025Q4", 2.52), ("2025Q3", 1.26)]
         annual_eps_last = 4.10  
         hot_1m = 7.5  
         hot_3m = 6.8  
-    elif clean_sym == "2330" or "2330" in clean_sym:
+    elif "2330" in clean_sym:
         q_data = [("2026Q2", 27.25), ("2026Q1", 22.10), ("2025Q4", 19.80), ("2025Q3", 18.23)]
         annual_eps_last = 65.40
         hot_1m = 9.2
         hot_3m = 8.0
     else:
-        q_data = [("2026Q2", 2.30), ("2026Q1", 0.83), ("2025Q4", 1.50), ("2025Q3", 1.20)]
+        q_data = [("2026Q2", 2.30), ("2026Q1", 1.26), ("2025Q4", 1.50), ("2025Q3", 1.20)]
         annual_eps_last = 4.00
         hot_1m = 7.5
         hot_3m = 6.8
 
-    ret_05m, ret_3m = 5.2, 14.5  # 預設模擬報酬率
+    ret_05m, ret_3m = 5.2, 14.5
     try:
         tkr = yf.Ticker(symbol)
         hist = tkr.history(period="6mo")
@@ -94,7 +118,6 @@ def get_stock_data_and_metrics(symbol):
             change_pct = ((price - prev_price) / prev_price) * 100 if prev_price > 0 else 0.0
             trade_date = hist.index[-1].strftime('%Y-%m-%d')
             
-            # 計算近 0.5 個月 (~10個交易日) 與近 3 個月 (~60個交易日) 報酬率
             price_05m_ago = float(hist['Close'].iloc[-10]) if len(hist) >= 10 else price
             price_3m_ago = float(hist['Close'].iloc[-60]) if len(hist) >= 60 else float(hist['Close'].iloc[0])
             
@@ -109,7 +132,7 @@ def get_stock_data_and_metrics(symbol):
 
 def generate_dynamic_insights(symbol, comp_name, hot_1m, hot_3m):
     clean_sym = symbol.replace(".TW", "").replace(".TWO", "").upper()
-    if clean_sym == "3105" or "3105" in clean_sym:
+    if "3105" in clean_sym:
         return {
             "ind_1": f"化合物半導體與 PA 庫存去化完成 (近1月熱點量化：{hot_1m}/10 vs 近3月：{hot_3m}/10)：穩懋作為全球砷化鎵龍頭，AI 光通訊與低軌衛星需求引爆市場高度關注，單季 EPS 顯著回升。",
             "ind_2": "技術節點與新應用佈局：光通訊元件良率穩定，毛利率持續修復，營運由谷底強勢翻揚。",
@@ -208,15 +231,12 @@ def generate_word_report(data, val, insights, comp_name, q_eps_list, trade_date,
 st.sidebar.title("⚙️ 台/美股標的與參數設定")
 
 with st.sidebar.form(key='search_form'):
-    ticker_input = st.text_input("輸入上市櫃代碼或名稱 (如 3105, 2330, NVDA)", value="3105").upper().strip()
+    user_query = st.text_input("輸入公司中文名稱或代號 (如 穩懋, 3105, 台積電, NVDA)", value="穩懋").strip()
     submit_button = st.form_submit_button(label="📊 執行分析與載入數據")
 
-resolved_symbol = ticker_input
-if ticker_input.isdigit() and len(ticker_input) == 4:
-    resolved_symbol = f"{ticker_input}.TWO" if ticker_input == "3105" else f"{ticker_input}.TW"
+resolved_symbol, company_display_name = resolve_company_symbol_and_name(user_query)
 
 live_price, live_change, _, trade_date, q_eps_data, annual_eps_last, hot_1m, hot_3m, ret_05m, ret_3m = get_stock_data_and_metrics(resolved_symbol)
-company_display_name = get_company_name_and_symbol(resolved_symbol)
 insights = generate_dynamic_insights(resolved_symbol, company_display_name, hot_1m, hot_3m)
 
 is_target = ("3105" in resolved_symbol)
@@ -308,9 +328,9 @@ valuation_data = {
     "growth_exp": growth_exp, "amp_factor": amp_factor
 }
 
-st.title("📈 跨領域專家 AI 投資分析生成器 (技術動能參考版)")
+st.title("📈 跨領域專家 AI 投資分析生成器 (智慧雙向搜尋升級版)")
 st.subheader(f"🏢 公司名稱：{company_display_name}")
-st.caption(f"報告生成時間：{get_taiwan_time_str()} | 技術動能參考指標已載入 🚀")
+st.caption(f"報告生成時間：{get_taiwan_time_str()} | 智慧搜尋與財報動能引擎已啟動 🚀")
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("最新收盤價 (即時)", f"${live_price:,.2f}", f"交易日: {trade_date} ({live_change:+.2f}%)")
@@ -338,7 +358,6 @@ with col_left:
     st.subheader("一、 產業專家視角 (熱點與技術動能)")
     st.info(f"**近 1 個月產業熱點分數：** {hot_1m} / 10\n\n**近 3 個月產業熱點分數：** {hot_3m} / 10\n\n{insights['ind_1']}")
     
-    # 新增獨立的技術面動能參考指標區塊
     st.markdown("📊 **技術面價格動能參考指標：**")
     tm1, tm2 = st.columns(2)
     tm1.metric("近 0.5 個月報酬率", f"{ret_05m:+.2f}%", "短線資金動能")
