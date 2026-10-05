@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from io import BytesIO
 
 import pandas as pd
+import numpy as np
 import streamlit as st
 import yfinance as yf
 import statsmodels.api as sm
@@ -303,7 +304,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 5. Word 報告生成（整合多期報酬率與多時段輿情）
+# 5. Word 報告生成（整合多期報酬率、多時段輿情與實質風險量化模組）
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -352,17 +353,23 @@ def generate_word_report(ctx):
         for title in ctx['news_titles'][:5]:
             doc.add_paragraph(f"• {title}", style="List Bullet")
 
-    doc.add_heading("三、AI 模型預測與動能區間", level=1)
+    doc.add_heading("三、實質風險與波動率動態量化模組", level=1)
+    doc.add_paragraph(f"• 實際匯率風險 (USDTWD=X)：最新匯率 {ctx['fx_latest']:.2f}，年化波動率 {ctx['fx_annual_vol']:.2f}%，68% 合理區間 [{ctx['fx_low']:.2f}, {ctx['fx_high']:.2f}]。")
+    doc.add_paragraph(f"• 市場競爭與個股風險：過去一年個股真實年化波動率為 {ctx['stock_vol_1y']:.2f}%。")
+    doc.add_paragraph(f"• 估值模型安全邊際：近四季 TTM EPS {ctx['ttm']:.2f} 元，歷史最高 PE {ctx['actual_max_pe']:.1f} 倍、最低 PE {ctx['actual_min_pe']:.1f} 倍，最悲觀防守安全價為 {ctx['real_safety_price']:.2f} 元。")
+    doc.add_paragraph(f"• 短長期波動比值 (5日 vs 20日)：短期年化波動 {ctx['vol_5d']:.2f}% / 長期年化波動 {ctx['vol_20d']:.2f}%，比值為 {ctx['vol_ratio']:.4f} ({ctx['vol_signal']})。")
+
+    doc.add_heading("四、AI 模型預測與動能區間", level=1)
     doc.add_paragraph(f"未來 5 日擊敗大盤勝率預測：{ctx['latest_proba']:.2%}")
     doc.add_paragraph(f"AI 建議逢低買點：{ctx['blue_price']:,.2f} 元（預估 RSI 降至 {ctx['blue_rsi']:.1f}）")
     doc.add_paragraph(f"AI 建議逢高賣出價：{ctx['red_price']:,.2f} 元（預估 RSI 升至 {ctx['red_rsi']:.1f}）")
 
-    doc.add_heading("四、基本面估值模型", level=1)
+    doc.add_heading("五、基本面估值模型", level=1)
     doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x，目標價 {ctx['tp_base']:,.2f}")
     doc.add_paragraph(f"線性基準 PE = {ctx['pe_linear']:.1f}x，目標價 {ctx['tp_linear']:,.2f}")
     doc.add_paragraph(f"調整後預估 EPS：{ctx['eps_adj']:.2f}")
 
-    doc.add_heading("五、財務檢核數據", level=1)
+    doc.add_heading("六、財務檢核數據", level=1)
     table = doc.add_table(rows=1, cols=3)
     table.style = "Table Grid"
     h = table.rows[0].cells
@@ -379,10 +386,6 @@ def generate_word_report(ctx):
     for a, b, c in rows:
         r = table.add_row().cells
         r[0].text, r[1].text, r[2].text = a, b, c
-
-    doc.add_heading("六、風險提示", level=1)
-    for r in ctx["risks"]:
-        doc.add_paragraph(f"{r[0]}：{r[1]} — {r[2]}", style="List Bullet")
 
     doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
@@ -414,7 +417,7 @@ session.headers.update({
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 🌟 執行多時段（近1週、近2週、近1個月）真實新聞爬蟲與量化評分
+# 🌟 執行多時段真實新聞爬蟲與量化評分
 sent_1w, growth_1w, status_1w, titles_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
 sent_2w, growth_2w, status_2w, titles_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
 sent_1m, growth_1m, status_1m, titles_1m = comprehensive_quant_evaluation(symbol, company_name, hours=720)
@@ -477,6 +480,61 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
             annual_eps = round(float(s_a.iloc[0]), 2)
     except Exception:
         pass
+
+    # ==========================================
+    # 7.1 實質風險與波動率動態量化模組運算
+    # ==========================================
+    fx_latest, fx_annual_vol, fx_low, fx_high = 32.0, 4.5, 30.5, 33.5
+    try:
+        fx_data = yf.download("USDTWD=X", period="1y", progress=False, session=session)
+        if not fx_data.empty:
+            fx_close = fx_data['Close']
+            if isinstance(fx_close, pd.DataFrame):
+                fx_close = fx_close.iloc[:, 0]
+            fx_latest = float(fx_close.iloc[-1])
+            fx_std = float(fx_close.pct_change().std())
+            fx_annual_vol = fx_std * math.sqrt(252) * 100
+            fx_low = fx_latest * (1 - fx_annual_vol / 100)
+            fx_high = fx_latest * (1 + fx_annual_vol / 100)
+    except Exception:
+        pass
+
+    stock_vol_1y = 25.0
+    actual_max_pe, actual_min_pe, real_safety_price = 25.0, 10.0, 10.0
+    try:
+        s_full = yf.download(symbol, period="1y", progress=False, session=session)
+        if not s_full.empty:
+            s_close = s_full['Close']
+            if isinstance(s_close, pd.DataFrame):
+                s_close = s_close.iloc[:, 0]
+            stock_vol_1y = float(s_close.pct_change().std() * math.sqrt(252) * 100)
+            
+            high_p = float(s_full['High'].max().iloc[0] if isinstance(s_full['High'].max(), pd.Series) else s_full['High'].max())
+            low_p = float(s_full['Low'].min().iloc[0] if isinstance(s_full['Low'].min(), pd.Series) else s_full['Low'].min())
+            
+            base_eps_for_risk = ttm_eps if ttm_eps and ttm_eps > 0 else 1.0
+            actual_max_pe = high_p / base_eps_for_risk
+            actual_min_pe = low_p / base_eps_for_risk
+            real_safety_price = base_eps_for_risk * actual_min_pe
+    except Exception:
+        pass
+
+    vol_5d, vol_20d, vol_ratio = 20.0, 20.0, 1.0
+    try:
+        recent_rets = valid_stock_data.pct_change().dropna()
+        if len(recent_rets) >= 20:
+            vol_5d = float(recent_rets.tail(5).std() * math.sqrt(252) * 100)
+            vol_20d = float(recent_rets.tail(20).std() * math.sqrt(252) * 100)
+            vol_ratio = vol_5d / vol_20d if vol_20d > 0 else 1.0
+    except Exception:
+        pass
+
+    if vol_ratio > 1.2:
+        vol_signal = "🚨 [減碼/防守訊號] 短期波動急遽放大，市場情緒劇烈，不宜盲目追高"
+    elif vol_ratio < 0.8:
+        vol_signal = "🎯 [加碼/佈局訊號] 短期波動極度壓縮，適合低檔分批建倉"
+    else:
+        vol_signal = "⚖️ [觀望/中性訊號] 多空力道平衡，維持原有部位"
 
     # 計算藍紅動能區價格
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
@@ -621,12 +679,6 @@ elif latest_proba < 0.45:
 else:
     rec, rec_icon = "中性震盪 (持有)", "🟡"
 
-risks = [
-    ("總體經濟風險", "利率與匯率波動", "可能造成毛利與評價短期波動"),
-    ("市場競爭風險", "同業擴產與需求變化", "需持續追蹤訂單能見度"),
-    ("模型風險", "參數多為主觀設定", "請以多組情境檢視，勿單一依賴目標價"),
-]
-
 def fmt_pct(v):
     return "資料不足" if v is None else f"{v:+.2f}%"
 
@@ -679,11 +731,14 @@ ctx = {
     "sent_1w": sent_1w, "growth_1w": growth_1w,
     "sent_2w": sent_2w, "growth_2w": growth_2w,
     "sent_1m": sent_1m, "growth_1m": growth_1m,
+    "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
+    "stock_vol_1y": stock_vol_1y, "actual_max_pe": actual_max_pe, "actual_min_pe": actual_min_pe,
+    "real_safety_price": real_safety_price, "vol_5d": vol_5d, "vol_20d": vol_20d, "vol_ratio": vol_ratio,
+    "vol_signal": vol_signal,
     "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
     "ttm_src": ttm_src, "annual_src": annual_src,
     "pe_target": pe_target, "pe_linear": pe_linear, "eps_adj": eps_adj,
-    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "risks": risks,
-    "sentiment": sentiment, "growth_score": growth_score,
+    "hist_pe": hist_pe, "fwd_pe": fwd_pe,
     "news_status": status_1w, "news_titles": titles_1w
 }
 
@@ -707,14 +762,14 @@ with left:
     st.subheader("二、估值模型對照（動態非線性 vs 線性）")
     st.markdown(f"🚀 **動態非線性模型：** PE **{pe_target:.1f}x** → 目標價 **${tp_base:,.0f}**")
     if pe_capped:
-        st.caption(f"⚠️ 原始 PE {pe_target_raw:.1f}x 超出範圍，已自動套用上下限保護。")
+        st.caption(f"⚠️️ 原始 PE {pe_target_raw:.1f}x 超出範圍，已自動套用上下限保護。")
     st.markdown(f"📉 **線性基準模型：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**")
     st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
 
     s1, s2, s3 = st.columns(3)
     s1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x", delta_color="off")
     s2.metric("基準 (Base)", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x", delta_color="off")
-    s3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x (動能PE+4x)", delta_color="off")
+    s3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {tp_upper:.1f}x (動能PE+4x)", delta_color="off")
 
 with right:
     st.subheader("三、財務檢核與 AI 預測指標")
@@ -740,8 +795,11 @@ with right:
     else:
         st.caption("Yahoo Finance 未提供單季 EPS 資料，可於側邊欄手動輸入。")
 
-    st.subheader("四、風險提示")
-    st.dataframe(pd.DataFrame(risks, columns=["風險維度", "關鍵影響因子", "影響評估"]), hide_index=True)
+    st.subheader("四、實質風險與動態波動率量化模組")
+    st.info(f"**匯率風險 (USDTWD=X)：** 最新匯率 {fx_latest:.2f}，年化波動率 {fx_annual_vol:.2f}% (68% 區間: {fx_low:.2f} ~ {fx_high:.2f})")
+    st.warning(f"**市場競爭與歷史波動：** 過去一年個股年化波動率 {stock_vol_1y:.2f}%")
+    st.success(f"**模型安全邊際：** 歷史最高 PE {actual_max_pe:.1f}x / 最低 PE {actual_min_pe:.1f}x，最悲觀防守價 **{real_safety_price:.2f} 元**")
+    st.error(f"**短長期波動比值 (5日 / 20日)：** {vol_ratio:.4f} → {vol_signal}")
 
 # ==========================================
 # 11. 歷史回測與 SHAP 決策圖表
