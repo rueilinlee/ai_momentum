@@ -143,9 +143,6 @@ def fetch_news_sentiment(symbol, company_full_name):
 
 @st.cache_data(ttl=1800)
 def fetch_growth_score(symbol, company_full_name):
-    """
-    動態聯網抓取近期新聞中的展望與成長關鍵字，計算展望成長評分 (0~10分)
-    """
     try:
         session = requests.Session()
         session.headers.update({
@@ -236,7 +233,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 4. Word 報告生成
+# 4. Word 報告生成（已加入即時情緒與成長評分）
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -277,7 +274,11 @@ def generate_word_report(ctx):
         r = table.add_row().cells
         r[0].text, r[1].text, r[2].text = a, b, c
 
-    doc.add_heading("四、風險提示", level=1)
+    doc.add_heading("四、即時新聞情緒與展望成長評分 (聯網真實數據)", level=1)
+    doc.add_paragraph(f"聯網新聞聲量情緒分數：{ctx['sentiment']:.1f} / 10（狀態說明：{ctx['news_status']}）", style="List Bullet")
+    doc.add_paragraph(f"聯網展望成長評分：{ctx['growth_score']:.1f} / 10（狀態說明：{ctx['growth_status']}）", style="List Bullet")
+
+    doc.add_heading("五、風險提示", level=1)
     for r in ctx["risks"]:
         doc.add_paragraph(f"{r[0]}：{r[1]} — {r[2]}", style="List Bullet")
 
@@ -463,7 +464,6 @@ st.sidebar.subheader("估值模型變數")
 eps_fwd_base = st.sidebar.number_input("基礎預估 Forward EPS (模擬範例數據)", min_value=0.01, value=float(max(0.5, round(ttm_eps_val * 1.1, 2))), step=0.1, format="%.2f")
 pe_base = st.sidebar.number_input("產業中樞本益比 (PE) (模擬範例數據)", min_value=1.0, value=22.0)
 
-# 🌟 新聞情緒與展望成長評分：明確標註聯網真實數據來源與狀態
 st.sidebar.info(f"📰 新聞情緒狀態：{news_status_msg}")
 sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) (聯網真實新聞情緒)", 0.0, 10.0, float(auto_sentiment_score), 0.1)
 
@@ -536,6 +536,7 @@ c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間
 c3.metric("AI 綜合評等", rec, rec_icon)
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
 
+# 🌟 將即時情緒與成長評分加入 ctx 以供介面與 Word 報告使用
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
@@ -546,6 +547,8 @@ ctx = {
     "ttm_src": ttm_src, "annual_src": annual_src,
     "pe_target": pe_target, "pe_linear": pe_linear, "eps_adj": eps_adj,
     "hist_pe": hist_pe, "fwd_pe": fwd_pe, "risks": risks,
+    "sentiment": sentiment, "growth_score": growth_score,
+    "news_status": news_status_msg, "growth_status": growth_status_msg
 }
 
 st.download_button(
@@ -589,6 +592,14 @@ with right:
     col_m1.metric("未來 5 日勝率", f"{latest_proba:.2%}")
     col_m2.metric("AI 晶片純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
     col_m3.metric("資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
+
+    # 🌟 新增：於主畫面右側即時展示聯網新聞情緒與展望成長評分
+    st.markdown("---")
+    st.markdown("**📰 聯網即時情緒與展望評分 (真實聯網數據)：**")
+    ns1, ns2 = st.columns(2)
+    ns1.metric("新聞聲量情緒", f"{sentiment:.1f} / 10")
+    ns2.metric("展望成長評分", f"{growth_score:.1f} / 10")
+    st.caption(f"• 情緒狀態：{news_status_msg}\n• 展望狀態：{growth_status_msg}")
 
     st.markdown("**近 4 季單季 EPS：**")
     if q_eps_list:
