@@ -31,7 +31,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 動態聯網搜尋公司代號與即時新聞情緒/展望計算
+# 1. 完全不內建、純聯網動態搜尋公司代號與新聞情緒/展望計算
 # ==========================================
 def _has_price(symbol):
     try:
@@ -48,6 +48,7 @@ def resolve_symbol(user_input):
     text = user_input.strip()
     upper_text = text.upper()
     
+    # 1. 若已經是標準代號格式
     if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
         return upper_text
     if upper_text.isdigit() and len(upper_text) in (4, 5, 6):
@@ -56,21 +57,44 @@ def resolve_symbol(user_input):
                 return upper_text + suffix
         return upper_text + ".TW"
 
+    # 2. 透過 Yahoo Finance 搜尋 API 動態聯網查詢
     try:
         session = requests.Session()
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
         })
-        search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={text}&quotesCount=5&newsCount=0"
+        search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={text}&quotesCount=10&newsCount=0"
         res = session.get(search_url, timeout=5)
         data = res.json()
         
         if "quotes" in data and len(data["quotes"]) > 0:
+            # 優先挑選帶有 .TW 或 .TWO 的標的
             for q in data["quotes"]:
                 sym = q.get("symbol", "")
                 if ".TW" in sym or ".TWO" in sym:
                     return sym
-            return data["quotes"][0].get("symbol", text)
+            
+            # 若搜尋結果為純數字代號（例如 2303），自動組合後綴並檢測是否存在股價
+            for q in data["quotes"]:
+                sym = q.get("symbol", "")
+                clean_digits = ''.join(filter(str.isdigit, sym))
+                if len(clean_digits) in (4, 5):
+                    for suffix in (".TW", ".TWO"):
+                        test_sym = clean_digits + suffix
+                        if _has_price(test_sym):
+                            return test_sym
+                    return clean_digits + ".TW"
+                    
+            # 若第一筆結果包含代號
+            first_sym = data["quotes"][0].get("symbol", "")
+            if first_sym:
+                clean_digits = ''.join(filter(str.isdigit, first_sym))
+                if len(clean_digits) in (4, 5):
+                    for suffix in (".TW", ".TWO"):
+                        if _has_price(clean_digits + suffix):
+                            return clean_digits + suffix
+                    return clean_digits + ".TW"
+                return first_sym
     except Exception:
         pass
         
@@ -104,9 +128,6 @@ def get_company_name(symbol):
 
 @st.cache_data(ttl=1800)
 def fetch_news_sentiment_recent(symbol, company_full_name, hours=48):
-    """
-    動態聯網抓取指定時間內（預設 48 小時）的新聞並計算情緒分數 (0~10分)
-    """
     try:
         session = requests.Session()
         session.headers.update({
@@ -158,9 +179,6 @@ def fetch_news_sentiment_recent(symbol, company_full_name, hours=48):
 
 @st.cache_data(ttl=1800)
 def fetch_growth_score_recent(symbol, company_full_name, hours=48):
-    """
-    動態聯網抓取指定時間內（預設 48 小時）的新聞計算展望成長評分 (0~10分)
-    """
     try:
         session = requests.Session()
         session.headers.update({
@@ -326,7 +344,7 @@ st.sidebar.title("⚙️ 標的與參數設定")
 
 with st.sidebar.form(key="search_form"):
     user_query = st.text_input(
-        "輸入公司名稱或代號（如 揚博, 2493, 亞元, 6109）", value="揚博"
+        "輸入公司名稱或代號（如 聯電, 2303, 台積電, 2330）", value="台積電"
     ).strip()
     st.form_submit_button("📊 執行 AI 與基本面綜合分析")
 
@@ -365,7 +383,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
 
     valid_stock_data = market_data[symbol].dropna()
     
-    # 🌟 即時報價抓取
     try:
         tkr = yf.Ticker(symbol, session=session)
         price = float(tkr.fast_info['last_price'])
