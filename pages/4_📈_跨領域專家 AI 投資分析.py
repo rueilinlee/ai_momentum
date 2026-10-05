@@ -32,7 +32,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 採用 BeautifulSoup 精準解析證交所與櫃買中心官方清單
+# 1. 標的解析與中英文名稱對照機制
 # ==========================================
 def _has_price(symbol):
     try:
@@ -77,14 +77,12 @@ def resolve_symbol(user_input):
                 tds = row.find_all('td')
                 if tds:
                     cell_text = tds[0].get_text().strip()
-                    # 格式通常為 "6209 今國光" 或包含代號與名稱
                     if text in cell_text:
                         parts = cell_text.split()
                         if parts and parts[0].isdigit() and len(parts[0]) in (4, 5):
                             candidate = parts[0] + suffix
                             if _has_price(candidate):
                                 return candidate
-                            # 即使歷史價暫時沒抓到，也直接回傳對應的正確後綴
                             return candidate
         except Exception:
             continue
@@ -114,11 +112,40 @@ def resolve_symbol(user_input):
 
 @st.cache_data(ttl=3600)
 def get_company_name(symbol):
+    # 常見美股與跨國標的中英文對照對應表
+    cn_mapping = {
+        "NVDA": "輝達 (NVIDIA)",
+        "AAPL": "蘋果 (Apple)",
+        "TSLA": "特斯拉 (Tesla)",
+        "MSFT": "微軟 (Microsoft)",
+        "GOOGL": "谷歌 (Alphabet)",
+        "AMZN": "亞馬遜 (Amazon)",
+        "META": "Meta (臉書)",
+        "AMD": "超微 (AMD)",
+        "TSM": "台積電 ADR (TSMC)"
+    }
+    
+    clean_sym = symbol.upper().strip()
+    if clean_sym in cn_mapping:
+        return cn_mapping[clean_sym]
+
     try:
         session = requests.Session()
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
         })
+        
+        # 若為台股代號，嘗試從 Yahoo 股市網頁抓取中文名稱
+        if ".TW" in symbol or ".TWO" in symbol:
+            stock_id = symbol.split('.')[0]
+            tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
+            res = session.get(tw_yahoo_url, timeout=5)
+            match = re.search(r'<title>(.*?)\(', res.text)
+            if match:
+                extracted_name = match.group(1).strip()
+                if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
+                    return f"{extracted_name} ({symbol})"
+
         stock = yf.Ticker(symbol, session=session)
         info = stock.info
         name = info.get("longName") or info.get("shortName")
@@ -126,6 +153,7 @@ def get_company_name(symbol):
             return f"{name} ({symbol})"
     except Exception:
         pass
+        
     return symbol
 
 @st.cache_data(ttl=1800)
@@ -346,7 +374,7 @@ st.sidebar.title("⚙️ 標的與參數設定")
 
 with st.sidebar.form(key="search_form"):
     user_query = st.text_input(
-        "輸入公司名稱或代號（如 今國光, 6209, 聯電, 2303）", value="今國光"
+        "輸入公司名稱或代號（如 今國光, 6209, 聯電, 2303, NVDA）", value="今國光"
     ).strip()
     st.form_submit_button("📊 執行 AI 與基本面綜合分析")
 
@@ -613,8 +641,8 @@ left, right = st.columns(2)
 
 with left:
     st.subheader("一、AI 決策動能區間 (買賣點建議)")
-    st.info(f"**🟦 藍色動能區 (建議逢低試單點)**\n\n預估跌至 **{blue_price_target:.2f} 元** 時, RSI 將降至 {blue_rsi:.1f} (超賣區)。歷史數據顯示此時模型勝率最高，為極佳的防守反擊點。")
-    st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**\n\n預估漲至 **{red_price_target:.2f} 元** 時, RSI 將飆至 {red_rsi:.1f} (過熱區)。系統判定此時追高勝率極差，容易遭遇主力倒貨，建議分批停利。")
+    st.info(f"**🟦 藍色動能區 (建議逢低試單點)**\n\n預估跌至 **{blue_price_target:.2f} 元** 時，RSI 將降至 {blue_rsi:.1f} (超賣區)。歷史數據顯示此時模型勝率最高，為極佳的防守反擊點。")
+    st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**\n\n預估漲至 **{red_price_target:.2f} 元** 時，RSI 將飆至 {red_rsi:.1f} (過熱區)。系統判定此時追高勝率極差，容易遭遇主力倒貨，建議分批停利。")
     
     st.markdown("---")
     st.subheader("二、估值模型對照（動態非線性 vs 線性）")
