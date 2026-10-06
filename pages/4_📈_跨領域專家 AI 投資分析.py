@@ -37,7 +37,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (高效能政府開放資料快取版)
+# 1. 標的解析與中英文名稱對照機制 (已修正代號點號防呆)
 # ==========================================
 LOCAL_NAME_MAP = {
     "今國光": "6209",
@@ -182,6 +182,11 @@ def resolve_symbol(user_input):
     if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
         return "^TWII"
 
+    # 🛡️ 修正：自動補上遺漏的點號 (例如將 6209TW 轉為 6209.TW)
+    match_fix = re.match(r"^(\d{4,5})(TW|TWO)$", upper_text)
+    if match_fix:
+        return f"{match_fix.group(1)}.{match_fix.group(2)}"
+
     if upper_text.endswith((".TW", ".TWO", ".US", "=F")) or upper_text.startswith("^"):
         return upper_text
 
@@ -198,15 +203,15 @@ def resolve_symbol(user_input):
     if code:
         suffix = _suffix_for_code(code, table)
         if suffix:
-            return code + suffix
+            return f"{code}.{suffix}"  # 確保帶有 .TW 或 .TWO
         for sfx in (".TW", ".TWO"):
             if _has_price(code + sfx):
                 return code + sfx
-        return code + ".TW"
+        return f"{code}.TW"
 
     hit = _lookup_company(text, table)
     if hit:
-        return hit["code"] + hit["suffix"]
+        return f"{hit['code']}.{hit['suffix']}"  # 確保帶有 .TW 或 .TWO
 
     try:
         search_url = (
@@ -217,6 +222,10 @@ def resolve_symbol(user_input):
         for q in data.get("quotes", []):
             sym = q.get("symbol", "")
             if sym.endswith((".TW", ".TWO")):
+                # 確保 Yahoo 回傳的 symbol 格式正確
+                m = re.match(r"^(\d{4,5})(TW|TWO)$", sym.upper())
+                if m:
+                    return f"{m.group(1)}.{m.group(2)}"
                 return sym
     except Exception:
         pass
@@ -226,7 +235,7 @@ def resolve_symbol(user_input):
         for sfx in (".TW", ".TWO"):
             if _has_price(code + sfx):
                 return code + sfx
-        return code + ".TW"
+        return f"{code}.TW"
 
     return text
 
@@ -902,7 +911,7 @@ c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper_2:,.0f}]")
 
 st.markdown("---")
-st.markdown("### ⏱️ 多期報酬率表現 (自動計算模組)")
+st.markdown("### ⏱️️ 多期報酬率表現 (自動計算模組)")
 r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns(5)
 r_col1.metric("近 1 週 (5日)", fmt_pct(ret_1w))
 r_col2.metric("近 2 週 (10日)", fmt_pct(ret_2w))
