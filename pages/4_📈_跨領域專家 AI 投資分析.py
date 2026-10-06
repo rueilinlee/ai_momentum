@@ -315,7 +315,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"最新即時成交價：{ctx['price']:,.2f}（成交時間 {ctx['trade_date']}，當日漲跌 {ctx['change_txt']}）")
     doc.add_paragraph(f"AI 動態非線性模型目標價：{ctx['tp_base']:,.2f}（{ctx['rec']}）")
     doc.add_paragraph(f"藍色動能區（建議買點）：{ctx['blue_price']:,.2f} 元 | 紅色動能區（建議賣價）：{ctx['red_price']:,.2f} 元")
-    doc.add_paragraph(f"目標價區間：[{ctx['tp_lower']:,.0f}, {ctx['tp_upper']:,.0f}]（標準差 k={ctx['sd_k']}，PE std={ctx['pe_std']:.2f}）")
+    doc.add_paragraph(f"目標價區間：基準 ${ctx['tp_base']:,.0f} | 樂觀(+1σ): ${ctx['tp_plus_1']:,.0f} (+2σ): ${ctx['tp_plus_2']:,.0f} | 悲觀(-1σ): ${ctx['tp_minus_1']:,.0f} (-2σ): ${ctx['tp_minus_2']:,.0f}")
 
     doc.add_heading("一、多期報酬率表現", level=1)
     ret_table = doc.add_table(rows=1, cols=2)
@@ -364,8 +364,12 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"AI 建議逢低買點：{ctx['blue_price']:,.2f} 元（預估 RSI 降至 {ctx['blue_rsi']:.1f}）")
     doc.add_paragraph(f"AI 建議逢高賣出價：{ctx['red_price']:,.2f} 元（預估 RSI 升至 {ctx['red_rsi']:.1f}）")
 
-    doc.add_heading("五、基本面估值模型", level=1)
+    doc.add_heading("五、基本面估值模型與標準差區間拆解", level=1)
     doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x（基準 PE: {ctx['pe_base']:.1f}x），目標價 {ctx['tp_base']:,.2f}")
+    doc.add_paragraph(f"• 樂觀情境 (+1σ)：目標價 ${ctx['tp_plus_1']:,.2f}（PE: {ctx['pe_plus_1']:.1f}x）")
+    doc.add_paragraph(f"• 樂觀情境 (+2σ)：目標價 ${ctx['tp_plus_2']:,.2f}（PE: {ctx['pe_plus_2']:.1f}x）")
+    doc.add_paragraph(f"• 悲觀情境 (-2σ)：目標價 ${ctx['tp_minus_2']:,.2f}（PE: {ctx['pe_minus_2']:.1f}x）")
+    doc.add_paragraph(f"• 悲觀情境 (-1σ)：目標價 ${ctx['tp_minus_1']:,.2f}（PE: {ctx['pe_minus_1']:.1f}x）")
     doc.add_paragraph(f"線性基準 PE = {ctx['pe_linear']:.1f}x，目標價 {ctx['tp_linear']:,.2f}")
     doc.add_paragraph(f"調整後預估 EPS：{ctx['eps_adj']:.2f}")
 
@@ -488,7 +492,7 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
         
     # 動態歷史本益比定錨與標準差計算
     auto_pe_base = 15.0
-    pe_std = 4.0 # 預設 fallback 標準差
+    pe_std = 4.0 
     try:
         if ttm_eps and ttm_eps > 0:
             s_full_for_pe = yf.download(symbol, period="1y", progress=False, session=session)
@@ -501,7 +505,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
                 calculated_pe = median_price / ttm_eps
                 auto_pe_base = max(8.0, min(calculated_pe, 40.0))
                 
-                # 計算過去 1 年歷史本益比標準差
                 hist_pe_series = (s_close_pe / ttm_eps).dropna()
                 hist_pe_filtered = hist_pe_series[(hist_pe_series > 0) & (hist_pe_series < 200)]
                 if len(hist_pe_filtered) > 10:
@@ -677,9 +680,6 @@ pe_base = st.sidebar.number_input(
     help="系統已根據過去一年歷史股價中位數與 TTM EPS 自動定錨。"
 )
 
-# 🌟 選擇標準差倍數 k (支援 1.0 或 2.0)
-sd_k = st.sidebar.selectbox("區間標準差倍數 (k)", [1.0, 2.0], index=0, help="用於計算樂觀與悲觀本益比區間的歷史標準差倍數 (PE_target ± k * std)")
-
 st.sidebar.info(f"📰 輿情狀態：{status_1w}")
 sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) [手動微調用]", 0.0, 10.0, float(sent_1w), 0.1)
 growth_score = st.sidebar.slider("展望成長評分 (0~10) [手動微調用]", 0.0, 10.0, float(growth_1w), 0.1)
@@ -701,7 +701,7 @@ else:
     risk_val = st.sidebar.slider("自訂下行風險折價", 0.0, 10.0, 1.0, 0.1)
 
 # ==========================================
-# 9. 估值核心計算（結合歷史標準差 k）
+# 9. 估值核心計算（同時計算 ±1σ 與 ±2σ）
 # ==========================================
 hot_triggered = beta3_trend_val > 0
 eps_triggered = ttm_eps_val > annual_eps_val > 0
@@ -722,13 +722,17 @@ pe_linear = pe_base + (sentiment - 5.0) * 0.4 + max(growth_score - 5.0, 0.0) * 0
 pe_linear = max(pe_linear, 1.0)
 tp_linear = eps_fwd_base * pe_linear
 
-# 🌟 採用歷史本益比標準差與倍數 k 計算樂觀與悲觀本益比
-pe_upper = pe_target + sd_k * pe_std
-pe_lower = max(1.0, pe_target - sd_k * pe_std)
+# 🌟 計算 ±1σ 與 ±2σ 本益比與目標價
+pe_plus_1 = pe_target + 1.0 * pe_std
+pe_plus_2 = pe_target + 2.0 * pe_std
+pe_minus_1 = max(1.0, pe_target - 1.0 * pe_std)
+pe_minus_2 = max(1.0, pe_target - 2.0 * pe_std)
 
 tp_base = eps_adj * pe_target
-tp_upper = eps_adj * pe_upper
-tp_lower = eps_adj * pe_lower
+tp_plus_1 = eps_adj * pe_plus_1
+tp_plus_2 = eps_adj * pe_plus_2
+tp_minus_1 = eps_adj * pe_minus_1
+tp_minus_2 = eps_adj * pe_minus_2
 
 upside = (tp_base / price - 1) * 100
 fwd_pe = price / eps_adj if eps_adj > 0 else 0.0
@@ -759,7 +763,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("最新即時成交價", f"${price:,.2f}", f"{trade_date} ({change_txt})")
 c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間")
 c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
-c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
+c4.metric("目標價區間", f"[-2σ ~ +2σ]")
 
 # 多期報酬率呈現
 st.markdown("---")
@@ -788,7 +792,11 @@ with s_col3:
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
-    "tp_lower": tp_lower, "tp_upper": tp_upper, "rec": f"{rec_title} ({rec_desc})",
+    "tp_plus_1": tp_plus_1, "pe_plus_1": pe_plus_1,
+    "tp_plus_2": tp_plus_2, "pe_plus_2": pe_plus_2,
+    "tp_minus_1": tp_minus_1, "pe_minus_1": pe_minus_1,
+    "tp_minus_2": tp_minus_2, "pe_minus_2": pe_minus_2,
+    "rec": f"{rec_title} ({rec_desc})",
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
     "blue_rsi": blue_rsi, "red_rsi": red_rsi,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
@@ -802,7 +810,7 @@ ctx = {
     "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
     "ttm_src": ttm_src, "annual_src": annual_src, "annual_year": annual_year_display,
     "pe_target": pe_target, "pe_linear": pe_linear, "eps_adj": eps_adj,
-    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "pe_std": pe_std, "sd_k": sd_k, "pe_base": pe_base,
+    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "pe_std": pe_std, "pe_base": pe_base,
     "news_status": status_1w, "news_titles": titles_1w
 }
 
@@ -823,17 +831,24 @@ with left:
     st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**\n\n預估漲至 **{red_price_target:.2f} 元** 時，RSI 將飆至 {red_rsi:.1f} (過熱區)。系統判定此時追高勝率極差，容易遭遇主力倒貨，建議分批停利。")
     
     st.markdown("---")
-    st.subheader("二、估值模型對照（動態非線性 vs 線性）")
-    st.markdown(f"🚀 **動態非線性模型：** PE **{pe_target:.1f}x** → 目標價 **${tp_base:,.0f}**")
+    st.subheader("二、估值模型對照與標準差區間")
+    st.markdown(f"🚀 **動態非線性基準模型：** PE **{pe_target:.1f}x** → 目標價 **${tp_base:,.0f}**")
     if pe_capped:
         st.caption(f"⚠ 原始 PE {pe_target_raw:.1f}x 超出範圍，已自動套用上下限保護。")
     st.markdown(f"📉 **線性基準模型：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**")
     st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
 
-    s1, s2, s3 = st.columns(3)
-    s1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x (-{sd_k}σ)", delta_color="off")
-    s2.metric("基準 (Base)", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x", delta_color="off")
-    s3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x (+{sd_k}σ, std:{pe_std:.1f})", delta_color="off")
+    # 🌟 樂觀下方分成 2 欄位 (+1σ 與 +2σ)
+    st.markdown("##### 📈 樂觀情境區間 (Bull)")
+    bull_c1, bull_c2 = st.columns(2)
+    bull_c1.metric("+1倍標準差", f"${tp_plus_1:,.0f}", f"(PE: {pe_plus_1:.1f}x)", delta_color="off")
+    bull_c2.metric("+2倍標準差", f"${tp_plus_2:,.0f}", f"(PE: {pe_plus_2:.1f}x)", delta_color="off")
+
+    # 🌟 悲觀下方分成 2 欄位 (-2σ 與 -1σ)
+    st.markdown("##### 📉 悲觀情境區間 (Bear)")
+    bear_c1, bear_c2 = st.columns(2)
+    bear_c1.metric("-2倍標準差", f"${tp_minus_2:,.0f}", f"(PE: {pe_minus_2:.1f}x)", delta_color="off")
+    bear_c2.metric("-1倍標準差", f"${tp_minus_1:,.0f}", f"(PE: {pe_minus_1:.1f}x)", delta_color="off")
 
 with right:
     st.subheader("三、財務檢核與 AI 預測指標")
