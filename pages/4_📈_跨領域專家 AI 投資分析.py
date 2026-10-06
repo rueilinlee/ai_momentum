@@ -182,7 +182,7 @@ def resolve_symbol(user_input):
     if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
         return "^TWII"
 
-    # 🛡️ 修正：自動補上遺漏的點號 (例如將 6209TW 轉為 6209.TW)
+    # 自動補上遺漏的點號 (例如將 6209TW 轉為 6209.TW)
     match_fix = re.match(r"^(\d{4,5})(TW|TWO)$", upper_text)
     if match_fix:
         return f"{match_fix.group(1)}.{match_fix.group(2)}"
@@ -203,7 +203,7 @@ def resolve_symbol(user_input):
     if code:
         suffix = _suffix_for_code(code, table)
         if suffix:
-            return f"{code}.{suffix}"  # 確保帶有 .TW 或 .TWO
+            return f"{code}.{suffix}"
         for sfx in (".TW", ".TWO"):
             if _has_price(code + sfx):
                 return code + sfx
@@ -211,7 +211,7 @@ def resolve_symbol(user_input):
 
     hit = _lookup_company(text, table)
     if hit:
-        return f"{hit['code']}.{hit['suffix']}"  # 確保帶有 .TW 或 .TWO
+        return f"{hit['code']}.{hit['suffix']}"
 
     try:
         search_url = (
@@ -222,7 +222,6 @@ def resolve_symbol(user_input):
         for q in data.get("quotes", []):
             sym = q.get("symbol", "")
             if sym.endswith((".TW", ".TWO")):
-                # 確保 Yahoo 回傳的 symbol 格式正確
                 m = re.match(r"^(\d{4,5})(TW|TWO)$", sym.upper())
                 if m:
                     return f"{m.group(1)}.{m.group(2)}"
@@ -246,7 +245,7 @@ def get_company_name(symbol):
 
     cn_mapping = {
         "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
-        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
+        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞商 (Amazon)",
         "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)"
     }
     clean_sym = symbol.upper().strip()
@@ -580,7 +579,7 @@ sent_2m, growth_2m, b2m, r2m, c2m, status_2m, titles_2m = comprehensive_quant_ev
 # ==========================================
 # 7. 主程式執行與即時行情、計量模型運算
 # ==========================================
-with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料（NVDA、SOX 等），並進行機器學習訓練與價格模擬...'):
+with st.spinner(f'正在取得 {company_name} 即時報價與市場資料，並進行機器學習訓練與價格模擬...'):
     stock_code = symbol.split('.')[0]
     exchange = symbol.split('.')[1] if '.' in symbol else "TW"
     tickers = [symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']
@@ -715,6 +714,9 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
+    # 確保市場資料無重複索引，避免 pandas align/reindex 發生重複標籤錯誤
+    market_data = market_data.loc[~market_data.index.duplicated()]
+
     returns = market_data[[symbol, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
     rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
     df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
@@ -731,32 +733,35 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     df['RSI_14'] = (100 - (100 / (1 + rs))).shift(1)
     df = df.dropna()
 
-    Y_ortho = df['NVDA'] - df['RF_US']
+    # 根據是否輸入 NVDA 動態調整正交化目標因子
+    ortho_target = 'NVDA' if symbol.upper() == "NVDA" else '^SOX'
+
+    Y_ortho = df[ortho_target] - df['RF_US']
     X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']})
     X_ortho = sm.add_constant(X_ortho)
-    df['NVDA_Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
+    df['Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
 
-    df['Interaction_Term'] = df['NVDA_Pure_Shock'] * df['Price_Mom_30D']
+    df['Interaction_Term'] = df['Pure_Shock'] * df['Price_Mom_30D']
     Y_rolling = df[symbol] - df['RF_TW']
-    X_rolling = df[['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term']]
+    X_rolling = df[['^TWII', '^SOX', 'Pure_Shock', 'Price_Mom_30D', 'Interaction_Term']]
     X_rolling = sm.add_constant(X_rolling)
 
     rolling_res = RollingOLS(Y_rolling, X_rolling, window=252).fit()
     params_df = rolling_res.params
     
-    df['Beta_3_Rolling'] = params_df['NVDA_Pure_Shock']
+    df['Beta_3_Rolling'] = params_df['Pure_Shock']
     df['Gamma_Rolling'] = params_df['Interaction_Term']
     df['Beta_3_Trend_5D'] = df['Beta_3_Rolling'].diff(5)
     df['Gamma_Trend_5D'] = df['Gamma_Rolling'].diff(5)
     
     plot_gamma = params_df['Interaction_Term'].dropna()
-    plot_beta3 = params_df['NVDA_Pure_Shock'].dropna()
+    plot_beta3 = params_df['Pure_Shock'].dropna()
 
     threshold = 0.005 
     df['Target_Label'] = ((market_data[symbol].pct_change(5).shift(-5) - market_data['^TWII'].pct_change(5).shift(-5)) > threshold).astype(int)
     df_ai = df.dropna()
 
-    features = ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
+    features = ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
     X = df_ai[features]
     y = df_ai['Target_Label']
 
@@ -911,7 +916,7 @@ c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper_2:,.0f}]")
 
 st.markdown("---")
-st.markdown("### ⏱️️ 多期報酬率表現 (自動計算模組)")
+st.markdown("### ⏱ 多期報酬率表現 (自動計算模組)")
 r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns(5)
 r_col1.metric("近 1 週 (5日)", fmt_pct(ret_1w))
 r_col2.metric("近 2 週 (10日)", fmt_pct(ret_2w))
