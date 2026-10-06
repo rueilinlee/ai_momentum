@@ -18,7 +18,7 @@ def _has_price(symbol):
     try:
         session = requests.Session()
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
         })
         return not yf.Ticker(symbol, session=session).history(period="5d").empty
     except Exception:
@@ -28,13 +28,14 @@ def _has_price(symbol):
 def resolve_symbol(user_input):
     text = user_input.strip()
     upper_text = text.upper()
-
-    if upper_text == "0000" or upper_text == "^TWII":
+    
+    # 支援輸入 0000 或 ^TWII 直接對應大盤加權指數
+    if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
         return "^TWII"
 
     if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
         return upper_text
-
+        
     if upper_text.isdigit():
         for suffix in [".TW", ".TWO"]:
             symbol = upper_text + suffix
@@ -42,19 +43,16 @@ def resolve_symbol(user_input):
                 return symbol
         return upper_text + ".TW"
 
-    if upper_text.isalpha() and len(upper_text) <= 5:
-        return upper_text
-
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
     }
-
+    
     for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
         try:
             url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
             response = requests.get(url, headers=headers, timeout=5)
             response.encoding = 'big5'
-
+            
             soup = BeautifulSoup(response.text, 'html.parser')
             for row in soup.find_all('tr'):
                 tds = row.find_all('td')
@@ -98,22 +96,14 @@ def get_company_name(symbol):
         return "大盤加權指數 (^TWII)"
 
     cn_mapping = {
-        "PANW": "帕羅奧圖網路 (Palo Alto Networks)",
-        "NVDA": "輝達 (NVIDIA)",
-        "AAPL": "蘋果 (Apple)",
-        "TSLA": "特斯拉 (Tesla)",
-        "MSFT": "微軟 (Microsoft)",
-        "GOOGL": "谷歌 (Alphabet)",
-        "AMZN": "亞馬遜 (Amazon)",
-        "META": "Meta (臉書)",
-        "AMD": "超微 (AMD)",
-        "TSM": "台積電 ADR (TSMC)",
-        "6147.TW": "頎邦 (6147.TW)",
-        "6147.TWO": "頎邦 (6147.TWO)",
-        "3105.TW": "穩懋 (3105.TW)",
-        "3105.TWO": "穩懋 (3105.TWO)",
-        "3122.TW": "笙泉 (3122.TW)",
-        "3122.TWO": "笙泉 (3122.TWO)"
+        "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
+        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
+        "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)",
+        "6147.TW": "頎邦 (6147.TW)", "6147.TWO": "頎邦 (6147.TWO)",
+        "3105.TW": "穩懋 (3105.TW)", "3105.TWO": "穩懋 (3105.TWO)",
+        "3122.TW": "笙泉 (3122.TW)", "3122.TWO": "笙泉 (3122.TWO)",
+        "2330.TW": "台積電 (2330.TW)", "2454.TW": "聯發科 (2454.TW)",
+        "2317.TW": "鴻海 (2317.TW)", "2308.TW": "台達電 (2308.TW)"
     }
     clean_sym = symbol.upper().strip()
     if clean_sym in cn_mapping:
@@ -122,13 +112,13 @@ def get_company_name(symbol):
     try:
         session = requests.Session()
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
         })
         if ".TW" in symbol or ".TWO" in symbol:
-            stock_id = symbol.split(".")[0]
+            stock_id = symbol.split('.')[0]
             tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
             res = session.get(tw_yahoo_url, timeout=5)
-            match = re.search(r"<title>(.*?)\(", res.text)
+            match = re.search(r'<title>(.*?)\(', res.text)
             if match:
                 extracted_name = match.group(1).strip()
                 if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
@@ -201,7 +191,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         return None, str(e)
 
 # ==========================================
-# 2. 核心引擎 (v4.1)
+# 2. 核心引擎 (v4.3)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -297,7 +287,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 4.1 版】實戰分析報告
+【易經三義量化時空分析 4.3 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -374,12 +364,12 @@ class IChingTrinitySpatiotemporalEngine:
 # ==========================================
 st.set_page_config(page_title="易經三義量化時空分析", layout="wide", page_icon="☯️")
 
-st.title("☯️️ 易經三義量化時空分析系統 (多時框日內版)")
-st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)** 與 **馬可夫狀態機率 (簡易)**。支援直接輸入公司名稱或代碼（輸入 `0000` 代表台股大盤）。")
+st.title("☯️ 易經三義量化時空分析系統 (多時框日內版)")
+st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)** 與 **馬可夫狀態機率 (簡易)**。支援直接輸入公司名稱、代碼或 `0000` (大盤)。")
 
 with st.sidebar:
     st.header("參數設定")
-    ticker_input = st.text_input("輸入公司名稱或代碼 (例如: 6147、台積電 或 0000)", value="6147")
+    ticker_input = st.text_input("輸入公司名稱或代碼 (例如: 6147、台積電 或 0000)", value="台積電")
     
     timeframe_choice = st.selectbox(
         "選擇分析週期 (Timeframe)",
@@ -486,5 +476,3 @@ if run_btn:
             3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
             4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{full_last_time}**。
             """)
-
-            
