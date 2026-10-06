@@ -37,7 +37,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (已修正代號點號防呆)
+# 1. 標的解析與中英文名稱對照機制
 # ==========================================
 LOCAL_NAME_MAP = {
     "今國光": "6209",
@@ -68,7 +68,6 @@ HEADERS = {
 }
 
 def _is_us_ticker(text: str) -> bool:
-    """純 ASCII 英文字母且長度 <= 5 才視為美股代號 (避免中文被 isalpha() 誤判)"""
     return text.isascii() and text.isalpha() and len(text) <= 5
 
 def _has_price(symbol):
@@ -79,7 +78,6 @@ def _has_price(symbol):
     except Exception:
         return False
 
-# 公司清單 (代碼/簡稱/全名)：政府開放資料 JSON/CSV，一次下載後快取 24 小時
 COMPANY_SOURCES = [
     ("TW", [("https://openapi.twse.com.tw/v1/opendata/t187ap03_L", "json"),
             ("https://mopsfin.twse.com.tw/opendata/t187ap03_L.csv", "csv")]),
@@ -91,7 +89,6 @@ def _norm(s) -> str:
     return re.sub(r"\s+", "", str(s or "")).replace("臺", "台")
 
 def _fetch_company_list(suffix, candidates):
-    """依序嘗試各資料來源，任一成功即回傳"""
     for url, kind in candidates:
         try:
             r = requests.get(url, headers=HEADERS, timeout=6)
@@ -117,7 +114,6 @@ def _fetch_company_list(suffix, candidates):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def load_company_table():
-    """上市、上櫃兩份清單同時下載 (平行)，總耗時約 1–3 秒"""
     table = []
     with ThreadPoolExecutor(max_workers=len(COMPANY_SOURCES)) as ex:
         futures = [ex.submit(_fetch_company_list, sfx, cands) for sfx, cands in COMPANY_SOURCES]
@@ -129,7 +125,6 @@ def load_company_table():
     return table
 
 def _lookup_company(query: str, table):
-    """名稱比對：簡稱完全相符 → 全名完全相符 → 簡稱開頭 → 任一包含；同級取名稱最短者"""
     q = _norm(query)
     if not q or not table:
         return None
@@ -152,7 +147,6 @@ def _suffix_for_code(code: str, table) -> Optional[str]:
     return None
 
 def _isin_lookup(clean_query: str) -> Optional[str]:
-    """最後備援：官方 ISIN 網頁 (檔案大、較慢，僅在前面都失敗時使用)"""
     sources = [
         "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
         "https://isin.tpex.org.tw/isin/C_public.jsp?strMode=4",
@@ -182,7 +176,6 @@ def resolve_symbol(user_input):
     if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
         return "^TWII"
 
-    # 🛡️ 修正：自動補上遺漏的點號 (例如將 6209TW 轉為 6209.TW)
     match_fix = re.match(r"^(\d{4,5})(TW|TWO)$", upper_text)
     if match_fix:
         return f"{match_fix.group(1)}.{match_fix.group(2)}"
@@ -714,12 +707,8 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
-    returns = market_data[[symbol, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change()
-    returns = returns.loc[~returns.index.duplicated(keep='first')].dropna()
-
+    returns = market_data[[symbol, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
     rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
-    rf_us_daily = rf_us_daily.loc[~rf_us_daily.index.duplicated(keep='first')]
-
     df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
     df['RF_TW'] = 0.017 / 365 
 
@@ -732,12 +721,16 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI_14'] = (100 - (100 / (1 + rs))).shift(1)
-    df = df.loc[~df.index.duplicated(keep='first')].dropna()
+    df = df.dropna()
 
-    Y_ortho = df['NVDA'] - df['RF_US']
-    X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']})
-    X_ortho = sm.add_constant(X_ortho)
-    df['NVDA_Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
+    # 🛡️ 修正：若輸入為 NVDA，則避開重複欄位減法並將 NVDA_Pure_Shock 設為 0
+    if symbol.upper() == "NVDA":
+        df['NVDA_Pure_Shock'] = 0.0
+    else:
+        Y_ortho = df['NVDA'] - df['RF_US']
+        X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']})
+        X_ortho = sm.add_constant(X_ortho)
+        df['NVDA_Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
 
     df['Interaction_Term'] = df['NVDA_Pure_Shock'] * df['Price_Mom_30D']
     Y_rolling = df[symbol] - df['RF_TW']
