@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (動態 ISIN 模糊對應修正版)
+# 1. 標的解析與中英文名稱對照機制 (先尋找代碼，再優先選 .TW 後 .TWO)
 # ==========================================
 def _has_price(symbol):
     try:
@@ -40,61 +40,63 @@ def resolve_symbol(user_input):
     if upper_text.isalpha() and len(upper_text) <= 5:
         return upper_text
         
-    # 如果是純數字（台股代號），依序嘗試 .TW 或 .TWO
+    digits_found = None
     if upper_text.isdigit():
+        digits_found = upper_text
+    else:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+        }
+        clean_query = re.sub(r'\s+', '', text)
+
+        # 1. 先透過證交所與櫃買中心 ISIN 網站尋找公司代碼（純數字）
+        for mode in ["2", "4"]:
+            try:
+                url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
+                response = requests.get(url, headers=headers, timeout=6)
+                response.encoding = 'big5'
+                
+                soup = BeautifulSoup(response.text, 'html.parser')
+                for row in soup.find_all('tr'):
+                    tds = row.find_all('td')
+                    if tds and len(tds) > 0:
+                        cell_text = tds[0].get_text().strip()
+                        clean_cell = re.sub(r'\s+', '', cell_text)
+                        if clean_query in clean_cell:
+                            parts = cell_text.split()
+                            if parts and parts[0].isdigit() and len(parts[0]) in (4, 5):
+                                digits_found = parts[0]
+                                break
+            except Exception:
+                continue
+            if digits_found:
+                break
+
+        # 2. 若 ISIN 未找到，改用 Yahoo Finance 搜尋 API 尋找公司代碼
+        if not digits_found:
+            try:
+                session = requests.Session()
+                session.headers.update(headers)
+                search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
+                res = session.get(search_url, timeout=5)
+                data = res.json()
+                if "quotes" in data:
+                    for q in data["quotes"]:
+                        sym = q.get("symbol", "")
+                        digits = "".join(c for c in sym if c.isdigit())
+                        if len(digits) in [4, 5]:
+                            digits_found = digits
+                            break
+            except Exception:
+                pass
+
+    # 3. 取得公司代碼後，嚴格執行：先測試 .TW，若無效再測試 .TWO
+    if digits_found:
         for suffix in [".TW", ".TWO"]:
-            symbol = upper_text + suffix
+            symbol = digits_found + suffix
             if _has_price(symbol):
                 return symbol
-        return upper_text + ".TW"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
-    }
-    
-    clean_query = re.sub(r'\s+', '', text)
-
-    # 優先順序：同時支援上櫃 ("4", ".TWO") 與上市公司 ("2", ".TW") 動態模糊反查
-    for mode, suffix in [("4", ".TWO"), ("2", ".TW")]:
-        try:
-            url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-            response = requests.get(url, headers=headers, timeout=6)
-            response.encoding = 'big5'
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            for row in soup.find_all('tr'):
-                tds = row.find_all('td')
-                if tds and len(tds) > 0:
-                    cell_text = tds[0].get_text().strip()
-                    clean_cell = re.sub(r'\s+', '', cell_text)
-                    if clean_query in clean_cell:
-                        parts = cell_text.split()
-                        if parts and parts[0].isdigit() and len(parts[0]) in (4, 5):
-                            candidate = parts[0] + suffix
-                            return candidate
-        except Exception:
-            continue
-
-    # Yahoo Finance 搜尋 API 備援
-    try:
-        session = requests.Session()
-        session.headers.update(headers)
-        search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
-        res = session.get(search_url, timeout=5)
-        data = res.json()
-        if "quotes" in data:
-            for q in data["quotes"]:
-                sym = q.get("symbol", "")
-                if sym.endswith(".TW") or sym.endswith(".TWO"):
-                    return sym
-                digits = "".join(c for c in sym if c.isdigit())
-                if len(digits) in [4, 5]:
-                    for suffix in [".TW", ".TWO"]:
-                        symbol = digits + suffix
-                        if _has_price(symbol):
-                            return symbol
-    except Exception:
-        pass
+        return digits_found + ".TW"
 
     return text
 
@@ -187,7 +189,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         return None, str(e)
 
 # ==========================================
-# 2. 核心引擎 (v4.8)
+# 2. 核心引擎 (v4.9)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -283,7 +285,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 4.8 版】實戰分析報告
+【易經三義量化時空分析 4.9 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -419,7 +421,6 @@ if run_btn:
             price_change = current_price - prev_price
             price_change_pct = (price_change / prev_price) * 100
             
-            # 第一欄名稱拆解（名稱在上、括號代碼在下）
             pure_name_only = company_name
             code_bracket_part = f"({resolved_sym})"
             
@@ -431,10 +432,8 @@ if run_btn:
             bian_data = engine.analyze_bian_yi()
             
             st.markdown("---")
-            # 五欄看板結構
             m1, m2, m3, m4, m5 = st.columns(5)
             
-            # 第一欄：名稱在上、括號代碼在下（黑色字體、自動換行）
             with m1:
                 st.markdown(f"""
                 <div style="font-size: 14px; color: #333333; margin-bottom: 2px; font-weight: 600;">標的名稱</div>
@@ -446,7 +445,6 @@ if run_btn:
             m3.metric("市場屬性", market_type)
             m4.metric("目前收盤價 (P0)", f"{current_price:.2f}", f"{price_change:+.2f} ({price_change_pct:+.2f}%)")
             
-            # 第五欄：時間戳記（黑色字體、上下結構）
             with m5:
                 st.markdown(f"""
                 <div style="font-size: 14px; color: #333333; margin-bottom: 2px; font-weight: 600;">最後 K 棒時間</div>
