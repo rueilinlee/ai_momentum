@@ -245,7 +245,7 @@ def get_company_name(symbol):
 
     cn_mapping = {
         "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
-        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞商 (Amazon)",
+        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
         "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)"
     }
     clean_sym = symbol.upper().strip()
@@ -582,13 +582,21 @@ sent_2m, growth_2m, b2m, r2m, c2m, status_2m, titles_2m = comprehensive_quant_ev
 with st.spinner(f'正在取得 {company_name} 即時報價與市場資料，並進行機器學習訓練與價格模擬...'):
     stock_code = symbol.split('.')[0]
     exchange = symbol.split('.')[1] if '.' in symbol else "TW"
-    tickers = [symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']
+    
+    # 建立不重複的 tickers 清單
+    tickers = list(dict.fromkeys([symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']))
     
     end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
     fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
     
     raw_market_data = yf.download(tickers, start=fetch_start, end=end_date, progress=False, session=session)['Close']
-    market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
+    
+    # 🛡️ 徹底防範欄位或索引重複導致的 reindex 錯誤
+    if isinstance(raw_market_data, pd.DataFrame):
+        market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
+        market_data = market_data.loc[~market_data.index.duplicated()]
+    else:
+        market_data = pd.DataFrame({symbol: raw_market_data})
 
     if symbol not in market_data.columns or market_data[symbol].dropna().empty:
         st.error(f"❌ 找不到 {symbol} 的股價資料，或遭遇 Yahoo Finance 暫時封鎖，請稍後再試。")
@@ -714,19 +722,21 @@ with st.spinner(f'正在取得 {company_name} 即時報價與市場資料，並�
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
-    # 確保市場資料無重複索引，避免 pandas align/reindex 發生重複標籤錯誤
-    market_data = market_data.loc[~market_data.index.duplicated()]
+    # 確保選取的欄位存在且不重複
+    req_cols = [symbol, 'NVDA', '^SOX', '^DJI', '^TWII', '^IRX']
+    available_cols = [c for c in req_cols if c in market_data.columns]
+    sub_market_data = market_data[available_cols].loc[:, ~market_data[available_cols].columns.duplicated()]
 
-    returns = market_data[[symbol, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
-    rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
+    returns = sub_market_data[[symbol, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
+    rf_us_daily = (sub_market_data['^IRX'].dropna() / 100) / 365
     df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
     df['RF_TW'] = 0.017 / 365 
 
-    df['Price_Mom_30D'] = (market_data[symbol].pct_change(30) - market_data['^TWII'].pct_change(30)).shift(1)
-    df['Price_Mom_5D'] = (market_data[symbol].pct_change(5) - market_data['^TWII'].pct_change(5)).shift(1)
-    df['Vol_10D'] = market_data[symbol].pct_change().rolling(10).std().shift(1)
+    df['Price_Mom_30D'] = (sub_market_data[symbol].pct_change(30) - sub_market_data['^TWII'].pct_change(30)).shift(1)
+    df['Price_Mom_5D'] = (sub_market_data[symbol].pct_change(5) - sub_market_data['^TWII'].pct_change(5)).shift(1)
+    df['Vol_10D'] = sub_market_data[symbol].pct_change().rolling(10).std().shift(1)
 
-    delta = market_data[symbol].diff()
+    delta = sub_market_data[symbol].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
@@ -758,7 +768,7 @@ with st.spinner(f'正在取得 {company_name} 即時報價與市場資料，並�
     plot_beta3 = params_df['Pure_Shock'].dropna()
 
     threshold = 0.005 
-    df['Target_Label'] = ((market_data[symbol].pct_change(5).shift(-5) - market_data['^TWII'].pct_change(5).shift(-5)) > threshold).astype(int)
+    df['Target_Label'] = ((sub_market_data[symbol].pct_change(5).shift(-5) - sub_market_data['^TWII'].pct_change(5).shift(-5)) > threshold).astype(int)
     df_ai = df.dropna()
 
     features = ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
@@ -1055,7 +1065,7 @@ st.markdown("---")
 st.markdown("### 📊 歷史波段回測與 SHAP AI 決策邏輯")
 
 min_beta3_date = plot_beta3.idxmin()
-period_returns = market_data[symbol].loc[min_beta3_date:plot_beta3.loc[min_beta3_date:].idxmax()].pct_change().dropna()
+period_returns = sub_market_data[symbol].loc[min_beta3_date:plot_beta3.loc[min_beta3_date:].idxmax()].pct_change().dropna()
 
 fig_col1, fig_col2 = st.columns(2)
 
