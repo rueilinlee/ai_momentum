@@ -81,217 +81,243 @@ selected_freq = st.sidebar.selectbox("選擇 K 棒頻率", list(interval_map.key
 # ==========================================
 # 2. 標的解析與中英文名稱對照機制 (含 0000 -> ^TWII)
 # ==========================================
+# ==========================================
+# 1. 標的解析與中英文名稱對照機制 (上市櫃雙軌查詢 + 先 .TW 後 .TWO 驗證)
+# ==========================================
+
+# 常用公司名稱 → 代碼 (最優先查詢，不受網路/ISIN 網站狀態影響，可自行增修)
+LOCAL_NAME_MAP = {
+    "今國光": "6209",
+    "台積電": "2330",
+    "鴻海": "2317",
+    "聯發科": "2454",
+    "聯電": "2303",
+    "台達電": "2308",
+    "中華電": "2412",
+    "富邦金": "2881",
+    "國泰金": "2882",
+    "長榮": "2603",
+    "陽明": "2609",
+    "萬海": "2615",
+    "廣達": "2382",
+    "緯創": "3231",
+    "技嘉": "2376",
+    "華碩": "2357",
+    "宏碁": "2353",
+    "大立光": "3008",
+    "元太": "8069",
+    "世界": "5347",
+    "環球晶": "6488",
+}
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+}
+
+
+def _is_us_ticker(text: str) -> bool:
+    """純 ASCII 英文字母且長度 <= 5 才視為美股代號 (避免中文被 isalpha() 誤判)"""
+    return text.isascii() and text.isalpha() and len(text) <= 5
+
+
 def _has_price(symbol):
-  try:
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-            " like Gecko) Chrome/117.0.0.0 Safari/537.36"
-        )
-    })
-    return not yf.Ticker(symbol, session=session).history(period="5d").empty
-  except Exception:
-    return False
+    try:
+        return not yf.Ticker(symbol).history(period="5d").empty
+    except Exception:
+        return False
 
 
 @st.cache_data(ttl=3600)
 def resolve_symbol(user_input):
-  text = user_input.strip()
-  upper_text = text.upper()
+    text = user_input.strip()
+    upper_text = text.upper()
 
-  # 支援輸入 0000 或 ^TWII 直接對應大盤加權指數
-  if upper_text == "0000" or upper_text == "^TWII":
-    return "^TWII"
+    # 支援輸入 0000 或 ^TWII 直接對應大盤加權指數
+    if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
+        return "^TWII"
 
-  if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
-    return upper_text
+    if upper_text.endswith((".TW", ".TWO", ".US", "=F")) or upper_text.startswith("^"):
+        return upper_text
 
-  if upper_text.isdigit():
-    for suffix in [".TW", ".TWO"]:
-      symbol = upper_text + suffix
-      if _has_price(symbol):
-        return symbol
-    return upper_text + ".TW"
+    # 純英文 ASCII (美股代號如 NVDA, AAPL) 直接回傳
+    if _is_us_ticker(upper_text):
+        return upper_text
 
-  if upper_text.isalpha() and len(upper_text) <= 5:
-    return upper_text
+    digits_found = None
+    if upper_text.isdigit():
+        digits_found = upper_text
+    else:
+        clean_query = re.sub(r"\s+", "", text)
 
-  headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-          " like Gecko) Chrome/117.0.0.0 Safari/537.36"
-      )
-  }
+        # 0. 本地對照表 (最優先)
+        if clean_query in LOCAL_NAME_MAP:
+            digits_found = LOCAL_NAME_MAP[clean_query]
 
-  for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
-    try:
-      url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-      response = requests.get(url, headers=headers, timeout=5)
-      response.encoding = "big5"
+        # 1. 官方 ISIN 網頁 (上市 + 上櫃)，先找完全相符，再找部分相符
+        if not digits_found:
+            sources = [
+                ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "big5"),
+                ("https://isin.tpex.org.tw/isin/C_public.jsp?strMode=4", "big5"),
+            ]
+            partial_match = None
+            for url, enc in sources:
+                try:
+                    response = requests.get(url, headers=HEADERS, timeout=8)
+                    response.encoding = enc
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    for row in soup.find_all("tr"):
+                        tds = row.find_all("td")
+                        if not tds:
+                            continue
+                        cell_text = tds[0].get_text().strip()
+                        parts = cell_text.split()
+                        if len(parts) >= 2 and parts[0].isdigit() and len(parts[0]) in (4, 5):
+                            name_part = re.sub(r"\s+", "", "".join(parts[1:]))
+                            if name_part == clean_query:
+                                digits_found = parts[0]
+                                break
+                            if partial_match is None and clean_query in name_part:
+                                partial_match = parts[0]
+                except Exception:
+                    continue
+                if digits_found:
+                    break
+            if not digits_found and partial_match:
+                digits_found = partial_match
 
-      soup = BeautifulSoup(response.text, "html.parser")
-      for row in soup.find_all("tr"):
-        tds = row.find_all("td")
-        if tds:
-          cell_text = tds[0].get_text().strip()
-          if text in cell_text:
-            parts = cell_text.split()
-            if parts and parts[0].isdigit() and len(parts[0]) in (4, 5):
-              candidate = parts[0] + suffix
-              if _has_price(candidate):
-                return candidate
-              return candidate
-    except Exception:
-      continue
+        # 2. 若 ISIN 未找到，改用 Yahoo Finance 搜尋 API
+        if not digits_found:
+            try:
+                search_url = (
+                    "https://query1.finance.yahoo.com/v1/finance/search?"
+                    f"q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
+                )
+                res = requests.get(search_url, headers=HEADERS, timeout=8)
+                data = res.json()
+                for q in data.get("quotes", []):
+                    sym = q.get("symbol", "")
+                    if sym.endswith((".TW", ".TWO")):
+                        digits = "".join(c for c in sym if c.isdigit())
+                        if len(digits) in (4, 5):
+                            digits_found = digits
+                            break
+            except Exception:
+                pass
 
-  try:
-    session = requests.Session()
-    session.headers.update(headers)
-    search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
-    res = session.get(search_url, timeout=5)
-    data = res.json()
-    if "quotes" in data:
-      for q in data["quotes"]:
-        sym = q.get("symbol", "")
-        if sym.endswith(".TW") or sym.endswith(".TWO"):
-          return sym
-        digits = "".join(c for c in sym if c.isdigit())
-        if len(digits) in [4, 5]:
-          for suffix in [".TW", ".TWO"]:
-            symbol = digits + suffix
+    # 3. 取得公司代碼後：先測試 .TW，若無效再測試 .TWO
+    if digits_found:
+        for suffix in [".TW", ".TWO"]:
+            symbol = digits_found + suffix
             if _has_price(symbol):
-              return symbol
-  except Exception:
-    pass
+                return symbol
+        return digits_found + ".TW"
 
-  return text
+    return text
 
 
 @st.cache_data(ttl=3600)
 def get_company_name(symbol):
-  if symbol == "^TWII":
-    return "大盤加權指數 (^TWII)"
+    if symbol == "^TWII":
+        return "大盤加權指數 (^TWII)"
 
-  cn_mapping = {
-      "PANW": "帕羅奧圖網路 (Palo Alto Networks)",
-      "NVDA": "輝達 (NVIDIA)",
-      "AAPL": "蘋果 (Apple)",
-      "TSLA": "特斯拉 (Tesla)",
-      "MSFT": "微軟 (Microsoft)",
-      "GOOGL": "谷歌 (Alphabet)",
-      "AMZN": "亞馬遜 (Amazon)",
-      "META": "Meta (臉書)",
-      "AMD": "超微 (AMD)",
-      "TSM": "台積電 ADR (TSMC)",
-      "6531.TW": "愛普* (6531.TW)",
-      "6531.TWO": "愛普* (6531.TWO)",
-      "3016.TW": "嘉晶 (3016.TW)",
-      "3016.TWO": "嘉晶 (3016.TWO)",
-      "8028.TW": "昇陽半導體 (8028.TW)",
-      "8028.TWO": "昇陽半導體 (8028.TWO)",
-      "3105.TW": "穩懋 (3105.TW)",
-      "3105.TWO": "穩懋 (3105.TWO)",
-      "3122.TW": "笙泉 (3122.TW)",
-      "3122.TWO": "笙泉 (3122.TWO)",
-  }
-  clean_sym = symbol.upper().strip()
-  if clean_sym in cn_mapping:
-    return cn_mapping[clean_sym]
+    cn_mapping = {
+        "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
+        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
+        "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)"
+    }
+    clean_sym = symbol.upper().strip()
+    if clean_sym in cn_mapping:
+        return cn_mapping[clean_sym]
 
-  try:
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-            " like Gecko) Chrome/117.0.0.0 Safari/537.36"
-        )
-    })
-    if ".TW" in symbol or ".TWO" in symbol:
-      stock_id = symbol.split(".")[0]
-      tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
-      res = session.get(tw_yahoo_url, timeout=5)
-      match = re.search(r"<title>(.*?)\(", res.text)
-      if match:
-        extracted_name = match.group(1).strip()
-        if (
-            extracted_name
-            and "Yahoo" not in extracted_name
-            and "找不到" not in extracted_name
-        ):
-          return f"{extracted_name} ({symbol})"
+    # 台股：先用本地對照表反查名稱
+    if clean_sym.endswith((".TW", ".TWO")):
+        stock_id = clean_sym.split(".")[0]
+        for name, code in LOCAL_NAME_MAP.items():
+            if code == stock_id:
+                return f"{name} ({symbol})"
 
-    stock = yf.Ticker(symbol, session=session)
-    info = stock.info
-    name = info.get("longName") or info.get("shortName")
-    if name:
-      return f"{name} ({symbol})"
-  except Exception:
-    pass
-  return symbol
+    try:
+        if ".TW" in symbol or ".TWO" in symbol:
+            stock_id = symbol.split(".")[0]
+            tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
+            res = requests.get(tw_yahoo_url, headers=HEADERS, timeout=8)
+            match = re.search(r"<title>(.*?)\(", res.text)
+            if match:
+                extracted_name = match.group(1).strip()
+                if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
+                    return f"{extracted_name} ({symbol})"
+
+        stock = yf.Ticker(symbol)
+        info = stock.info
+        name = info.get("longName") or info.get("shortName")
+        if name:
+            return f"{name} ({symbol})"
+    except Exception:
+        pass
+    return symbol
 
 
 def resolve_yahoo_ticker(user_input):
-  resolved_sym = resolve_symbol(user_input)
-  if resolved_sym == "^TWII":
-    return "^TWII", "大盤加權指數", "台灣市場指數"
+    resolved_sym = resolve_symbol(user_input)
+    if resolved_sym == "^TWII":
+        return "^TWII", "大盤加權指數", "大盤指數", "0000"
 
-  full_name_str = get_company_name(resolved_sym)
-  match = re.match(r"^(.*?)\s*\(", full_name_str)
-  company_name = match.group(1).strip() if match else full_name_str
+    full_name_str = get_company_name(resolved_sym)
+    match = re.match(r"^(.*?)\s*\(", full_name_str)
+    company_name = match.group(1).strip() if match else full_name_str
 
-  if resolved_sym.endswith(".TWO"):
-    market_attr = "櫃買中心<br>(上櫃公司)"
-  elif resolved_sym.endswith(".TW"):
-    market_attr = "證交所<br>(上市公司)"
-  else:
-    market_attr = "國際/美股標的"
+    if resolved_sym.endswith(".TWO"):
+        market_attr = "上櫃公司"
+    elif resolved_sym.endswith(".TW"):
+        market_attr = "上市公司"
+    elif _is_us_ticker(resolved_sym):
+        market_attr = "美股/國際標的"
+    else:
+        market_attr = "國際/其他標的"
 
-  return resolved_sym, company_name, market_attr
+    pure_digits = "".join(filter(str.isdigit, resolved_sym)) or resolved_sym
+    return resolved_sym, company_name, market_attr, pure_digits
 
 
 @st.cache_data(ttl=600)
 def fetch_yahoo_data(ticker_symbol, interval, period):
-  try:
-    ticker = yf.Ticker(ticker_symbol)
-    df = ticker.history(period=period, interval=interval)
-    if df.empty and ".TW" in ticker_symbol:
-      alt_symbol = ticker_symbol.replace(".TW", ".TWO")
-      ticker = yf.Ticker(alt_symbol)
-      df = ticker.history(period=period, interval=interval)
-      ticker_symbol = alt_symbol
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        df = ticker.history(period=period, interval=interval)
 
-    if df.empty:
-      return None, f"無法從 Yahoo Finance 取得代號 {ticker_symbol} 的資料。"
+        # 上市查無資料時，自動改試上櫃 (.TW → .TWO)；純數字則先補 .TW
+        if df.empty:
+            if ticker_symbol.endswith(".TW"):
+                alt_symbol = ticker_symbol[:-3] + ".TWO"
+            elif ticker_symbol.isdigit():
+                alt_symbol = ticker_symbol + ".TWO"
+            else:
+                alt_symbol = None
+            if alt_symbol:
+                ticker = yf.Ticker(alt_symbol)
+                df = ticker.history(period=period, interval=interval)
+                if not df.empty:
+                    ticker_symbol = alt_symbol
 
-    df = df.reset_index()
-    col_candidates = [c for c in df.columns if "Date" in c or "Datetime" in c]
-    date_col = col_candidates[0] if col_candidates else df.columns[0]
+        if df.empty:
+            return None, f"無法從 Yahoo Finance 取得代號 {ticker_symbol} 的資料。"
 
-    df = df.rename(
-        columns={
-            date_col: "DateTime",
-            "Open": "Open",
-            "High": "High",
-            "Low": "Low",
-            "Close": "Close",
-            "Volume": "Volume",
-        }
-    )
+        df = df.reset_index()
+        col_candidates = [c for c in df.columns if "Date" in str(c) or "Datetime" in str(c)]
+        date_col = col_candidates[0] if col_candidates else df.columns[0]
 
-    df["DateTime"] = pd.to_datetime(df["DateTime"])
-    if df["DateTime"].dt.tz is not None:
-      df["DateTime"] = df["DateTime"].dt.tz_convert("Asia/Taipei")
-    else:
-      df["DateTime"] = df["DateTime"].dt.tz_localize("UTC").dt.tz_convert(
-          "Asia/Taipei"
-      )
+        df = df.rename(columns={date_col: "DateTime"})
 
-    df["DateTime"] = df["DateTime"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    return df, ticker_symbol
-  except Exception as e:
-    return None, str(e)
+        df["DateTime"] = pd.to_datetime(df["DateTime"])
+        if df["DateTime"].dt.tz is not None:
+            df["DateTime"] = df["DateTime"].dt.tz_convert("Asia/Taipei")
+        else:
+            df["DateTime"] = df["DateTime"].dt.tz_localize("UTC").dt.tz_convert("Asia/Taipei")
 
+        df["DateTime"] = df["DateTime"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        return df, ticker_symbol
+    except Exception as e:
+        return None, str(e)
 
 # ==========================================
 # 3. 核心量化引擎運算函數
