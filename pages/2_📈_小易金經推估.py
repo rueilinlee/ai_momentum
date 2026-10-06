@@ -12,8 +12,28 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (含 ISIN 爬蟲與 Yahoo 備援)
+# 1. 標的解析與中英文名稱對照機制 (三層防線智慧解析)
 # ==========================================
+EXPLICIT_NAME_TO_SYMBOL = {
+    "台積電": "2330.TW",
+    "聯發科": "2454.TW",
+    "鴻海": "2317.TW",
+    "台達電": "2308.TW",
+    "穩懋": "3105.TWO",
+    "笙泉": "3122.TWO",
+    "鈊象": "3293.TWO",
+    "中美晶": "5483.TWO",
+    "頎邦": "6147.TW",
+    "富邦金": "2881.TW",
+    "國泰金": "2882.TW",
+    "長榮": "2603.TW",
+    "聯電": "2303.TW",
+    "中華電": "2412.TW",
+    "大盤": "^TWII",
+    "加權指數": "^TWII",
+    "台灣加權": "^TWII"
+}
+
 def _has_price(symbol):
     try:
         session = requests.Session()
@@ -29,17 +49,24 @@ def resolve_symbol(user_input):
     text = user_input.strip()
     upper_text = text.upper()
     
-    # 支援輸入 0000 或 ^TWII 直接對應大盤加權指數
+    # 1. 支援輸入 0000 或 ^TWII 直接對應大盤加權指數
     if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
         return "^TWII"
+
+    # 2. 檢查內建常民名稱對照表（秒速對應，免爬蟲）
+    if text in EXPLICIT_NAME_TO_SYMBOL:
+        return EXPLICIT_NAME_TO_SYMBOL[text]
+    if upper_text in EXPLICIT_NAME_TO_SYMBOL:
+        return EXPLICIT_NAME_TO_SYMBOL[upper_text]
 
     if upper_text.endswith((".TW", ".TWO", ".US", "=F")) or upper_text.startswith("^"):
         return upper_text
 
-    # 如果是純英文（美股代號如 NVDA, AAPL），直接回傳
+    # 3. 如果是純英文（美股代號如 NVDA, AAPL），直接回傳
     if upper_text.isalpha() and len(upper_text) <= 5:
         return upper_text
         
+    # 4. 如果是純數字（台股代號），依序嘗試 .TW 或 .TWO
     if upper_text.isdigit():
         for suffix in [".TW", ".TWO"]:
             symbol = upper_text + suffix
@@ -51,7 +78,7 @@ def resolve_symbol(user_input):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
     }
     
-    # 嘗試透過證交所 ISIN 網站反查中文公司名稱
+    # 5. 證交所 ISIN 網站動態反查備援
     for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
         try:
             url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
@@ -73,7 +100,7 @@ def resolve_symbol(user_input):
         except Exception:
             continue
 
-    # Yahoo Finance 搜尋 API 備援
+    # 6. Yahoo Finance 搜尋 API 最後防線
     try:
         session = requests.Session()
         session.headers.update(headers)
@@ -110,7 +137,8 @@ def get_company_name(symbol):
         "3105.TW": "穩懋 (3105.TW)", "3105.TWO": "穩懋 (3105.TWO)",
         "3122.TW": "笙泉 (3122.TW)", "3122.TWO": "笙泉 (3122.TWO)",
         "2330.TW": "台積電 (2330.TW)", "2454.TW": "聯發科 (2454.TW)",
-        "2317.TW": "鴻海 (2317.TW)", "2308.TW": "台達電 (2308.TW)"
+        "2317.TW": "鴻海 (2317.TW)", "2308.TW": "台達電 (2308.TW)",
+        "2603.TW": "長榮 (2603.TW)", "2303.TW": "聯電 (2303.TW)", "2412.TW": "中華電 (2412.TW)"
     }
     clean_sym = symbol.upper().strip()
     if clean_sym in cn_mapping:
@@ -200,7 +228,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         return None, str(e)
 
 # ==========================================
-# 2. 核心引擎 (v4.5)
+# 2. 核心引擎 (v4.6)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -296,7 +324,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 4.5 版】實戰分析報告
+【易經三義量化時空分析 4.6 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -374,11 +402,11 @@ class IChingTrinitySpatiotemporalEngine:
 st.set_page_config(page_title="易經三義量化時空分析", layout="wide", page_icon="☯️")
 
 st.title("☯️ 易經三義量化時空分析系統 (多時框日內版)")
-st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)** 與 **馬可夫狀態機率 (簡易)**。支援台股、美股代碼、公司名稱或 `0000` (大盤)。")
+st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)** 與 **馬可夫狀態機率 (簡易)**。支援台美股代碼、公司名稱或 `0000` (大盤)。")
 
 with st.sidebar:
     st.header("參數設定")
-    ticker_input = st.text_input("輸入台/美股代碼或公司名稱 (例如: 6147、台積電、NVDA 或 0000)", value="台積電")
+    ticker_input = st.text_input("輸入公司名稱或代碼 (例如: 6147、台積電、NVDA 或 0000)", value="台積電")
     
     timeframe_choice = st.selectbox(
         "選擇分析週期 (Timeframe)",
@@ -485,4 +513,3 @@ if run_btn:
             3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
             4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({resolved_sym})**，最後 K 棒時間：**{full_last_time}**。
             """)
-
