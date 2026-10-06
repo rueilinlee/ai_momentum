@@ -3,32 +3,205 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import yfinance as yf
-import urllib.request
+import requests
+import re
 import urllib.parse
+from bs4 import BeautifulSoup
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 常見台股（上市櫃）標準中文名稱對照表
+# 1. 標的解析與中英文名稱對照機制
 # ==========================================
-TAIWAN_STOCK_NAMES = {
-    "^TWII": "台灣加權指數 (TAIEX)",
-    "2330": "台積電 (2330)",
-    "2308": "台達電 (2308)",
-    "2454": "聯發科 (2454)",
-    "3105": "穩懋 (3105)",
-    "3122": "笙泉 (3122)",
-    "3293": "鈊象 (3293)",
-    "5483": "中美晶 (5483)",
-    "6147": "頎邦 (6147)",
-    "2317": "鴻海 (2317)",
-    "2881": "富邦金 (2881)",
-    "2882": "國泰金 (2882)"
-}
+def _has_price(symbol):
+    try:
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+        })
+        return not yf.Ticker(symbol, session=session).history(period="5d").empty
+    except Exception:
+        return False
+
+@st.cache_data(ttl=3600)
+def resolve_symbol(user_input):
+    text = user_input.strip()
+    upper_text = text.upper()
+
+    if upper_text == "0000" or upper_text == "^TWII":
+        return "^TWII"
+
+    if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
+        return upper_text
+
+    if upper_text.isdigit():
+        for suffix in [".TW", ".TWO"]:
+            symbol = upper_text + suffix
+            if _has_price(symbol):
+                return symbol
+        return upper_text + ".TW"
+
+    if upper_text.isalpha() and len(upper_text) <= 5:
+        return upper_text
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+    }
+
+    for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
+        try:
+            url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
+            response = requests.get(url, headers=headers, timeout=5)
+            response.encoding = 'big5'
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for row in soup.find_all('tr'):
+                tds = row.find_all('td')
+                if tds:
+                    cell_text = tds[0].get_text().strip()
+                    if text in cell_text:
+                        parts = cell_text.split()
+                        if parts and parts[0].isdigit() and len(parts[0]) in (4, 5):
+                            candidate = parts[0] + suffix
+                            if _has_price(candidate):
+                                return candidate
+                            return candidate
+        except Exception:
+            continue
+
+    try:
+        session = requests.Session()
+        session.headers.update(headers)
+        search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
+        res = session.get(search_url, timeout=5)
+        data = res.json()
+        if "quotes" in data:
+            for q in data["quotes"]:
+                sym = q.get("symbol", "")
+                if sym.endswith(".TW") or sym.endswith(".TWO"):
+                    return sym
+                digits = "".join(c for c in sym if c.isdigit())
+                if len(digits) in [4, 5]:
+                    for suffix in [".TW", ".TWO"]:
+                        symbol = digits + suffix
+                        if _has_price(symbol):
+                            return symbol
+    except Exception:
+        pass
+
+    return text
+
+@st.cache_data(ttl=3600)
+def get_company_name(symbol):
+    if symbol == "^TWII":
+        return "大盤加權指數 (^TWII)"
+
+    cn_mapping = {
+        "PANW": "帕羅奧圖網路 (Palo Alto Networks)",
+        "NVDA": "輝達 (NVIDIA)",
+        "AAPL": "蘋果 (Apple)",
+        "TSLA": "特斯拉 (Tesla)",
+        "MSFT": "微軟 (Microsoft)",
+        "GOOGL": "谷歌 (Alphabet)",
+        "AMZN": "亞馬遜 (Amazon)",
+        "META": "Meta (臉書)",
+        "AMD": "超微 (AMD)",
+        "TSM": "台積電 ADR (TSMC)",
+        "6147.TW": "頎邦 (6147.TW)",
+        "6147.TWO": "頎邦 (6147.TWO)",
+        "3105.TW": "穩懋 (3105.TW)",
+        "3105.TWO": "穩懋 (3105.TWO)",
+        "3122.TW": "笙泉 (3122.TW)",
+        "3122.TWO": "笙泉 (3122.TWO)"
+    }
+    clean_sym = symbol.upper().strip()
+    if clean_sym in cn_mapping:
+        return cn_mapping[clean_sym]
+
+    try:
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+        })
+        if ".TW" in symbol or ".TWO" in symbol:
+            stock_id = symbol.split(".")[0]
+            tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
+            res = session.get(tw_yahoo_url, timeout=5)
+            match = re.search(r"<title>(.*?)\(", res.text)
+            if match:
+                extracted_name = match.group(1).strip()
+                if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
+                    return f"{extracted_name} ({symbol})"
+
+        stock = yf.Ticker(symbol, session=session)
+        info = stock.info
+        name = info.get("longName") or info.get("shortName")
+        if name:
+            return f"{name} ({symbol})"
+    except Exception:
+        pass
+    return symbol
+
+def resolve_yahoo_ticker(user_input):
+    resolved_sym = resolve_symbol(user_input)
+    if resolved_sym == "^TWII":
+        return "^TWII", "大盤加權指數", "大盤指數"
+
+    full_name_str = get_company_name(resolved_sym)
+    match = re.match(r"^(.*?)\s*\(", full_name_str)
+    company_name = match.group(1).strip() if match else full_name_str
+
+    if resolved_sym.endswith(".TWO"):
+        market_attr = "上櫃公司"
+    elif resolved_sym.endswith(".TW"):
+        market_attr = "上市公司"
+    else:
+        market_attr = "國際/美股標的"
+
+    pure_digits = "".join(filter(str.isdigit, resolved_sym)) or resolved_sym
+    return resolved_sym, company_name, market_attr, pure_digits
+
+@st.cache_data(ttl=600)
+def fetch_yahoo_data(ticker_symbol, interval, period):
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        df = ticker.history(period=period, interval=interval)
+        if df.empty and ".TW" in ticker_symbol:
+            alt_symbol = ticker_symbol.replace(".TW", ".TWO")
+            ticker = yf.Ticker(alt_symbol)
+            df = ticker.history(period=period, interval=interval)
+            ticker_symbol = alt_symbol
+
+        if df.empty:
+            return None, f"無法從 Yahoo Finance 取得代號 {ticker_symbol} 的資料。"
+
+        df = df.reset_index()
+        col_candidates = [c for c in df.columns if 'Date' in c or 'Datetime' in c]
+        date_col = col_candidates[0] if col_candidates else df.columns[0]
+
+        df = df.rename(columns={
+            date_col: "DateTime",
+            "Open": "Open",
+            "High": "High",
+            "Low": "Low",
+            "Close": "Close",
+            "Volume": "Volume"
+        })
+
+        df["DateTime"] = pd.to_datetime(df["DateTime"])
+        if df["DateTime"].dt.tz is not None:
+            df["DateTime"] = df["DateTime"].dt.tz_convert("Asia/Taipei")
+        else:
+            df["DateTime"] = df["DateTime"].dt.tz_localize("UTC").dt.tz_convert("Asia/Taipei")
+
+        df["DateTime"] = df["DateTime"].dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df, ticker_symbol
+    except Exception as e:
+        return None, str(e)
 
 # ==========================================
-# 核心引擎 (v3.9)
+# 2. 核心引擎 (v4.0)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -124,7 +297,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 3.9 版】實戰分析報告
+【易經三義量化時空分析 4.0 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -196,100 +369,17 @@ class IChingTrinitySpatiotemporalEngine:
         plt.tight_layout()
         return fig
 
-def search_stock_name_via_google(pure_code: str) -> str:
-    if pure_code in TAIWAN_STOCK_NAMES:
-        return TAIWAN_STOCK_NAMES[pure_code]
-        
-    try:
-        query = f"{pure_code} 股票 台灣 名字"
-        encoded_query = urllib.parse.quote(query)
-        url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
-        
-        req = urllib.request.Request(
-            url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
-        with urllib.request.urlopen(req, timeout=3) as response:
-            html_content = response.read().decode('utf-8')
-            
-        import re
-        patterns = [
-            rf'([\u4e00-\u9fa5]{{2,6}})\s*\(?{pure_code}\)?',
-            rf'{pure_code}\s*[-–]\s*([\u4e00-\u9fa5]{{2,6}})'
-        ]
-        for pat in patterns:
-            match = re.search(pat, html_content)
-            if match:
-                name = match.group(1).strip()
-                if name not in ["台股", "股票", "上市", "上櫃", "公司"]:
-                    return f"{name} ({pure_code})"
-    except Exception:
-        pass
-        
-    return f"台股標的 ({pure_code})"
-
-def fetch_stock_or_index_data(raw_input: str, interval_choice: str) -> Tuple[Optional[pd.DataFrame], str, str, str]:
-    clean_code = raw_input.strip()
-    
-    if clean_code == "0000":
-        clean_code = "^TWII"
-
-    if interval_choice == "Daily (日線)":
-        interval = "1d"
-        period = "1y"
-    elif interval_choice == "60m (60分K)":
-        interval = "60m"
-        period = "730d"
-    elif interval_choice == "30m (30分K)":
-        interval = "30m"
-        period = "60d"
-    elif interval_choice == "15m (15分K)":
-        interval = "15m"
-        period = "60d"
-    elif interval_choice == "5m (5分K)":
-        interval = "5m"
-        period = "60d"
-    else:
-        interval = "1d"
-        period = "1y"
-
-    if clean_code.startswith('^') or clean_code.upper().endswith(('.TW', '.TWO', '.US', '=F')):
-        tickers_to_try = [clean_code]
-    else:
-        pure_digits = ''.join(filter(str.isdigit, clean_code))
-        tickers_to_try = [f"{pure_digits}.TW", f"{pure_digits}.TWO"]
-
-    for t in tickers_to_try:
-        try:
-            ticker_obj = yf.Ticker(t)
-            df = ticker_obj.history(period=period, interval=interval)
-            
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-                
-            df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-            
-            if not df.empty:
-                pure_digits = "0000" if t == '^TWII' else ''.join(filter(str.isdigit, t))
-                company_name = search_stock_name_via_google(pure_digits)
-                market_type = "大盤指數" if t == '^TWII' else ("上市公司" if ".TW" in t else "上櫃公司")
-                return df, pure_digits, market_type, company_name
-        except Exception:
-            continue
-            
-    return None, "", "", ""
-
 # ==========================================
-# Streamlit 前端介面
+# 3. Streamlit 前端介面
 # ==========================================
 st.set_page_config(page_title="易經三義量化時空分析", layout="wide", page_icon="☯️")
 
 st.title("☯️ 易經三義量化時空分析系統 (多時框日內版)")
-st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)** 與 **馬可夫狀態機率 (簡易)**。輸入 `0000` 即可分析台股大盤指數 (TAIEX)。")
+st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)** 與 **馬可夫狀態機率 (簡易)**。支援直接輸入公司名稱或代碼（輸入 `0000` 代表台股大盤）。")
 
 with st.sidebar:
     st.header("參數設定")
-    ticker_input = st.text_input("輸入股票代碼 (輸入 0000 代表大盤)", value="6147")
+    ticker_input = st.text_input("輸入公司名稱或代碼 (例如: 6147、台積電 或 0000)", value="6147")
     
     timeframe_choice = st.selectbox(
         "選擇分析週期 (Timeframe)",
@@ -301,16 +391,40 @@ with st.sidebar:
     run_btn = st.button("啟動量化引擎 🚀", use_container_width=True)
 
 if run_btn:
-    with st.spinner(f"正在透過 Google 搜尋引擎與 Yahoo Finance 聯動解析代碼 [{ticker_input}] 的 [{timeframe_choice}] 資料..."):
-        df_real, pure_code, market_type, company_name = fetch_stock_or_index_data(ticker_input, timeframe_choice)
+    with st.spinner(f"正在解析標的 [{ticker_input}] 並獲取 [{timeframe_choice}] 歷史資料..."):
+        resolved_sym, company_name, market_type, pure_code = resolve_yahoo_ticker(ticker_input)
+        
+        if timeframe_choice == "Daily (日線)":
+            interval = "1d"
+            period = "1y"
+        elif timeframe_choice == "60m (60分K)":
+            interval = "60m"
+            period = "730d"
+        elif timeframe_choice == "30m (30分K)":
+            interval = "30m"
+            period = "60d"
+        elif timeframe_choice == "15m (15分K)":
+            interval = "15m"
+            period = "60d"
+        elif timeframe_choice == "5m (5分K)":
+            interval = "5m"
+            period = "60d"
+        else:
+            interval = "1d"
+            period = "1y"
+
+        df_real, final_symbol = fetch_yahoo_data(resolved_sym, interval, period)
         
         if df_real is None or df_real.empty:
-            st.error(f"⚠️ 無法獲取代碼 [{ticker_input}] 的資料，請確認代碼是否正確。")
+            st.error(f"⚠️ 無法獲取 [{ticker_input}] 的資料，請確認代碼或公司名稱是否正確。")
         else:
             tw_timezone = ZoneInfo("Asia/Taipei")
             now_tw = datetime.now(tw_timezone)
             
-            full_last_time = df_real.index[-1].strftime('%Y-%m-%d %H:%M') if 'm' in timeframe_choice.lower() else df_real.index[-1].strftime('%Y-%m-%d')
+            full_last_time = df_real['DateTime'].iloc[-1]
+            if timeframe_choice == "Daily (日線)":
+                full_last_time = full_last_time.split()[0]
+                
             report_date_str = now_tw.strftime('%Y-%m-%d')
             report_time_str = now_tw.strftime('%H:%M:%S')
             
@@ -319,15 +433,10 @@ if run_btn:
             price_change = current_price - prev_price
             price_change_pct = (price_change / prev_price) * 100
             
-            # 智慧解析名稱與括號代碼，用於第一欄上下換行顯示
-            if "(" in company_name and ")" in company_name:
-                parts = company_name.split("(")
-                pure_name_only = parts[0].strip()
-                code_bracket_part = f"({parts[1]}"
-            else:
-                pure_name_only = company_name
-                code_bracket_part = f"({pure_code})"
-
+            # 第一欄名稱拆解（名稱在上、括號代碼在下）
+            pure_name_only = company_name
+            code_bracket_part = f"({pure_code})"
+            
             engine = IChingTrinitySpatiotemporalEngine(df_real, ticker=pure_code, company_name=company_name, timeframe=timeframe_choice)
             report_text = engine.generate_full_report(current_regime_bars=current_regime_bars, last_bar_time=full_last_time, report_time=f"{report_date_str} {report_time_str}")
             fig = engine.plot_spatiotemporal_matrix(last_bar_time=full_last_time)
@@ -336,7 +445,7 @@ if run_btn:
             bian_data = engine.analyze_bian_yi()
             
             st.markdown("---")
-            # 維持原本五欄結構
+            # 五欄看板結構
             m1, m2, m3, m4, m5 = st.columns(5)
             
             # 第一欄：名稱在上、括號代碼在下（黑色字體、自動換行）
