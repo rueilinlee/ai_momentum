@@ -1,5 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import io
 import re
+from typing import Optional
+import urllib.parse
 from bs4 import BeautifulSoup
 import numpy as np
 import pandas as pd
@@ -126,9 +130,128 @@ def _is_us_ticker(text: str) -> bool:
 
 def _has_price(symbol):
   try:
-    return not yf.Ticker(symbol).history(period="5d").empty
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    return not yf.Ticker(symbol, session=session).history(period="5d").empty
   except Exception:
     return False
+
+
+COMPANY_SOURCES = [
+    (
+        "TW",
+        [
+            ("https://openapi.twse.com.tw/v1/opendata/t187ap03_L", "json"),
+            ("https://mopsfin.twse.com.tw/opendata/t187ap03_L.csv", "csv"),
+        ],
+    ),
+    (
+        "TWO",
+        [
+            ("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O", "json"),
+            ("https://mopsfin.twse.com.tw/opendata/t187ap03_O.csv", "csv"),
+        ],
+    ),
+]
+
+
+def _norm(s) -> str:
+  return re.sub(r"\s+", "", str(s or "")).replace("臺", "台")
+
+
+def _fetch_company_list(suffix, candidates):
+  for url, kind in candidates:
+    try:
+      r = requests.get(url, headers=HEADERS, timeout=6)
+      r.raise_for_status()
+      if kind == "json":
+        rows = r.json()
+      else:
+        df = pd.read_csv(
+            io.StringIO(r.content.decode("utf-8-sig")), dtype=str
+        )
+        rows = df.to_dict("records")
+      out = []
+      for row in rows:
+        row = {str(k).lstrip("\ufeff").strip(): v for k, v in row.items()}
+        code = str(row.get("公司代號", "")).strip()
+        short = _norm(row.get("公司簡稱"))
+        full = _norm(row.get("公司名稱"))
+        if code and (short or full):
+          out.append({
+              "code": code,
+              "short": short,
+              "full": full,
+              "suffix": suffix,
+          })
+      if out:
+        return out
+    except Exception:
+      continue
+  return []
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_company_table():
+  table = []
+  with ThreadPoolExecutor(max_workers=len(COMPANY_SOURCES)) as ex:
+    futures = [
+        ex.submit(_fetch_company_list, sfx, cands)
+        for sfx, cands in COMPANY_SOURCES
+    ]
+    for f in futures:
+      try:
+        table.extend(f.result(timeout=12))
+      except Exception:
+        pass
+  return table
+
+
+def _lookup_company(query: str, table):
+  q = _norm(query)
+  if not q or not table:
+    return None
+  rules = [
+      lambda c: c["short"] == q,
+      lambda c: c["full"] == q,
+      lambda c: c["short"].startswith(q),
+      lambda c: q in c["short"] or q in c["full"],
+  ]
+  for rule in rules:
+    hits = [c for c in table if rule(c)]
+    if hits:
+      return min(hits, key=lambda c: len(c["short"] or c["full"]))
+  return None
+
+
+def _suffix_for_code(code: str, table) -> Optional[str]:
+  for c in table:
+    if c["code"] == code:
+      return c["suffix"]
+  return None
+
+
+def _isin_lookup(clean_query: str) -> Optional[str]:
+  sources = [
+      "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
+      "https://isin.tpex.org.tw/isin/C_public.jsp?strMode=4",
+  ]
+  for url in sources:
+    try:
+      response = requests.get(url, headers=HEADERS, timeout=5)
+      response.encoding = "big5"
+      soup = BeautifulSoup(response.text, "html.parser")
+      for row in soup.find_all("tr"):
+        tds = row.find_all("td")
+        if not tds:
+          continue
+        parts = tds[0].get_text().strip().split()
+        if len(parts) >= 2 and parts[0].isdigit() and len(parts[0]) in (4, 5):
+          if _norm("".join(parts[1:])) == clean_query:
+            return parts[0]
+    except Exception:
+      continue
+  return None
 
 
 @st.cache_data(ttl=3600)
@@ -139,6 +262,10 @@ def resolve_symbol(user_input):
   if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
     return "^TWII"
 
+  match_fix = re.match(r"^(\d{4,5})(TW|TWO)$", upper_text)
+  if match_fix:
+    return f"{match_fix.group(1)}.{match_fix.group(2)}"
+
   if upper_text.endswith((".TW", ".TWO", ".US", "=F")) or upper_text.startswith(
       "^"
   ):
@@ -147,74 +274,50 @@ def resolve_symbol(user_input):
   if _is_us_ticker(upper_text):
     return upper_text
 
-  digits_found = None
-  if upper_text.isdigit():
-    digits_found = upper_text
-  else:
-    clean_query = re.sub(r"\s+", "", text)
+  table = load_company_table()
+  if not table:
+    load_company_table.clear()
 
-    if clean_query in LOCAL_NAME_MAP:
-      digits_found = LOCAL_NAME_MAP[clean_query]
+  clean_query = _norm(text)
 
-    if not digits_found:
-      sources = [
-          ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "big5"),
-          ("https://isin.tpex.org.tw/isin/C_public.jsp?strMode=4", "big5"),
-      ]
-      partial_match = None
-      for url, enc in sources:
-        try:
-          response = requests.get(url, headers=HEADERS, timeout=8)
-          response.encoding = enc
-          soup = BeautifulSoup(response.text, "html.parser")
-          for row in soup.find_all("tr"):
-            tds = row.find_all("td")
-            if not tds:
-              continue
-            cell_text = tds[0].get_text().strip()
-            parts = cell_text.split()
-            if (
-                len(parts) >= 2
-                and parts[0].isdigit()
-                and len(parts[0]) in (4, 5)
-            ):
-              name_part = re.sub(r"\s+", "", "".join(parts[1:]))
-              if name_part == clean_query:
-                digits_found = parts[0]
-                break
-              if partial_match is None and clean_query in name_part:
-                partial_match = parts[0]
-        except Exception:
-          continue
-        if digits_found:
-          break
-      if not digits_found and partial_match:
-        digits_found = partial_match
+  code = LOCAL_NAME_MAP.get(clean_query) or (
+      upper_text if upper_text.isdigit() else None
+  )
+  if code:
+    suffix = _suffix_for_code(code, table)
+    if suffix:
+      return f"{code}.{suffix}"
+    for sfx in (".TW", ".TWO"):
+      if _has_price(code + sfx):
+        return code + sfx
+    return f"{code}.TW"
 
-    if not digits_found:
-      try:
-        search_url = (
-            "https://query1.finance.yahoo.com/v1/finance/search?"
-            f"q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
-        )
-        res = requests.get(search_url, headers=HEADERS, timeout=8)
-        data = res.json()
-        for q in data.get("quotes", []):
-          sym = q.get("symbol", "")
-          if sym.endswith((".TW", ".TWO")):
-            digits = "".join(c for c in sym if c.isdigit())
-            if len(digits) in (4, 5):
-              digits_found = digits
-              break
-      except Exception:
-        pass
+  hit = _lookup_company(text, table)
+  if hit:
+    return f"{hit['code']}.{hit['suffix']}"
 
-  if digits_found:
-    for suffix in [".TW", ".TWO"]:
-      symbol = digits_found + suffix
-      if _has_price(symbol):
-        return symbol
-    return digits_found + ".TW"
+  try:
+    search_url = (
+        "https://query1.finance.yahoo.com/v1/finance/search?"
+        f"q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
+    )
+    data = requests.get(search_url, headers=HEADERS, timeout=5).json()
+    for q in data.get("quotes", []):
+      sym = q.get("symbol", "")
+      if sym.endswith((".TW", ".TWO")):
+        m = re.match(r"^(\d{4,5})(TW|TWO)$", sym.upper())
+        if m:
+          return f"{m.group(1)}.{m.group(2)}"
+        return sym
+  except Exception:
+    pass
+
+  code = _isin_lookup(clean_query)
+  if code:
+    for sfx in (".TW", ".TWO"):
+      if _has_price(code + sfx):
+        return code + sfx
+    return f"{code}.TW"
 
   return text
 
@@ -247,10 +350,12 @@ def get_company_name(symbol):
         return f"{name} ({symbol})"
 
   try:
+    session = requests.Session()
+    session.headers.update(HEADERS)
     if ".TW" in symbol or ".TWO" in symbol:
       stock_id = symbol.split(".")[0]
       tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
-      res = requests.get(tw_yahoo_url, headers=HEADERS, timeout=8)
+      res = session.get(tw_yahoo_url, headers=HEADERS, timeout=5)
       match = re.search(r"<title>(.*?)\(", res.text)
       if match:
         extracted_name = match.group(1).strip()
@@ -261,7 +366,7 @@ def get_company_name(symbol):
         ):
           return f"{extracted_name} ({symbol})"
 
-    stock = yf.Ticker(symbol)
+    stock = yf.Ticker(symbol, session=session)
     info = stock.info
     name = info.get("longName") or info.get("shortName")
     if name:
@@ -281,9 +386,9 @@ def resolve_yahoo_ticker(user_input):
   company_name = match.group(1).strip() if match else full_name_str
 
   if resolved_sym.endswith(".TWO"):
-    market_attr = "櫃買中心<br>(上櫃公司)"
+    market_attr = "上櫃公司"
   elif resolved_sym.endswith(".TW"):
-    market_attr = "證交所<br>(上市公司)"
+    market_attr = "上市公司"
   elif _is_us_ticker(resolved_sym):
     market_attr = "美股/國際標的"
   else:
@@ -751,3 +856,4 @@ else:
       "👈 請在左側側邊欄輸入公司代號或名稱（例如 0000 大盤、今國光、台積電、PANW、NVDA 等），"
       "選擇 K 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
   )
+
