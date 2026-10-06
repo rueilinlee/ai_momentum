@@ -1074,4 +1074,3 @@ with fig_col2:
     plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14)
     plt.tight_layout()
     st.pyplot(fig2)
-
