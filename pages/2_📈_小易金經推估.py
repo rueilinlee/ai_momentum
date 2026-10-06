@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (智慧動態反查與先 .TW 後 .TWO 驗證)
+# 1. 標的解析與中英文名稱對照機制 (加入常見名稱防線與先 .TW 後 .TWO 驗證)
 # ==========================================
 def _has_price(symbol):
     try:
@@ -40,6 +40,20 @@ def resolve_symbol(user_input):
     if upper_text.isalpha() and len(upper_text) <= 5:
         return upper_text
         
+    # 常見名稱手動備份對照（防止遠端 ISIN 網頁變動、編碼失效或包含不完全）
+    manual_fallback_mapping = {
+        "今國光": "6209.TWO",
+        "台積電": "2330.TW",
+        "聯發科": "2454.TW",
+        "鴻海": "2317.TW",
+        "台達電": "2308.TW",
+        "穩懋": "3105.TWO",
+        "笙泉": "3122.TWO",
+        "頎邦": "6147.TW"
+    }
+    if text in manual_fallback_mapping:
+        return manual_fallback_mapping[text]
+
     digits_found = None
     if upper_text.isdigit():
         digits_found = upper_text
@@ -49,11 +63,11 @@ def resolve_symbol(user_input):
         }
         clean_query = re.sub(r'\s+', '', text)
 
-        # 1. 透過證交所與櫃買中心 ISIN 網站尋找公司代碼（支援模糊包含與字串清洗）
+        # 1. 透過證交所與櫃買中心 ISIN 網站尋找公司代碼
         for mode in ["2", "4"]:
             try:
                 url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-                response = requests.get(url, headers=headers, timeout=6)
+                response = requests.get(url, headers=headers, timeout=5)
                 response.encoding = 'big5'
                 
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -72,7 +86,7 @@ def resolve_symbol(user_input):
             if digits_found:
                 break
 
-        # 2. 若 ISIN 未找到，改用 Yahoo Finance 搜尋 API 尋找公司代碼
+        # 2. 若 ISIN 未找到，改用 Yahoo Finance 搜尋 API
         if not digits_found:
             try:
                 session = requests.Session()
@@ -108,7 +122,8 @@ def get_company_name(symbol):
     cn_mapping = {
         "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
         "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
-        "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)"
+        "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)",
+        "6209.TWO": "今國光 (6209.TWO)", "6209.TW": "今國光 (6209.TW)"
     }
     clean_sym = symbol.upper().strip()
     if clean_sym in cn_mapping:
@@ -198,7 +213,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         return None, str(e)
 
 # ==========================================
-# 2. 核心引擎 (v5.0)
+# 2. 核心引擎 (v5.1)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -294,7 +309,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 5.0 版】實戰分析報告
+【易經三義量化時空分析 5.1 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
