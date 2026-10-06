@@ -182,7 +182,6 @@ def resolve_symbol(user_input):
     if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
         return "^TWII"
 
-    # 自動補上遺漏的點號 (例如將 6209TW 轉為 6209.TW)
     match_fix = re.match(r"^(\d{4,5})(TW|TWO)$", upper_text)
     if match_fix:
         return f"{match_fix.group(1)}.{match_fix.group(2)}"
@@ -579,24 +578,16 @@ sent_2m, growth_2m, b2m, r2m, c2m, status_2m, titles_2m = comprehensive_quant_ev
 # ==========================================
 # 7. 主程式執行與即時行情、計量模型運算
 # ==========================================
-with st.spinner(f'正在取得 {company_name} 即時報價與市場資料，並進行機器學習訓練與價格模擬...'):
+with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料（NVDA、SOX 等），並進行機器學習訓練與價格模擬...'):
     stock_code = symbol.split('.')[0]
     exchange = symbol.split('.')[1] if '.' in symbol else "TW"
-    
-    # 建立不重複的 tickers 清單
-    tickers = list(dict.fromkeys([symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']))
+    tickers = [symbol, 'NVDA', 'MSFT', '^SOX', '^DJI', '^IRX', '^TWII']
     
     end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
     fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
     
     raw_market_data = yf.download(tickers, start=fetch_start, end=end_date, progress=False, session=session)['Close']
-    
-    # 🛡️ 徹底防範欄位或索引重複導致的 reindex 錯誤
-    if isinstance(raw_market_data, pd.DataFrame):
-        market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
-        market_data = market_data.loc[~market_data.index.duplicated()]
-    else:
-        market_data = pd.DataFrame({symbol: raw_market_data})
+    market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
 
     if symbol not in market_data.columns or market_data[symbol].dropna().empty:
         st.error(f"❌ 找不到 {symbol} 的股價資料，或遭遇 Yahoo Finance 暫時封鎖，請稍後再試。")
@@ -717,61 +708,56 @@ with st.spinner(f'正在取得 {company_name} 即時報價與市場資料，並�
     elif vol_ratio < 0.8:
         vol_signal = "🎯 [加碼/佈局訊號] 短期波動極度壓縮，適合低檔分批建倉"
     else:
-        vol_signal = "⚖️ [觀望/中性訊號] 多空力道平衡，維持原有部位"
+        vol_signal = "⚖️️ [觀望/中性訊號] 多空力道平衡，維持原有部位"
 
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
-    # 確保選取的欄位存在且不重複
-    req_cols = [symbol, 'NVDA', '^SOX', '^DJI', '^TWII', '^IRX']
-    available_cols = [c for c in req_cols if c in market_data.columns]
-    sub_market_data = market_data[available_cols].loc[:, ~market_data[available_cols].columns.duplicated()]
-
-    returns = sub_market_data[[symbol, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
-    rf_us_daily = (sub_market_data['^IRX'].dropna() / 100) / 365
+    returns = market_data[[symbol, 'NVDA', 'MSFT', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
+    rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
     df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
     df['RF_TW'] = 0.017 / 365 
 
-    df['Price_Mom_30D'] = (sub_market_data[symbol].pct_change(30) - sub_market_data['^TWII'].pct_change(30)).shift(1)
-    df['Price_Mom_5D'] = (sub_market_data[symbol].pct_change(5) - sub_market_data['^TWII'].pct_change(5)).shift(1)
-    df['Vol_10D'] = sub_market_data[symbol].pct_change().rolling(10).std().shift(1)
+    df['Price_Mom_30D'] = (market_data[symbol].pct_change(30) - market_data['^TWII'].pct_change(30)).shift(1)
+    df['Price_Mom_5D'] = (market_data[symbol].pct_change(5) - market_data['^TWII'].pct_change(5)).shift(1)
+    df['Vol_10D'] = market_data[symbol].pct_change().rolling(10).std().shift(1)
 
-    delta = sub_market_data[symbol].diff()
+    delta = market_data[symbol].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI_14'] = (100 - (100 / (1 + rs))).shift(1)
     df = df.dropna()
 
-    # 根據是否輸入 NVDA 動態調整正交化目標因子
-    ortho_target = 'NVDA' if symbol.upper() == "NVDA" else '^SOX'
+    # 🛡️ 當輸入 NVDA 時，正交化基準改用 MSFT，避免自身相減或欄位重複對齊衝突
+    ortho_factor = 'MSFT' if symbol.upper() == 'NVDA' else 'NVDA'
 
-    Y_ortho = df[ortho_target] - df['RF_US']
+    Y_ortho = df[ortho_factor] - df['RF_US']
     X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']})
     X_ortho = sm.add_constant(X_ortho)
-    df['Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
+    df['NVDA_Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
 
-    df['Interaction_Term'] = df['Pure_Shock'] * df['Price_Mom_30D']
+    df['Interaction_Term'] = df['NVDA_Pure_Shock'] * df['Price_Mom_30D']
     Y_rolling = df[symbol] - df['RF_TW']
-    X_rolling = df[['^TWII', '^SOX', 'Pure_Shock', 'Price_Mom_30D', 'Interaction_Term']]
+    X_rolling = df[['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term']]
     X_rolling = sm.add_constant(X_rolling)
 
     rolling_res = RollingOLS(Y_rolling, X_rolling, window=252).fit()
     params_df = rolling_res.params
     
-    df['Beta_3_Rolling'] = params_df['Pure_Shock']
+    df['Beta_3_Rolling'] = params_df['NVDA_Pure_Shock']
     df['Gamma_Rolling'] = params_df['Interaction_Term']
     df['Beta_3_Trend_5D'] = df['Beta_3_Rolling'].diff(5)
     df['Gamma_Trend_5D'] = df['Gamma_Rolling'].diff(5)
     
     plot_gamma = params_df['Interaction_Term'].dropna()
-    plot_beta3 = params_df['Pure_Shock'].dropna()
+    plot_beta3 = params_df['NVDA_Pure_Shock'].dropna()
 
     threshold = 0.005 
-    df['Target_Label'] = ((sub_market_data[symbol].pct_change(5).shift(-5) - sub_market_data['^TWII'].pct_change(5).shift(-5)) > threshold).astype(int)
+    df['Target_Label'] = ((market_data[symbol].pct_change(5).shift(-5) - market_data['^TWII'].pct_change(5).shift(-5)) > threshold).astype(int)
     df_ai = df.dropna()
 
-    features = ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
+    features = ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
     X = df_ai[features]
     y = df_ai['Target_Label']
 
@@ -926,7 +912,7 @@ c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper_2:,.0f}]")
 
 st.markdown("---")
-st.markdown("### ⏱ 多期報酬率表現 (自動計算模組)")
+st.markdown("### ⏱️ 多期報酬率表現 (自動計算模組)")
 r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns(5)
 r_col1.metric("近 1 週 (5日)", fmt_pct(ret_1w))
 r_col2.metric("近 2 週 (10日)", fmt_pct(ret_2w))
@@ -1065,7 +1051,7 @@ st.markdown("---")
 st.markdown("### 📊 歷史波段回測與 SHAP AI 決策邏輯")
 
 min_beta3_date = plot_beta3.idxmin()
-period_returns = sub_market_data[symbol].loc[min_beta3_date:plot_beta3.loc[min_beta3_date:].idxmax()].pct_change().dropna()
+period_returns = market_data[symbol].loc[min_beta3_date:plot_beta3.loc[min_beta3_date:].idxmax()].pct_change().dropna()
 
 fig_col1, fig_col2 = st.columns(2)
 
