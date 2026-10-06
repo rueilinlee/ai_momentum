@@ -37,7 +37,7 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
     return datetime.now(timezone(timedelta(hours=8))).strftime(fmt)
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (已修正代號點號防呆)
+# 1. 標的解析與中英文名稱對照機制
 # ==========================================
 LOCAL_NAME_MAP = {
     "今國光": "6209",
@@ -68,7 +68,6 @@ HEADERS = {
 }
 
 def _is_us_ticker(text: str) -> bool:
-    """純 ASCII 英文字母且長度 <= 5 才視為美股代號 (避免中文被 isalpha() 誤判)"""
     return text.isascii() and text.isalpha() and len(text) <= 5
 
 def _has_price(symbol):
@@ -79,7 +78,6 @@ def _has_price(symbol):
     except Exception:
         return False
 
-# 公司清單 (代碼/簡稱/全名)：政府開放資料 JSON/CSV，一次下載後快取 24 小時
 COMPANY_SOURCES = [
     ("TW", [("https://openapi.twse.com.tw/v1/opendata/t187ap03_L", "json"),
             ("https://mopsfin.twse.com.tw/opendata/t187ap03_L.csv", "csv")]),
@@ -91,7 +89,6 @@ def _norm(s) -> str:
     return re.sub(r"\s+", "", str(s or "")).replace("臺", "台")
 
 def _fetch_company_list(suffix, candidates):
-    """依序嘗試各資料來源，任一成功即回傳"""
     for url, kind in candidates:
         try:
             r = requests.get(url, headers=HEADERS, timeout=6)
@@ -117,7 +114,6 @@ def _fetch_company_list(suffix, candidates):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def load_company_table():
-    """上市、上櫃兩份清單同時下載 (平行)，總耗時約 1–3 秒"""
     table = []
     with ThreadPoolExecutor(max_workers=len(COMPANY_SOURCES)) as ex:
         futures = [ex.submit(_fetch_company_list, sfx, cands) for sfx, cands in COMPANY_SOURCES]
@@ -129,7 +125,6 @@ def load_company_table():
     return table
 
 def _lookup_company(query: str, table):
-    """名稱比對：簡稱完全相符 → 全名完全相符 → 簡稱開頭 → 任一包含；同級取名稱最短者"""
     q = _norm(query)
     if not q or not table:
         return None
@@ -152,7 +147,6 @@ def _suffix_for_code(code: str, table) -> Optional[str]:
     return None
 
 def _isin_lookup(clean_query: str) -> Optional[str]:
-    """最後備援：官方 ISIN 網頁 (檔案大、較慢，僅在前面都失敗時使用)"""
     sources = [
         "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
         "https://isin.tpex.org.tw/isin/C_public.jsp?strMode=4",
@@ -578,10 +572,14 @@ sent_2m, growth_2m, b2m, r2m, c2m, status_2m, titles_2m = comprehensive_quant_ev
 # ==========================================
 # 7. 主程式執行與即時行情、計量模型運算
 # ==========================================
-with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料（NVDA、SOX 等），並進行機器學習訓練與價格模擬...'):
+with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料，並進行機器學習訓練與價格模擬...'):
     stock_code = symbol.split('.')[0]
     exchange = symbol.split('.')[1] if '.' in symbol else "TW"
-    tickers = [symbol, 'NVDA', 'MSFT', '^SOX', '^DJI', '^IRX', '^TWII']
+    
+    # 🛡️ 依據輸入是否為 NVDA 來動態調整因子的代號，避免重複標籤衝突
+    factor_ticker = 'MSFT' if symbol.upper() == 'NVDA' else 'NVDA'
+    
+    tickers = [symbol, factor_ticker, '^SOX', '^DJI', '^IRX', '^TWII']
     
     end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
     fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
@@ -708,12 +706,12 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     elif vol_ratio < 0.8:
         vol_signal = "🎯 [加碼/佈局訊號] 短期波動極度壓縮，適合低檔分批建倉"
     else:
-        vol_signal = "⚖️️ [觀望/中性訊號] 多空力道平衡，維持原有部位"
+        vol_signal = "⚖️ [觀望/中性訊號] 多空力道平衡，維持原有部位"
 
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
-    returns = market_data[[symbol, 'NVDA', 'MSFT', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
+    returns = market_data[[symbol, factor_ticker, '^SOX', '^DJI', '^TWII']].pct_change().dropna()
     rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
     df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
     df['RF_TW'] = 0.017 / 365 
@@ -729,35 +727,32 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     df['RSI_14'] = (100 - (100 / (1 + rs))).shift(1)
     df = df.dropna()
 
-    # 🛡️ 當輸入 NVDA 時，正交化基準改用 MSFT，避免自身相減或欄位重複對齊衝突
-    ortho_factor = 'MSFT' if symbol.upper() == 'NVDA' else 'NVDA'
-
-    Y_ortho = df[ortho_factor] - df['RF_US']
+    Y_ortho = df[factor_ticker] - df['RF_US']
     X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']})
     X_ortho = sm.add_constant(X_ortho)
-    df['NVDA_Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
+    df['Factor_Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
 
-    df['Interaction_Term'] = df['NVDA_Pure_Shock'] * df['Price_Mom_30D']
+    df['Interaction_Term'] = df['Factor_Pure_Shock'] * df['Price_Mom_30D']
     Y_rolling = df[symbol] - df['RF_TW']
-    X_rolling = df[['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term']]
+    X_rolling = df[['^TWII', '^SOX', 'Factor_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term']]
     X_rolling = sm.add_constant(X_rolling)
 
     rolling_res = RollingOLS(Y_rolling, X_rolling, window=252).fit()
     params_df = rolling_res.params
     
-    df['Beta_3_Rolling'] = params_df['NVDA_Pure_Shock']
+    df['Beta_3_Rolling'] = params_df['Factor_Pure_Shock']
     df['Gamma_Rolling'] = params_df['Interaction_Term']
     df['Beta_3_Trend_5D'] = df['Beta_3_Rolling'].diff(5)
     df['Gamma_Trend_5D'] = df['Gamma_Rolling'].diff(5)
     
     plot_gamma = params_df['Interaction_Term'].dropna()
-    plot_beta3 = params_df['NVDA_Pure_Shock'].dropna()
+    plot_beta3 = params_df['Beta_3_Rolling'].dropna()
 
     threshold = 0.005 
     df['Target_Label'] = ((market_data[symbol].pct_change(5).shift(-5) - market_data['^TWII'].pct_change(5).shift(-5)) > threshold).astype(int)
     df_ai = df.dropna()
 
-    features = ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
+    features = ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'Factor_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D']
     X = df_ai[features]
     y = df_ai['Target_Label']
 
@@ -912,7 +907,7 @@ c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper_2:,.0f}]")
 
 st.markdown("---")
-st.markdown("### ⏱️ 多期報酬率表現 (自動計算模組)")
+st.markdown("### ⏱️️ 多期報酬率表現 (自動計算模組)")
 r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns(5)
 r_col1.metric("近 1 週 (5日)", fmt_pct(ret_1w))
 r_col2.metric("近 2 週 (10日)", fmt_pct(ret_2w))
