@@ -1,9 +1,9 @@
 from datetime import datetime
 import re
-import urllib.parse
-import urllib.request
+from bs4 import BeautifulSoup
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -63,9 +63,9 @@ st.markdown(
 st.sidebar.header("⚙️ 參數設定面板")
 
 user_input_code = st.sidebar.text_input(
-    "輸入公司/指數代號",
+    "輸入公司代號或名稱",
     value="6531",
-    help="例如: 6531, 3016, 8028, 3105, 2330, 0000(大盤)",
+    help="例如: 6531, 愛普, 3105, 穩懋, 2330, 台積電, 0000(大盤)",
 )
 
 interval_map = {
@@ -79,86 +79,171 @@ selected_freq = st.sidebar.selectbox("選擇 K 棒頻率", list(interval_map.key
 
 
 # ==========================================
-# 2. 智慧對應與 Google 搜尋中文轉譯模組
+# 2. 標的解析與中英文名稱對照機制
 # ==========================================
-TW_STOCK_NAMES_CACHE = {
-    "6531": "愛普*",
-    "3016": "嘉晶",
-    "8028": "昇陽半導體",
-    "3105": "穩懋",
-    "3122": "笙泉",
-    "2330": "台積電",
-    "2317": "鴻海",
-    "2454": "聯發科",
-    "6213": "聯茂",
-    "6147": "頎邦",
-    "2376": "技嘉",
-    "3017": "奇鋐",
-    "2308": "台達電",
-    "2881": "富邦金",
-    "2882": "國泰金",
-    "0050": "元大台灣50",
-    "0056": "元大高股息",
-}
-
-ENGLISH_TO_CHINESE_MAP = {
-    "AP Memory": "愛普*",
-    "Episil-Precision": "嘉晶",
-    "Sunny Friend Intercontinental": "昇陽半導體",
-    "Win Semiconductors": "穩懋",
-    "Taiwan Semiconductor": "台積電",
-    "Hon Hai Precision": "鴻海",
-    "MediaTek": "聯發科",
-}
+def _has_price(symbol):
+  try:
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+            " like Gecko) Chrome/117.0.0.0 Safari/537.36"
+        )
+    })
+    return not yf.Ticker(symbol, session=session).history(period="5d").empty
+  except Exception:
+    return False
 
 
 @st.cache_data(ttl=3600)
-def get_smart_company_name(code):
-  code = code.strip()
-  if code == "0000" or code.upper() == "^TWII":
-    return "大盤加權指數"
+def resolve_symbol(user_input):
+  text = user_input.strip()
+  upper_text = text.upper()
 
-  # 1. 優先從快取字典尋找
-  if code in TW_STOCK_NAMES_CACHE:
-    return TW_STOCK_NAMES_CACHE[code]
+  if upper_text == "0000" or upper_text == "^TWII":
+    return "^TWII"
 
-  # 2. 透過 yfinance 抓取英文名稱並透過轉譯字典轉換
-  try:
+  if upper_text.endswith(".TW") or upper_text.endswith(".TWO"):
+    return upper_text
+
+  if upper_text.isdigit():
     for suffix in [".TW", ".TWO"]:
-      ticker_obj = yf.Ticker(f"{code}{suffix}")
-      info = ticker_obj.info
-      raw_name = info.get("longName") or info.get("shortName")
-      if raw_name:
-        for eng_key, zh_val in ENGLISH_TO_CHINESE_MAP.items():
-          if eng_key.lower() in raw_name.lower():
-            return zh_val
+      symbol = upper_text + suffix
+      if _has_price(symbol):
+        return symbol
+    return upper_text + ".TW"
 
-        # 若字典未命中，進行英文清理
-        cleaned = re.sub(
-            r"(?i)\b(inc\.?|corp\.?|co\.?|ltd\.?|corporation|company|technology|tech\.?)\b",
-            "",
-            raw_name,
-        ).strip()
-        if cleaned:
-          return cleaned
-        return raw_name
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+          " like Gecko) Chrome/117.0.0.0 Safari/537.36"
+      )
+  }
+
+  for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
+    try:
+      url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
+      response = requests.get(url, headers=headers, timeout=5)
+      response.encoding = "big5"
+
+      soup = BeautifulSoup(response.text, "html.parser")
+      for row in soup.find_all("tr"):
+        tds = row.find_all("td")
+        if tds:
+          cell_text = tds[0].get_text().strip()
+          if text in cell_text:
+            parts = cell_text.split()
+            if parts and parts[0].isdigit() and len(parts[0]) in (4, 5):
+              candidate = parts[0] + suffix
+              if _has_price(candidate):
+                return candidate
+              return candidate
+    except Exception:
+      continue
+
+  try:
+    session = requests.Session()
+    session.headers.update(headers)
+    search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
+    res = session.get(search_url, timeout=5)
+    data = res.json()
+    if "quotes" in data:
+      for q in data["quotes"]:
+        sym = q.get("symbol", "")
+        if sym.endswith(".TW") or sym.endswith(".TWO"):
+          return sym
+        digits = "".join(c for c in sym if c.isdigit())
+        if len(digits) in [4, 5]:
+          for suffix in [".TW", ".TWO"]:
+            symbol = digits + suffix
+            if _has_price(symbol):
+              return symbol
   except Exception:
     pass
 
-  return f"台股代號 {code}"
+  return text
 
 
-def resolve_yahoo_ticker(code):
-  code = code.strip()
-  if code == "0000" or code.upper() == "^TWII":
+@st.cache_data(ttl=3600)
+def get_company_name(symbol):
+  if symbol == "^TWII":
+    return "大盤加權指數 (^TWII)"
+
+  cn_mapping = {
+      "NVDA": "輝達 (NVIDIA)",
+      "AAPL": "蘋果 (Apple)",
+      "TSLA": "特斯拉 (Tesla)",
+      "MSFT": "微軟 (Microsoft)",
+      "GOOGL": "谷歌 (Alphabet)",
+      "AMZN": "亞馬遜 (Amazon)",
+      "META": "Meta (臉書)",
+      "AMD": "超微 (AMD)",
+      "TSM": "台積電 ADR (TSMC)",
+      "6531.TW": "愛普* (6531.TW)",
+      "6531.TWO": "愛普* (6531.TWO)",
+      "3016.TW": "嘉晶 (3016.TW)",
+      "3016.TWO": "嘉晶 (3016.TWO)",
+      "8028.TW": "昇陽半導體 (8028.TW)",
+      "8028.TWO": "昇陽半導體 (8028.TWO)",
+      "3105.TW": "穩懋 (3105.TW)",
+      "3105.TWO": "穩懋 (3105.TWO)",
+      "3122.TW": "笙泉 (3122.TW)",
+      "3122.TWO": "笙泉 (3122.TWO)",
+  }
+  clean_sym = symbol.upper().strip()
+  if clean_sym in cn_mapping:
+    return cn_mapping[clean_sym]
+
+  try:
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+            " like Gecko) Chrome/117.0.0.0 Safari/537.36"
+        )
+    })
+    if ".TW" in symbol or ".TWO" in symbol:
+      stock_id = symbol.split(".")[0]
+      tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
+      res = session.get(tw_yahoo_url, timeout=5)
+      match = re.search(r"<title>(.*?)\(", res.text)
+      if match:
+        extracted_name = match.group(1).strip()
+        if (
+            extracted_name
+            and "Yahoo" not in extracted_name
+            and "找不到" not in extracted_name
+        ):
+          return f"{extracted_name} ({symbol})"
+
+    stock = yf.Ticker(symbol, session=session)
+    info = stock.info
+    name = info.get("longName") or info.get("shortName")
+    if name:
+      return f"{name} ({symbol})"
+  except Exception:
+    pass
+  return symbol
+
+
+def resolve_yahoo_ticker(user_input):
+  resolved_sym = resolve_symbol(user_input)
+  if resolved_sym == "^TWII":
     return "^TWII", "大盤加權指數", "台灣市場指數"
 
-  company_name = get_smart_company_name(code)
+  full_name_str = get_company_name(resolved_sym)
+  # 從 "公司名稱 (代號)" 中萃取出純公司名稱
+  match = re.match(r"^(.*?)\s*\(", full_name_str)
+  company_name = match.group(1).strip() if match else full_name_str
 
-  if code.isdigit():
-    return f"{code}.TW", company_name, "台灣上市公司"
+  if resolved_sym.endswith(".TWO"):
+    market_attr = "櫃買中心<br>(上櫃公司)"
+  elif resolved_sym.endswith(".TW"):
+    market_attr = "證交所<br>(上市公司)"
   else:
-    return code.upper(), company_name, "國際/美股標的"
+    market_attr = "國際/美股標的"
+
+  return resolved_sym, company_name, market_attr
 
 
 @st.cache_data(ttl=600)
@@ -440,13 +525,6 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
   if df_raw is None:
     st.error(f"資料取得失敗：{used_ticker}")
   else:
-    if ".TWO" in used_ticker:
-      market_attr = "櫃買中心<br>(上櫃公司)"
-    elif ".TW" in used_ticker:
-      market_attr = "證交所<br>(上市公司)"
-    else:
-      market_attr = "國際/美股標的"
-
     df_res = run_quant_engine(df_raw)
     latest = df_res.iloc[-1]
     prev = df_res.iloc[-2] if len(df_res) > 1 else latest
@@ -622,6 +700,6 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       )
 else:
   st.info(
-      "👈 請在左側側邊欄輸入公司代碼（例如 6531、8028、3105、3122 或 0000"
-      " 大盤），選擇 K 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
+      "👈 請在左側側邊欄輸入公司代碼或公司名稱（例如 6531、愛普、3105、穩懋、2330、台積電或"
+      " 0000 大盤），選擇 K 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
   )
