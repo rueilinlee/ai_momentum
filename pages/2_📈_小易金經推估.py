@@ -6,71 +6,91 @@ import yfinance as yf
 import requests
 import re
 import urllib.parse
+from bs4 import BeautifulSoup
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (高效率極速版)
+# 1. 標的解析與中英文名稱對照機制 (含 ISIN 爬蟲與 Yahoo 備援)
 # ==========================================
-EXPLICIT_NAME_TO_SYMBOL = {
-    "台積電": "2330.TW",
-    "聯發科": "2454.TW",
-    "鴻海": "2317.TW",
-    "台達電": "2308.TW",
-    "穩懋": "3105.TWO",
-    "笙泉": "3122.TWO",
-    "鈊象": "3293.TWO",
-    "中美晶": "5483.TWO",
-    "頎邦": "6147.TW",
-    "富邦金": "2881.TW",
-    "國泰金": "2882.TW",
-    "大盤": "^TWII",
-    "加權指數": "^TWII",
-    "台灣加權": "^TWII"
-}
+def _has_price(symbol):
+    try:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
+        })
+        return not yf.Ticker(symbol, session=session).history(period="5d").empty
+    except Exception:
+        return False
 
 @st.cache_data(ttl=3600)
 def resolve_symbol(user_input):
     text = user_input.strip()
     upper_text = text.upper()
     
-    # 1. 支援大盤與明確對照表
+    # 支援輸入 0000 或 ^TWII 直接對應大盤加權指數
     if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
         return "^TWII"
 
-    if upper_text in EXPLICIT_NAME_TO_SYMBOL:
-        return EXPLICIT_NAME_TO_SYMBOL[upper_text]
-    if text in EXPLICIT_NAME_TO_SYMBOL:
-        return EXPLICIT_NAME_TO_SYMBOL[text]
-
-    # 2. 如果已經帶有合適的後綴（美股、指數或上市櫃），直接回傳
     if upper_text.endswith((".TW", ".TWO", ".US", "=F")) or upper_text.startswith("^"):
         return upper_text
 
-    # 3. 如果是純英文（美股代號如 NVDA, AAPL, TSLA），直接回傳其大寫形式
+    # 如果是純英文（美股代號如 NVDA, AAPL），直接回傳
     if upper_text.isalpha() and len(upper_text) <= 5:
         return upper_text
-
-    # 4. 如果是純數字（台股代號），依序嘗試 .TW 或 .TWO
+        
     if upper_text.isdigit():
         for suffix in [".TW", ".TWO"]:
             symbol = upper_text + suffix
-            try:
-                if not yf.Ticker(symbol).history(period="3d").empty:
-                    return symbol
-            except Exception:
-                continue
+            if _has_price(symbol):
+                return symbol
         return upper_text + ".TW"
 
-    # 5. Yahoo 搜尋 API 備援
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+    }
+    
+    # 嘗試透過證交所 ISIN 網站反查中文公司名稱
+    for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
+        try:
+            url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
+            response = requests.get(url, headers=headers, timeout=5)
+            response.encoding = 'big5'
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for row in soup.find_all('tr'):
+                tds = row.find_all('td')
+                if tds:
+                    cell_text = tds[0].get_text().strip()
+                    if text in cell_text:
+                        parts = cell_text.split()
+                        if parts and parts[0].isdigit() and len(parts[0]) in (4, 5):
+                            candidate = parts[0] + suffix
+                            if _has_price(candidate):
+                                return candidate
+                            return candidate
+        except Exception:
+            continue
+
+    # Yahoo Finance 搜尋 API 備援
     try:
+        session = requests.Session()
+        session.headers.update(headers)
         search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get(search_url, headers=headers, timeout=3)
+        res = session.get(search_url, timeout=5)
         data = res.json()
-        if "quotes" in data and data["quotes"]:
-            return data["quotes"][0].get("symbol", text)
+        if "quotes" in data:
+            for q in data["quotes"]:
+                sym = q.get("symbol", "")
+                if sym.endswith(".TW") or sym.endswith(".TWO"):
+                    return sym
+                digits = "".join(c for c in sym if c.isdigit())
+                if len(digits) in [4, 5]:
+                    for suffix in [".TW", ".TWO"]:
+                        symbol = digits + suffix
+                        if _has_price(symbol):
+                            return symbol
     except Exception:
         pass
 
@@ -86,16 +106,32 @@ def get_company_name(symbol):
         "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
         "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)",
         "PANW": "帕羅奧圖網路 (Palo Alto Networks)",
-        "6147.TW": "頎邦 (6147.TW)", "3105.TW": "穩懋 (3105.TW)",
-        "3122.TW": "笙泉 (3122.TW)", "2330.TW": "台積電 (2330.TW)",
-        "2454.TW": "聯發科 (2454.TW)", "2317.TW": "鴻海 (2317.TW)", "2308.TW": "台達電 (2308.TW)"
+        "6147.TW": "頎邦 (6147.TW)", "6147.TWO": "頎邦 (6147.TWO)",
+        "3105.TW": "穩懋 (3105.TW)", "3105.TWO": "穩懋 (3105.TWO)",
+        "3122.TW": "笙泉 (3122.TW)", "3122.TWO": "笙泉 (3122.TWO)",
+        "2330.TW": "台積電 (2330.TW)", "2454.TW": "聯發科 (2454.TW)",
+        "2317.TW": "鴻海 (2317.TW)", "2308.TW": "台達電 (2308.TW)"
     }
     clean_sym = symbol.upper().strip()
     if clean_sym in cn_mapping:
         return cn_mapping[clean_sym]
 
     try:
-        stock = yf.Ticker(symbol)
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
+        })
+        if ".TW" in symbol or ".TWO" in symbol:
+            stock_id = symbol.split('.')[0]
+            tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
+            res = session.get(tw_yahoo_url, timeout=5)
+            match = re.search(r'<title>(.*?)\(', res.text)
+            if match:
+                extracted_name = match.group(1).strip()
+                if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
+                    return f"{extracted_name} ({symbol})"
+
+        stock = yf.Ticker(symbol, session=session)
         info = stock.info
         name = info.get("longName") or info.get("shortName")
         if name:
@@ -130,8 +166,6 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
     try:
         ticker = yf.Ticker(ticker_symbol)
         df = ticker.history(period=period, interval=interval)
-        
-        # 如果是台股代號且找不到，才嘗試切換 .TW / .TWO
         if df.empty and ticker_symbol.isdigit():
             alt_symbol = ticker_symbol + ".TWO"
             ticker = yf.Ticker(alt_symbol)
@@ -166,7 +200,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         return None, str(e)
 
 # ==========================================
-# 2. 核心引擎 (v4.4)
+# 2. 核心引擎 (v4.5)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -262,7 +296,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 4.4 版】實戰分析報告
+【易經三義量化時空分析 4.5 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -344,7 +378,7 @@ st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)
 
 with st.sidebar:
     st.header("參數設定")
-    ticker_input = st.text_input("輸入美股/台股代碼或公司名稱 (例如: NVDA、台積電 或 6147)", value="NVDA")
+    ticker_input = st.text_input("輸入台/美股代碼或公司名稱 (例如: 6147、台積電、NVDA 或 0000)", value="台積電")
     
     timeframe_choice = st.selectbox(
         "選擇分析週期 (Timeframe)",
@@ -356,7 +390,7 @@ with st.sidebar:
     run_btn = st.button("啟動量化引擎 🚀", use_container_width=True)
 
 if run_btn:
-    with st.spinner(f"正在以高效率解析標的 [{ticker_input}] 並獲取 [{timeframe_choice}] 歷史資料..."):
+    with st.spinner(f"正在解析標的 [{ticker_input}] 並獲取 [{timeframe_choice}] 歷史資料..."):
         resolved_sym, company_name, market_type, pure_code = resolve_yahoo_ticker(ticker_input)
         
         if timeframe_choice == "Daily (日線)":
@@ -451,3 +485,4 @@ if run_btn:
             3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
             4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({resolved_sym})**，最後 K 棒時間：**{full_last_time}**。
             """)
+
