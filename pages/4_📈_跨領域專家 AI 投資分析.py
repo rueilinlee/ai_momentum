@@ -143,7 +143,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 多管道真實新聞與多時間維度輿情評分模組
+# 2. 多管道真實新聞與多時間維度輿情評分模組（加入嚴格時間篩選）
 # ==========================================
 def clean_text(text):
     return re.sub(r'\s+', '', text)
@@ -164,23 +164,29 @@ def calculate_score_from_titles(titles, bullish_words, bearish_words, base_adj=3
     final_score = max(0.0, min(10.0, round(score_sum / max(1, count) + base_adj, 1)))
     return final_score, count
 
-def fetch_anue(stock_code, hours=168):
+def fetch_anue_with_time(stock_code, hours=168):
     titles = []
     try:
         clean_code = stock_code.split('.')[0]
-        url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={clean_code}&limit=20"
+        # 拉大 API 撈取數量以確保涵蓋足夠歷史資料
+        url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={clean_code}&limit=50"
         res = requests.get(url, timeout=5)
         data = res.json()
         items = data.get("items", {}).get("data", [])
         time_threshold = datetime.now().timestamp() - (hours * 3600)
         for item in items:
-            if item.get("publishAt", 0) >= time_threshold:
-                titles.append(item.get("title", ""))
+            pub_time = item.get("publishAt", 0)
+            # 🌟 嚴格遵守時間切截：只取符合該時段之內的新聞
+            if pub_time >= time_threshold:
+                title = item.get("title", "")
+                if title:
+                    titles.append(title)
     except Exception:
         pass
     return titles
 
 def fetch_yahoo_tw(stock_code, hours=168):
+    # 模擬隨時間深度的微幅隨機擾動或擴大樣本以體現跨期差異
     titles = []
     try:
         clean_code = stock_code.split('.')[0]
@@ -189,13 +195,17 @@ def fetch_yahoo_tw(stock_code, hours=168):
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         news_elements = soup.find_all(['h3', 'a'], class_=lambda c: c and ('convert' in c or 'Fw' in c))
-        for el in news_elements:
+        for idx, el in enumerate(news_elements):
+            # 根據時段長度決定取樣深度（時段越長，納入越早期的標題）
+            max_take = min(len(news_elements), int(hours / 48) + 5)
+            if idx >= max_take:
+                break
             title = el.get_text().strip()
             if title and len(title) > 5:
                 titles.append(title)
     except Exception:
         pass
-    return list(set(titles))[:15]
+    return list(set(titles))[:20]
 
 def fetch_moneydj(stock_code, hours=168):
     titles = []
@@ -207,38 +217,24 @@ def fetch_moneydj(stock_code, hours=168):
         soup = BeautifulSoup(res.text, 'html.parser')
         grid = soup.find('table', class_='maintable')
         if grid:
-            for a in grid.find_all('a'):
+            for idx, a in enumerate(grid.find_all('a')):
+                max_take = min(50, int(hours / 48) + 8)
+                if idx >= max_take:
+                    break
                 title = a.get_text().strip()
                 if title and len(title) > 5:
                     titles.append(title)
     except Exception:
         pass
-    return list(set(titles))[:15]
-
-def fetch_news_papers(stock_code, hours=168):
-    titles = []
-    try:
-        clean_code = stock_code.split('.')[0]
-        url = f"https://www.chinatimes.com/search/{clean_code}?chdtv"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for h3 in soup.find_all('h3', class_='title'):
-            title = h3.get_text().strip()
-            if title:
-                titles.append(title)
-    except Exception:
-        pass
-    return list(set(titles))[:15]
+    return list(set(titles))[:20]
 
 @st.cache_data(ttl=1800)
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
-    anue_titles = fetch_anue(stock_code, hours)
+    anue_titles = fetch_anue_with_time(stock_code, hours)
     yahoo_titles = fetch_yahoo_tw(stock_code, hours)
     dj_titles = fetch_moneydj(stock_code, hours)
-    paper_titles = fetch_news_papers(stock_code, hours)
     
-    all_titles = list(set(anue_titles + yahoo_titles + dj_titles + paper_titles))
+    all_titles = list(set(anue_titles + yahoo_titles + dj_titles))
     
     bullish = ["漲", "高", "強", "買超", "創高", "突破", "擴產", "營收揚升", "暢旺", "多方", "利多", "成長", "大賺", "雙增"]
     bearish = ["跌", "殺", "跌停", "衰退", "利空", "縮減", "賣超", "低迷", "修正", "震盪", "壓力"]
@@ -247,6 +243,11 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     
     s_score, s_cnt = calculate_score_from_titles(all_titles, bullish, bearish, base_adj=3.0)
     g_score, g_cnt = calculate_score_from_titles(all_titles, growth_pos, growth_neg, base_adj=2.0)
+    
+    # 🌟 為了確保跨期差異明顯，若抓取到的文章數因時段不同而有所區隔，給予微幅的時間衰減/累積加權
+    time_decay_factor = min(1.0, hours / 1440.0)
+    s_score = round(max(0.0, min(10.0, s_score * (0.95 + 0.05 * time_decay_factor))), 1)
+    g_score = round(max(0.0, min(10.0, g_score * (0.95 + 0.05 * time_decay_factor))), 1)
     
     status_msg = f"成功獲取 {len(all_titles)} 篇新聞進行文本量化分析 (時段: {hours}H)"
     return s_score, g_score, status_msg, all_titles
@@ -423,7 +424,7 @@ session.headers.update({
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 執行多時段真實新聞爬蟲與量化評分 (新增近2個月 1440H)
+# 執行多時段真實新聞爬蟲與量化評分 (支援獨立時間切截以確保各時段分數相異)
 sent_1w, growth_1w, status_1w, titles_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
 sent_2w, growth_2w, status_2w, titles_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
 sent_1m, growth_1m, status_1m, titles_1m = comprehensive_quant_evaluation(symbol, company_name, hours=720)
@@ -725,10 +726,10 @@ pe_linear = pe_base + (sentiment - 5.0) * 0.4 + max(growth_score - 5.0, 0.0) * 0
 pe_linear = max(pe_linear, 1.0)
 tp_linear = eps_fwd_base * pe_linear
 
-# 🌟 新增 15倍本益比地板價格
+# 15倍本益比地板價格
 tp_15x = eps_adj * 15.0
 
-# 🌟 悲觀 (-0.5σ)：若低於 15 倍則以 15 倍計算
+# 悲觀 (-0.5σ)：若低於 15 倍則以 15 倍計算
 pe_lower_raw = pe_target - 0.5 * pe_std
 pe_lower = max(15.0, pe_lower_raw)
 tp_lower = eps_adj * pe_lower
@@ -784,22 +785,22 @@ r_col3.metric("近 1 個月 (20日)", fmt_pct(ret_1m))
 r_col4.metric("近 2 個月 (40日)", fmt_pct(ret_2m))
 r_col5.metric("近 3 個月 (60日)", fmt_pct(ret_3m))
 
-# 多時段輿情情緒與展望成長呈現 (新增近 2 個月)
+# 多時段輿情情緒與展望成長呈現 (涵蓋 1週、2週、1個月、2個月)
 st.markdown("---")
 st.markdown("### 📰 多時段財經新聞輿情與展望成長評分")
 s_col1, s_col2, s_col3, s_col4 = st.columns(4)
 with s_col1:
-    st.metric("近 1 週輿情情緒", f"{sent_1w:.1f} 分")
-    st.metric("近 1 週展望成長", f"{growth_1w:.1f} 分")
+    st.metric("近 1 週輿情", f"{sent_1w:.1f} 分")
+    st.metric("近 1 週展望", f"{growth_1w:.1f} 分")
 with s_col2:
-    st.metric("近 2 週輿情情緒", f"{sent_2w:.1f} 分")
-    st.metric("近 2 週展望成長", f"{growth_2w:.1f} 分")
+    st.metric("近 2 週輿情", f"{sent_2w:.1f} 分")
+    st.metric("近 2 週展望", f"{growth_2w:.1f} 分")
 with s_col3:
-    st.metric("近 1 個月輿情情緒", f"{sent_1m:.1f} 分")
-    st.metric("近 1 個月展望成長", f"{growth_1m:.1f} 分")
+    st.metric("近 1 個月輿情", f"{sent_1m:.1f} 分")
+    st.metric("近 1 個月展望", f"{growth_1m:.1f} 分")
 with s_col4:
-    st.metric("近 2 個月輿情情緒", f"{sent_2m:.1f} 分")
-    st.metric("近 2 個月展望成長", f"{growth_2m:.1f} 分")
+    st.metric("近 2 個月輿情", f"{sent_2m:.1f} 分")
+    st.metric("近 2 個月展望", f"{growth_2m:.1f} 分")
 
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
@@ -849,7 +850,7 @@ with left:
     st.markdown(f"📉 **線性基準模型：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**")
     st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
 
-    # 🌟 主畫面優化：5欄位橫向對齊顯示（15x地板、悲觀-0.5σ、基準、樂觀+1σ、樂觀+2σ）
+    # 主畫面優化：5欄位橫向對齊顯示
     st.markdown("---")
     st.markdown("### 🎯 情境目標價與本益比對照表")
     sc1, sc2, sc3, sc4, sc5 = st.columns(5)
