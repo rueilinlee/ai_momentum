@@ -315,7 +315,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"最新即時成交價：{ctx['price']:,.2f}（成交時間 {ctx['trade_date']}，當日漲跌 {ctx['change_txt']}）")
     doc.add_paragraph(f"AI 動態非線性模型目標價：{ctx['tp_base']:,.2f}（{ctx['rec']}）")
     doc.add_paragraph(f"藍色動能區（建議買點）：{ctx['blue_price']:,.2f} 元 | 紅色動能區（建議賣價）：{ctx['red_price']:,.2f} 元")
-    doc.add_paragraph(f"情境目標價：悲觀(-0.5σ) {ctx['tp_lower']:,.2f} 元 ({ctx['pe_lower']:.1f}x) | 基準 {ctx['tp_base']:,.2f} 元 ({ctx['pe_target']:.1f}x) | 樂觀(+1σ) {ctx['tp_upper_1']:,.2f} 元 ({ctx['pe_upper_1']:.1f}x) | 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元 ({ctx['pe_upper_2']:.1f}x)")
+    doc.add_paragraph(f"情境目標價：15倍PE地板 {ctx['tp_15x']:,.2f} 元 (15.0x) | 悲觀(-0.5σ) {ctx['tp_lower']:,.2f} 元 ({ctx['pe_lower']:.1f}x) | 基準 {ctx['tp_base']:,.2f} 元 ({ctx['pe_target']:.1f}x) | 樂觀(+1σ) {ctx['tp_upper_1']:,.2f} 元 ({ctx['pe_upper_1']:.1f}x) | 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元 ({ctx['pe_upper_2']:.1f}x)")
 
     doc.add_heading("一、多期報酬率表現", level=1)
     ret_table = doc.add_table(rows=1, cols=2)
@@ -343,6 +343,7 @@ def generate_word_report(ctx):
         ("近 1 週 (168H)", ctx['sent_1w'], ctx['growth_1w']),
         ("近 2 週 (336H)", ctx['sent_2w'], ctx['growth_2w']),
         ("近 1 個月 (720H)", ctx['sent_1m'], ctx['growth_1m']),
+        ("近 2 個月 (1440H)", ctx['sent_2m'], ctx['growth_2m']),
     ]
     for p_name, s_val, g_val in sent_rows_data:
         sr = sent_table.add_row().cells
@@ -368,6 +369,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x（基準 PE: {ctx['pe_base']:.1f}x），目標價 {ctx['tp_base']:,.2f}")
     doc.add_paragraph(f"線性基準 PE = {ctx['pe_linear']:.1f}x，目標價 {ctx['tp_linear']:,.2f}")
     doc.add_paragraph(f"調整後預估 EPS：{ctx['eps_adj']:.2f}")
+    doc.add_paragraph(f"• 15倍本益比地板：目標價 {ctx['tp_15x']:,.2f} 元 (PE: 15.0x)")
     doc.add_paragraph(f"• 悲觀情境 (-0.5σ)：目標價 {ctx['tp_lower']:,.2f} 元 (PE: {ctx['pe_lower']:.1f}x)")
     doc.add_paragraph(f"• 基準情境 (Base)：目標價 {ctx['tp_base']:,.2f} 元 (PE: {ctx['pe_target']:.1f}x)")
     doc.add_paragraph(f"• 樂觀情境一 (+1.0σ)：目標價 {ctx['tp_upper_1']:,.2f} 元 (PE: {ctx['pe_upper_1']:.1f}x)")
@@ -421,10 +423,11 @@ session.headers.update({
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 執行多時段真實新聞爬蟲與量化評分
+# 執行多時段真實新聞爬蟲與量化評分 (新增近2個月 1440H)
 sent_1w, growth_1w, status_1w, titles_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
 sent_2w, growth_2w, status_2w, titles_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
 sent_1m, growth_1m, status_1m, titles_1m = comprehensive_quant_evaluation(symbol, company_name, hours=720)
+sent_2m, growth_2m, status_2m, titles_2m = comprehensive_quant_evaluation(symbol, company_name, hours=1440)
 
 # ==========================================
 # 7. 主程式執行與即時行情、計量模型運算
@@ -722,6 +725,9 @@ pe_linear = pe_base + (sentiment - 5.0) * 0.4 + max(growth_score - 5.0, 0.0) * 0
 pe_linear = max(pe_linear, 1.0)
 tp_linear = eps_fwd_base * pe_linear
 
+# 🌟 新增 15倍本益比地板價格
+tp_15x = eps_adj * 15.0
+
 # 🌟 悲觀 (-0.5σ)：若低於 15 倍則以 15 倍計算
 pe_lower_raw = pe_target - 0.5 * pe_std
 pe_lower = max(15.0, pe_lower_raw)
@@ -778,10 +784,10 @@ r_col3.metric("近 1 個月 (20日)", fmt_pct(ret_1m))
 r_col4.metric("近 2 個月 (40日)", fmt_pct(ret_2m))
 r_col5.metric("近 3 個月 (60日)", fmt_pct(ret_3m))
 
-# 多時段輿情情緒與展望成長呈現
+# 多時段輿情情緒與展望成長呈現 (新增近 2 個月)
 st.markdown("---")
 st.markdown("### 📰 多時段財經新聞輿情與展望成長評分")
-s_col1, s_col2, s_col3 = st.columns(3)
+s_col1, s_col2, s_col3, s_col4 = st.columns(4)
 with s_col1:
     st.metric("近 1 週輿情情緒", f"{sent_1w:.1f} 分")
     st.metric("近 1 週展望成長", f"{growth_1w:.1f} 分")
@@ -791,11 +797,14 @@ with s_col2:
 with s_col3:
     st.metric("近 1 個月輿情情緒", f"{sent_1m:.1f} 分")
     st.metric("近 1 個月展望成長", f"{growth_1m:.1f} 分")
+with s_col4:
+    st.metric("近 2 個月輿情情緒", f"{sent_2m:.1f} 分")
+    st.metric("近 2 個月展望成長", f"{growth_2m:.1f} 分")
 
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
-    "tp_lower": tp_lower, "tp_upper_1": tp_upper_1, "tp_upper_2": tp_upper_2, 
+    "tp_15x": tp_15x, "tp_lower": tp_lower, "tp_upper_1": tp_upper_1, "tp_upper_2": tp_upper_2, 
     "pe_lower": pe_lower, "pe_target": pe_target, "pe_upper_1": pe_upper_1, "pe_upper_2": pe_upper_2,
     "rec": f"{rec_title} ({rec_desc})",
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
@@ -804,6 +813,7 @@ ctx = {
     "sent_1w": sent_1w, "growth_1w": growth_1w,
     "sent_2w": sent_2w, "growth_2w": growth_2w,
     "sent_1m": sent_1m, "growth_1m": growth_1m,
+    "sent_2m": sent_2m, "growth_2m": growth_2m,
     "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "actual_max_pe": actual_max_pe, "actual_min_pe": actual_min_pe,
     "real_safety_price": real_safety_price, "vol_5d": vol_5d, "vol_20d": vol_20d, "vol_ratio": vol_ratio,
@@ -839,28 +849,30 @@ with left:
     st.markdown(f"📉 **線性基準模型：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**")
     st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
 
-    # 🌟 主畫面新增：一整列列出悲觀、基準、樂觀（分成 2 欄位顯示 +1σ 與 +2σ）
+    # 🌟 主畫面優化：5欄位橫向對齊顯示（15x地板、悲觀-0.5σ、基準、樂觀+1σ、樂觀+2σ）
     st.markdown("---")
     st.markdown("### 🎯 情境目標價與本益比對照表")
-    sc1, sc2, sc3 = st.columns(3)
+    sc1, sc2, sc3, sc4, sc5 = st.columns(5)
     
     with sc1:
-        st.metric("悲觀 (-0.5σ)", f"${tp_lower:,.0f}", delta_color="off")
-        st.caption(f"({pe_lower:.1f}x)")
+        st.metric("15倍地板", f"${tp_15x:,.0f}", delta_color="off")
+        st.caption("(15.0x)")
         
     with sc2:
-        st.metric("基準 (Base)", f"${tp_base:,.0f}", delta_color="off")
-        st.caption(f"({pe_target:.1f}x)")
+        st.metric("悲觀(-0.5σ)", f"${tp_lower:,.0f}", delta_color="off")
+        st.caption(f"({pe_lower:.1f}x)")
         
     with sc3:
-        st.markdown("**樂觀情境 (+σ / +2σ)**")
-        sub_c1, sub_c2 = st.columns(2)
-        with sub_c1:
-            st.metric("+1.0σ", f"${tp_upper_1:,.0f}", delta_color="off")
-            st.caption(f"({pe_upper_1:.1f}x)")
-        with sub_c2:
-            st.metric("+2.0σ", f"${tp_upper_2:,.0f}", delta_color="off")
-            st.caption(f"({pe_upper_2:.1f}x)")
+        st.metric("基準(Base)", f"${tp_base:,.0f}", delta_color="off")
+        st.caption(f"({pe_target:.1f}x)")
+        
+    with sc4:
+        st.metric("樂觀(+1σ)", f"${tp_upper_1:,.0f}", delta_color="off")
+        st.caption(f"({pe_upper_1:.1f}x)")
+        
+    with sc5:
+        st.metric("樂觀(+2σ)", f"${tp_upper_2:,.0f}", delta_color="off")
+        st.caption(f"({pe_upper_2:.1f}x)")
 
 with right:
     st.subheader("三、財務檢核與 AI 預測指標")
