@@ -143,32 +143,49 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 多管道真實新聞與多時間維度輿情評分模組（加入嚴格時間篩選）
+# 2. 多管道真實新聞與多時間維度輿情評分模組（含利多、利空計數）
 # ==========================================
 def clean_text(text):
     return re.sub(r'\s+', '', text)
 
-def calculate_score_from_titles(titles, bullish_words, bearish_words, base_adj=3.0):
+def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, growth_neg, base_adj=3.0):
     if not titles:
-        return 5.0, 0
-    score_sum = 5.0
-    count = 0
+        return 5.0, 5.0, 0, 0, 0
+    
+    s_sum = 5.0
+    g_sum = 5.0
+    total_bullish_hits = 0
+    total_bearish_hits = 0
+    
     for title in titles:
         b_hits = sum(1 for w in bullish_words if w in title)
         r_hits = sum(1 for w in bearish_words if w in title)
+        gp_hits = sum(1 for w in growth_pos if w in title)
+        gn_hits = sum(1 for w in growth_neg if w in title)
+        
+        total_bullish_hits += (b_hits + gp_hits)
+        total_bearish_hits += (r_hits + gn_hits)
+        
         if b_hits > r_hits:
-            score_sum += 1.5 * b_hits
+            s_sum += 1.5 * b_hits
         elif r_hits > b_hits:
-            score_sum -= 1.5 * r_hits
-        count += 1
-    final_score = max(0.0, min(10.0, round(score_sum / max(1, count) + base_adj, 1)))
-    return final_score, count
+            s_sum -= 1.5 * r_hits
+            
+        if gp_hits > gn_hits:
+            g_sum += 1.5 * gp_hits
+        elif gn_hits > gp_hits:
+            g_sum -= 1.5 * gn_hits
+
+    count = len(titles)
+    final_sentiment = max(0.0, min(10.0, round(s_sum / max(1, count) + base_adj, 1)))
+    final_growth = max(0.0, min(10.0, round(g_sum / max(1, count) + 2.0, 1)))
+    
+    return final_sentiment, final_growth, total_bullish_hits, total_bearish_hits, count
 
 def fetch_anue_with_time(stock_code, hours=168):
     titles = []
     try:
         clean_code = stock_code.split('.')[0]
-        # 拉大 API 撈取數量以確保涵蓋足夠歷史資料
         url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={clean_code}&limit=50"
         res = requests.get(url, timeout=5)
         data = res.json()
@@ -176,7 +193,6 @@ def fetch_anue_with_time(stock_code, hours=168):
         time_threshold = datetime.now().timestamp() - (hours * 3600)
         for item in items:
             pub_time = item.get("publishAt", 0)
-            # 🌟 嚴格遵守時間切截：只取符合該時段之內的新聞
             if pub_time >= time_threshold:
                 title = item.get("title", "")
                 if title:
@@ -186,7 +202,6 @@ def fetch_anue_with_time(stock_code, hours=168):
     return titles
 
 def fetch_yahoo_tw(stock_code, hours=168):
-    # 模擬隨時間深度的微幅隨機擾動或擴大樣本以體現跨期差異
     titles = []
     try:
         clean_code = stock_code.split('.')[0]
@@ -196,7 +211,6 @@ def fetch_yahoo_tw(stock_code, hours=168):
         soup = BeautifulSoup(res.text, 'html.parser')
         news_elements = soup.find_all(['h3', 'a'], class_=lambda c: c and ('convert' in c or 'Fw' in c))
         for idx, el in enumerate(news_elements):
-            # 根據時段長度決定取樣深度（時段越長，納入越早期的標題）
             max_take = min(len(news_elements), int(hours / 48) + 5)
             if idx >= max_take:
                 break
@@ -241,16 +255,16 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     growth_pos = ["展望佳", "成長", "擴產", "訂單滿", "創高", "突破", "上修", "看好", "強勁", "增溫", "新單"]
     growth_neg = ["下修", "衰退", "保守", "庫存", "壓力", "疲弱", "下滑", "淡季"]
     
-    s_score, s_cnt = calculate_score_from_titles(all_titles, bullish, bearish, base_adj=3.0)
-    g_score, g_cnt = calculate_score_from_titles(all_titles, growth_pos, growth_neg, base_adj=2.0)
+    s_score, g_score, bull_cnt, bear_cnt, total_cnt = calculate_detailed_scores(
+        all_titles, bullish, bearish, growth_pos, growth_neg, base_adj=3.0
+    )
     
-    # 🌟 為了確保跨期差異明顯，若抓取到的文章數因時段不同而有所區隔，給予微幅的時間衰減/累積加權
     time_decay_factor = min(1.0, hours / 1440.0)
     s_score = round(max(0.0, min(10.0, s_score * (0.95 + 0.05 * time_decay_factor))), 1)
     g_score = round(max(0.0, min(10.0, g_score * (0.95 + 0.05 * time_decay_factor))), 1)
     
-    status_msg = f"成功獲取 {len(all_titles)} 篇新聞進行文本量化分析 (時段: {hours}H)"
-    return s_score, g_score, status_msg, all_titles
+    status_msg = f"成功獲取 {total_cnt} 篇新聞進行文本量化分析 (時段: {hours}H)"
+    return s_score, g_score, bull_cnt, bear_cnt, total_cnt, status_msg, all_titles
 
 # ==========================================
 # 3. 行情與財報數據擷取
@@ -338,17 +352,19 @@ def generate_word_report(ctx):
     sent_table = doc.add_table(rows=1, cols=3)
     sent_table.style = "Table Grid"
     sh = sent_table.rows[0].cells
-    sh[0].text, sh[1].text, sh[2].text = "時間維度", "新聞情緒分數 (0~10)", "未來展望成長分數 (0~10)"
+    sh[0].text, sh[1].text, sh[2].text = "時間維度", "新聞情緒分數 (利多/利空/篇數)", "未來展望成長分數 (利多/利空/篇數)"
     
     sent_rows_data = [
-        ("近 1 週 (168H)", ctx['sent_1w'], ctx['growth_1w']),
-        ("近 2 週 (336H)", ctx['sent_2w'], ctx['growth_2w']),
-        ("近 1 個月 (720H)", ctx['sent_1m'], ctx['growth_1m']),
-        ("近 2 個月 (1440H)", ctx['sent_2m'], ctx['growth_2m']),
+        ("近 1 週 (168H)", ctx['sent_1w'], ctx['growth_1w'], ctx['b1w'], ctx['r1w'], ctx['c1w']),
+        ("近 2 週 (336H)", ctx['sent_2w'], ctx['growth_2w'], ctx['b2w'], ctx['r2w'], ctx['c2w']),
+        ("近 1 個月 (720H)", ctx['sent_1m'], ctx['growth_1m'], ctx['b1m'], ctx['r1m'], ctx['c1m']),
+        ("近 2 個月 (1440H)", ctx['sent_2m'], ctx['growth_2m'], ctx['b2m'], ctx['r2m'], ctx['c2m']),
     ]
-    for p_name, s_val, g_val in sent_rows_data:
+    for p_name, s_val, g_val, b_cnt, r_cnt, total_c in sent_rows_data:
         sr = sent_table.add_row().cells
-        sr[0].text, sr[1].text, sr[2].text = p_name, f"{s_val:.1f} 分", f"{g_val:.1f} 分"
+        sr[0].text = p_name
+        sr[1].text = f"{s_val:.1f} 分 (利多:{b_cnt}, 利空:{r_cnt}, 篇數:{total_c})"
+        sr[2].text = f"{g_val:.1f} 分 (利多:{b_cnt}, 利空:{r_cnt}, 篇數:{total_c})"
 
     if ctx['news_titles']:
         doc.add_paragraph("近期抓取之代表性新聞標題：")
@@ -424,11 +440,11 @@ session.headers.update({
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 執行多時段真實新聞爬蟲與量化評分 (支援獨立時間切截以確保各時段分數相異)
-sent_1w, growth_1w, status_1w, titles_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
-sent_2w, growth_2w, status_2w, titles_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
-sent_1m, growth_1m, status_1m, titles_1m = comprehensive_quant_evaluation(symbol, company_name, hours=720)
-sent_2m, growth_2m, status_2m, titles_2m = comprehensive_quant_evaluation(symbol, company_name, hours=1440)
+# 執行多時段真實新聞爬蟲與量化評分 (擷取各時段細項數據)
+sent_1w, growth_1w, b1w, r1w, c1w, status_1w, titles_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
+sent_2w, growth_2w, b2w, r2w, c2w, status_2w, titles_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
+sent_1m, growth_1m, b1m, r1m, c1m, status_1m, titles_1m = comprehensive_quant_evaluation(symbol, company_name, hours=720)
+sent_2m, growth_2m, b2m, r2m, c2m, status_2m, titles_2m = comprehensive_quant_evaluation(symbol, company_name, hours=1440)
 
 # ==========================================
 # 7. 主程式執行與即時行情、計量模型運算
@@ -464,11 +480,11 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     def get_ret(n):
         return (price / float(valid_stock_data.iloc[-1 - n]) - 1) * 100 if len(valid_stock_data) > n else None
 
-    ret_1w = get_ret(5)    # 近 1 週 (5日)
-    ret_2w = get_ret(10)   # 近 2 週 (10日)
-    ret_1m = get_ret(20)   # 近 1 個月 (20日)
-    ret_2m = get_ret(40)   # 近 2 個月 (40日)
-    ret_3m = get_ret(60)   # 近 3 個月 (60日)
+    ret_1w = get_ret(5)
+    ret_2w = get_ret(10)
+    ret_1m = get_ret(20)
+    ret_2m = get_ret(40)
+    ret_3m = get_ret(60)
 
     # 財報數據抓取
     tkr_fin = yf.Ticker(symbol, session=session)
@@ -494,7 +510,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     except Exception:
         pass
         
-    # 動態歷史本益比定錨與標準差計算
     auto_pe_base = 15.0
     pe_std = 4.0 
     try:
@@ -516,7 +531,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     except Exception:
         pass
 
-    # 實質風險與波動率動態量化模組運算
     fx_latest, fx_annual_vol, fx_low, fx_high = 32.0, 4.5, 30.5, 33.5
     try:
         fx_data = yf.download("USDTWD=X", period="1y", progress=False, session=session)
@@ -569,11 +583,9 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     else:
         vol_signal = "⚖️ [觀望/中性訊號] 多空力道平衡，維持原有部位"
 
-    # 計算藍紅動能區價格
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
-    # 計量模型特徵工程
     returns = market_data[[symbol, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
     rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
     df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
@@ -590,7 +602,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     df['RSI_14'] = (100 - (100 / (1 + rs))).shift(1)
     df = df.dropna()
 
-    # 迴歸模型
     Y_ortho = df['NVDA'] - df['RF_US']
     X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']})
     X_ortho = sm.add_constant(X_ortho)
@@ -612,7 +623,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     plot_gamma = params_df['Interaction_Term'].dropna()
     plot_beta3 = params_df['NVDA_Pure_Shock'].dropna()
 
-    # AI 模型訓練
     threshold = 0.005 
     df['Target_Label'] = ((market_data[symbol].pct_change(5).shift(-5) - market_data['^TWII'].pct_change(5).shift(-5)) > threshold).astype(int)
     df_ai = df.dropna()
@@ -726,18 +736,14 @@ pe_linear = pe_base + (sentiment - 5.0) * 0.4 + max(growth_score - 5.0, 0.0) * 0
 pe_linear = max(pe_linear, 1.0)
 tp_linear = eps_fwd_base * pe_linear
 
-# 15倍本益比地板價格
 tp_15x = eps_adj * 15.0
 
-# 悲觀 (-0.5σ)：若低於 15 倍則以 15 倍計算
 pe_lower_raw = pe_target - 0.5 * pe_std
 pe_lower = max(15.0, pe_lower_raw)
 tp_lower = eps_adj * pe_lower
 
-# 基準 (Base)
 tp_base = eps_adj * pe_target
 
-# 樂觀一 (+1.0σ) 與 樂觀二 (+2.0σ)
 pe_upper_1 = pe_target + 1.0 * pe_std
 tp_upper_1 = eps_adj * pe_upper_1
 
@@ -785,22 +791,22 @@ r_col3.metric("近 1 個月 (20日)", fmt_pct(ret_1m))
 r_col4.metric("近 2 個月 (40日)", fmt_pct(ret_2m))
 r_col5.metric("近 3 個月 (60日)", fmt_pct(ret_3m))
 
-# 多時段輿情情緒與展望成長呈現 (涵蓋 1週、2週、1個月、2個月)
+# 🌟 多時段輿情與展望成長呈現（附帶利多、利空、篇數括號註記）
 st.markdown("---")
 st.markdown("### 📰 多時段財經新聞輿情與展望成長評分")
 s_col1, s_col2, s_col3, s_col4 = st.columns(4)
 with s_col1:
-    st.metric("近 1 週輿情", f"{sent_1w:.1f} 分")
-    st.metric("近 1 週展望", f"{growth_1w:.1f} 分")
+    st.metric("近 1 週輿情情緒", f"{sent_1w:.1f} 分", f"利多:{b1w} | 利空:{r1w} | 篇數:{c1w}")
+    st.metric("近 1 週展望成長", f"{growth_1w:.1f} 分", f"利多:{b1w} | 利空:{r1w} | 篇數:{c1w}")
 with s_col2:
-    st.metric("近 2 週輿情", f"{sent_2w:.1f} 分")
-    st.metric("近 2 週展望", f"{growth_2w:.1f} 分")
+    st.metric("近 2 週輿情情緒", f"{sent_2w:.1f} 分", f"利多:{b2w} | 利空:{r2w} | 篇數:{c2w}")
+    st.metric("近 2 週展望成長", f"{growth_2w:.1f} 分", f"利多:{b2w} | 利空:{r2w} | 篇數:{c2w}")
 with s_col3:
-    st.metric("近 1 個月輿情", f"{sent_1m:.1f} 分")
-    st.metric("近 1 個月展望", f"{growth_1m:.1f} 分")
+    st.metric("近 1 個月輿情情緒", f"{sent_1m:.1f} 分", f"利多:{b1m} | 利空:{r1m} | 篇數:{c1m}")
+    st.metric("近 1 個月展望成長", f"{growth_1m:.1f} 分", f"利多:{b1m} | 利空:{r1m} | 篇數:{c1m}")
 with s_col4:
-    st.metric("近 2 個月輿情", f"{sent_2m:.1f} 分")
-    st.metric("近 2 個月展望", f"{growth_2m:.1f} 分")
+    st.metric("近 2 個月輿情情緒", f"{sent_2m:.1f} 分", f"利多:{b2m} | 利空:{r2m} | 篇數:{c2m}")
+    st.metric("近 2 個月展望成長", f"{growth_2m:.1f} 分", f"利多:{b2m} | 利空:{r2m} | 篇數:{c2m}")
 
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
@@ -811,10 +817,10 @@ ctx = {
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
     "blue_rsi": blue_rsi, "red_rsi": red_rsi,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
-    "sent_1w": sent_1w, "growth_1w": growth_1w,
-    "sent_2w": sent_2w, "growth_2w": growth_2w,
-    "sent_1m": sent_1m, "growth_1m": growth_1m,
-    "sent_2m": sent_2m, "growth_2m": growth_2m,
+    "sent_1w": sent_1w, "growth_1w": growth_1w, "b1w": b1w, "r1w": r1w, "c1w": c1w,
+    "sent_2w": sent_2w, "growth_2w": growth_2w, "b2w": b2w, "r2w": r2w, "c2w": c2w,
+    "sent_1m": sent_1m, "growth_1m": growth_1m, "b1m": b1m, "r1m": r1m, "c1m": c1m,
+    "sent_2m": sent_2m, "growth_2m": growth_2m, "b2m": b2m, "r2m": r2m, "c2m": c2m,
     "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "actual_max_pe": actual_max_pe, "actual_min_pe": actual_min_pe,
     "real_safety_price": real_safety_price, "vol_5d": vol_5d, "vol_20d": vol_20d, "vol_ratio": vol_ratio,
@@ -850,7 +856,6 @@ with left:
     st.markdown(f"📉 **線性基準模型：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**")
     st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
 
-    # 主畫面優化：5欄位橫向對齊顯示
     st.markdown("---")
     st.markdown("### 🎯 情境目標價與本益比對照表")
     sc1, sc2, sc3, sc4, sc5 = st.columns(5)
