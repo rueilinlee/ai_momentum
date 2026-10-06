@@ -6,16 +6,16 @@ import yfinance as yf
 import requests
 import re
 import urllib.parse
+import io
+from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (上市櫃雙軌查詢 + 先 .TW 後 .TWO 驗證)
+# 1. 標的解析與中英文名稱對照機制
 # ==========================================
-
-# 常用公司名稱 → 代碼 (最優先查詢，不受網路/ISIN 網站狀態影響，可自行增修)
 LOCAL_NAME_MAP = {
     "今國光": "6209",
     "台積電": "2330",
@@ -38,112 +38,205 @@ LOCAL_NAME_MAP = {
     "元太": "8069",
     "世界": "5347",
     "環球晶": "6488",
+    "愛普": "6531",
+    "嘉晶": "3016",
+    "昇陽半導體": "8028",
+    "穩懋": "3105",
+    "笙泉": "3122",
 }
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+        " like Gecko) Chrome/117.0.0.0 Safari/537.36"
+    )
 }
 
-
 def _is_us_ticker(text: str) -> bool:
-    """純 ASCII 英文字母且長度 <= 5 才視為美股代號 (避免中文被 isalpha() 誤判)"""
     return text.isascii() and text.isalpha() and len(text) <= 5
-
 
 def _has_price(symbol):
     try:
-        return not yf.Ticker(symbol).history(period="5d").empty
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        return not yf.Ticker(symbol, session=session).history(period="5d").empty
     except Exception:
         return False
 
+COMPANY_SOURCES = [
+    (
+        "TW",
+        [
+            ("https://openapi.twse.com.tw/v1/opendata/t187ap03_L", "json"),
+            ("https://mopsfin.twse.com.tw/opendata/t187ap03_L.csv", "csv"),
+        ],
+    ),
+    (
+        "TWO",
+        [
+            ("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O", "json"),
+            ("https://mopsfin.twse.com.tw/opendata/t187ap03_O.csv", "csv"),
+        ],
+    ),
+]
+
+def _norm(s) -> str:
+    return re.sub(r"\s+", "", str(s or "")).replace("臺", "台")
+
+def _fetch_company_list(suffix, candidates):
+    for url, kind in candidates:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=6)
+            r.raise_for_status()
+            if kind == "json":
+                rows = r.json()
+            else:
+                df = pd.read_csv(
+                    io.StringIO(r.content.decode("utf-8-sig")), dtype=str
+                )
+                rows = df.to_dict("records")
+            out = []
+            for row in rows:
+                row = {str(k).lstrip("\ufeff").strip(): v for k, v in row.items()}
+                code = str(row.get("公司代號", "")).strip()
+                short = _norm(row.get("公司簡稱"))
+                full = _norm(row.get("公司名稱"))
+                if code and (short or full):
+                    out.append({
+                        "code": code,
+                        "short": short,
+                        "full": full,
+                        "suffix": suffix,
+                    })
+            if out:
+                return out
+        except Exception:
+            continue
+    return []
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_company_table():
+    table = []
+    with ThreadPoolExecutor(max_workers=len(COMPANY_SOURCES)) as ex:
+        futures = [
+            ex.submit(_fetch_company_list, sfx, cands)
+            for sfx, cands in COMPANY_SOURCES
+        ]
+        for f in futures:
+            try:
+                table.extend(f.result(timeout=12))
+            except Exception:
+                pass
+    return table
+
+def _lookup_company(query: str, table):
+    q = _norm(query)
+    if not q or not table:
+        return None
+    rules = [
+        lambda c: c["short"] == q,
+        lambda c: c["full"] == q,
+        lambda c: c["short"].startswith(q),
+        lambda c: q in c["short"] or q in c["full"],
+    ]
+    for rule in rules:
+        hits = [c for c in table if rule(c)]
+        if hits:
+            return min(hits, key=lambda c: len(c["short"] or c["full"]))
+    return None
+
+def _suffix_for_code(code: str, table) -> Optional[str]:
+    for c in table:
+        if c["code"] == code:
+            return c["suffix"]
+    return None
+
+def _isin_lookup(clean_query: str) -> Optional[str]:
+    sources = [
+        "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
+        "https://isin.tpex.org.tw/isin/C_public.jsp?strMode=4",
+    ]
+    for url in sources:
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=5)
+            response.encoding = "big5"
+            soup = BeautifulSoup(response.text, "html.parser")
+            for row in soup.find_all("tr"):
+                tds = row.find_all("td")
+                if not tds:
+                    continue
+                parts = tds[0].get_text().strip().split()
+                if len(parts) >= 2 and parts[0].isdigit() and len(parts[0]) in (4, 5):
+                    if _norm("".join(parts[1:])) == clean_query:
+                        return parts[0]
+        except Exception:
+            continue
+    return None
 
 @st.cache_data(ttl=3600)
 def resolve_symbol(user_input):
     text = user_input.strip()
     upper_text = text.upper()
 
-    # 支援輸入 0000 或 ^TWII 直接對應大盤加權指數
     if upper_text == "0000" or upper_text == "^TWII" or text == "大盤":
         return "^TWII"
+
+    match_fix = re.match(r"^(\d{4,5})(TW|TWO)$", upper_text)
+    if match_fix:
+        return f"{match_fix.group(1)}.{match_fix.group(2)}"
 
     if upper_text.endswith((".TW", ".TWO", ".US", "=F")) or upper_text.startswith("^"):
         return upper_text
 
-    # 純英文 ASCII (美股代號如 NVDA, AAPL) 直接回傳
     if _is_us_ticker(upper_text):
         return upper_text
 
-    digits_found = None
-    if upper_text.isdigit():
-        digits_found = upper_text
-    else:
-        clean_query = re.sub(r"\s+", "", text)
+    table = load_company_table()
+    if not table:
+        load_company_table.clear()
 
-        # 0. 本地對照表 (最優先)
-        if clean_query in LOCAL_NAME_MAP:
-            digits_found = LOCAL_NAME_MAP[clean_query]
+    clean_query = _norm(text)
 
-        # 1. 官方 ISIN 網頁 (上市 + 上櫃)，先找完全相符，再找部分相符
-        if not digits_found:
-            sources = [
-                ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "big5"),
-                ("https://isin.tpex.org.tw/isin/C_public.jsp?strMode=4", "big5"),
-            ]
-            partial_match = None
-            for url, enc in sources:
-                try:
-                    response = requests.get(url, headers=HEADERS, timeout=8)
-                    response.encoding = enc
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    for row in soup.find_all("tr"):
-                        tds = row.find_all("td")
-                        if not tds:
-                            continue
-                        cell_text = tds[0].get_text().strip()
-                        parts = cell_text.split()
-                        if len(parts) >= 2 and parts[0].isdigit() and len(parts[0]) in (4, 5):
-                            name_part = re.sub(r"\s+", "", "".join(parts[1:]))
-                            if name_part == clean_query:
-                                digits_found = parts[0]
-                                break
-                            if partial_match is None and clean_query in name_part:
-                                partial_match = parts[0]
-                except Exception:
-                    continue
-                if digits_found:
-                    break
-            if not digits_found and partial_match:
-                digits_found = partial_match
+    code = LOCAL_NAME_MAP.get(clean_query) or (
+        upper_text if upper_text.isdigit() else None
+    )
+    if code:
+        suffix = _suffix_for_code(code, table)
+        if suffix:
+            return f"{code}.{suffix}"
+        for sfx in (".TW", ".TWO"):
+            if _has_price(code + sfx):
+                return code + sfx
+        return f"{code}.TW"
 
-        # 2. 若 ISIN 未找到，改用 Yahoo Finance 搜尋 API
-        if not digits_found:
-            try:
-                search_url = (
-                    "https://query1.finance.yahoo.com/v1/finance/search?"
-                    f"q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
-                )
-                res = requests.get(search_url, headers=HEADERS, timeout=8)
-                data = res.json()
-                for q in data.get("quotes", []):
-                    sym = q.get("symbol", "")
-                    if sym.endswith((".TW", ".TWO")):
-                        digits = "".join(c for c in sym if c.isdigit())
-                        if len(digits) in (4, 5):
-                            digits_found = digits
-                            break
-            except Exception:
-                pass
+    hit = _lookup_company(text, table)
+    if hit:
+        return f"{hit['code']}.{hit['suffix']}"
 
-    # 3. 取得公司代碼後：先測試 .TW，若無效再測試 .TWO
-    if digits_found:
-        for suffix in [".TW", ".TWO"]:
-            symbol = digits_found + suffix
-            if _has_price(symbol):
-                return symbol
-        return digits_found + ".TW"
+    try:
+        search_url = (
+            "https://query1.finance.yahoo.com/v1/finance/search?"
+            f"q={urllib.parse.quote(text)}&quotesCount=5&newsCount=0"
+        )
+        data = requests.get(search_url, headers=HEADERS, timeout=5).json()
+        for q in data.get("quotes", []):
+            sym = q.get("symbol", "")
+            if sym.endswith((".TW", ".TWO")):
+                m = re.match(r"^(\d{4,5})(TW|TWO)$", sym.upper())
+                if m:
+                    return f"{m.group(1)}.{m.group(2)}"
+                return sym
+    except Exception:
+        pass
+
+    code = _isin_lookup(clean_query)
+    if code:
+        for sfx in (".TW", ".TWO"):
+            if _has_price(code + sfx):
+                return code + sfx
+        return f"{code}.TW"
 
     return text
-
 
 @st.cache_data(ttl=3600)
 def get_company_name(symbol):
@@ -151,15 +244,21 @@ def get_company_name(symbol):
         return "大盤加權指數 (^TWII)"
 
     cn_mapping = {
-        "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
-        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
-        "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)"
+        "PANW": "帕羅奧圖網路 (Palo Alto Networks)",
+        "NVDA": "輝達 (NVIDIA)",
+        "AAPL": "蘋果 (Apple)",
+        "TSLA": "特斯拉 (Tesla)",
+        "MSFT": "微軟 (Microsoft)",
+        "GOOGL": "谷歌 (Alphabet)",
+        "AMZN": "亞馬遜 (Amazon)",
+        "META": "Meta (臉書)",
+        "AMD": "超微 (AMD)",
+        "TSM": "台積電 ADR (TSMC)",
     }
     clean_sym = symbol.upper().strip()
     if clean_sym in cn_mapping:
         return cn_mapping[clean_sym]
 
-    # 台股：先用本地對照表反查名稱
     if clean_sym.endswith((".TW", ".TWO")):
         stock_id = clean_sym.split(".")[0]
         for name, code in LOCAL_NAME_MAP.items():
@@ -167,17 +266,23 @@ def get_company_name(symbol):
                 return f"{name} ({symbol})"
 
     try:
+        session = requests.Session()
+        session.headers.update(HEADERS)
         if ".TW" in symbol or ".TWO" in symbol:
             stock_id = symbol.split(".")[0]
             tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
-            res = requests.get(tw_yahoo_url, headers=HEADERS, timeout=8)
+            res = session.get(tw_yahoo_url, headers=HEADERS, timeout=5)
             match = re.search(r"<title>(.*?)\(", res.text)
             if match:
                 extracted_name = match.group(1).strip()
-                if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
+                if (
+                    extracted_name
+                    and "Yahoo" not in extracted_name
+                    and "找不到" not in extracted_name
+                ):
                     return f"{extracted_name} ({symbol})"
 
-        stock = yf.Ticker(symbol)
+        stock = yf.Ticker(symbol, session=session)
         info = stock.info
         name = info.get("longName") or info.get("shortName")
         if name:
@@ -185,7 +290,6 @@ def get_company_name(symbol):
     except Exception:
         pass
     return symbol
-
 
 def resolve_yahoo_ticker(user_input):
     resolved_sym = resolve_symbol(user_input)
@@ -208,14 +312,12 @@ def resolve_yahoo_ticker(user_input):
     pure_digits = "".join(filter(str.isdigit, resolved_sym)) or resolved_sym
     return resolved_sym, company_name, market_attr, pure_digits
 
-
 @st.cache_data(ttl=600)
 def fetch_yahoo_data(ticker_symbol, interval, period):
     try:
         ticker = yf.Ticker(ticker_symbol)
         df = ticker.history(period=period, interval=interval)
 
-        # 上市查無資料時，自動改試上櫃 (.TW → .TWO)；純數字則先補 .TW
         if df.empty:
             if ticker_symbol.endswith(".TW"):
                 alt_symbol = ticker_symbol[:-3] + ".TWO"
@@ -233,7 +335,9 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
             return None, f"無法從 Yahoo Finance 取得代號 {ticker_symbol} 的資料。"
 
         df = df.reset_index()
-        col_candidates = [c for c in df.columns if "Date" in str(c) or "Datetime" in str(c)]
+        col_candidates = [
+            c for c in df.columns if "Date" in str(c) or "Datetime" in str(c)
+        ]
         date_col = col_candidates[0] if col_candidates else df.columns[0]
 
         df = df.rename(columns={date_col: "DateTime"})
@@ -242,7 +346,9 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         if df["DateTime"].dt.tz is not None:
             df["DateTime"] = df["DateTime"].dt.tz_convert("Asia/Taipei")
         else:
-            df["DateTime"] = df["DateTime"].dt.tz_localize("UTC").dt.tz_convert("Asia/Taipei")
+            df["DateTime"] = (
+                df["DateTime"].dt.tz_localize("UTC").dt.tz_convert("Asia/Taipei")
+            )
 
         df["DateTime"] = df["DateTime"].dt.strftime("%Y-%m-%d %H:%M:%S")
         return df, ticker_symbol
@@ -251,7 +357,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
 
 
 # ==========================================
-# 2. 核心引擎 (v5.2)
+# 2. 核心引擎
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -269,7 +375,7 @@ class IChingTrinitySpatiotemporalEngine:
             return 0.5
         lags = range(2, 20)
         tau = [np.sqrt(np.std(np.subtract(time_series[lag:], time_series[:-lag]))) for lag in lags]
-        tau = np.maximum(tau, 1e-12)  # 避免 log(0)
+        tau = np.maximum(tau, 1e-12)
         poly = np.polyfit(np.log(lags), np.log(tau), 1)
         return float(np.clip(poly[0] * 2.0, 0.4, 0.75))
 
@@ -348,7 +454,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
 
         report = f"""==================================================
-【易經三義量化時空分析 5.2 版】實戰分析報告
+【易經三義量化時空分析系統】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -399,7 +505,6 @@ class IChingTrinitySpatiotemporalEngine:
 
         ax1.axhline(buyi['core_support'], color='lime', linestyle='--', linewidth=2, label=f"Core Support: {buyi['core_support']:.2f}")
         ax1.axhline(buyi['core_resistance'], color='red', linestyle='--', linewidth=2, label=f"Resistance: {buyi['core_resistance']:.2f}")
-        # 標題僅使用代碼，避免 matplotlib 預設字型無法顯示中文而出現方框
         ax1.set_title(f"{self.ticker} - {self.timeframe} Gravity Wells (Last: {last_bar_time})", fontsize=15, fontweight='bold', color='white')
         ax1.set_ylabel("Price")
         ax1.legend(loc='upper left', frameon=True, facecolor='black')
@@ -465,7 +570,6 @@ if run_btn:
         if df_real is None or df_real.empty:
             st.error(f"⚠️ 無法獲取 [{ticker_input}] ({resolved_sym}) 的資料，請確認代碼或公司名稱是否正確。")
         else:
-            # 若備援改用了 .TWO，同步更新代碼與市場屬性
             if final_symbol != resolved_sym:
                 resolved_sym = final_symbol
                 if resolved_sym.endswith(".TWO"):
