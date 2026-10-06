@@ -434,8 +434,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
     
     raw_market_data = yf.download(tickers, start=fetch_start, end=end_date, progress=False, session=session)['Close']
-    
-    # 🌟 徹底排除重複欄位標籤，防止 pandas 運算衝突
     market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
 
     if symbol not in market_data.columns or market_data[symbol].dropna().empty:
@@ -591,7 +589,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
 
     model = lgb.LGBMClassifier(n_estimators=80, learning_rate=0.03, max_depth=3, min_child_samples=40, subsample=0.7, colsample_bytree=0.7, reg_alpha=0.5, reg_lambda=0.5, random_state=42, verbose=-1)
     
-    # 🌟 AI 交叉驗證防呆機制（避免樣本不足觸發 TimeSeriesSplit 錯誤）
     n_samples = len(X)
     n_splits_val = 5
     gap = 5
@@ -610,7 +607,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
             cv_test_acc.append(accuracy_score(y.iloc[test_index], model.predict(X.iloc[test_index])))
             cv_test_auc.append(roc_auc_score(y.iloc[test_index], model.predict_proba(X.iloc[test_index])[:, 1]))
     except Exception:
-        # 若時間序列切分失敗，退回直接訓練
         model.fit(X, y)
 
     latest_features = X.iloc[[-1]]
@@ -789,10 +785,26 @@ with left:
 
 with right:
     st.subheader("三、財務檢核與 AI 預測指標")
-    f1, f2, f3 = st.columns(3)
-    f1.metric("TTM EPS", f"{ttm_eps_val:.2f}", ttm_src, delta_color="off")
-    f2.metric("年度 EPS", f"{annual_eps_val:.2f}", annual_src, delta_color="off")
-    f3.metric("遠期 P/E", f"{fwd_pe:.1f}x")
+    
+    # 🌟 整合原有的單季EPS與財務指標，統一輸出為「財務檢核數據總表」
+    st.markdown("**財務檢核數據總表：**")
+    fin_data = []
+    
+    # 加入近四季單季 EPS
+    if q_eps_list:
+        for label, val in q_eps_list:
+            fin_data.append({"指標": f"單季 EPS ({label})", "數值": f"{val:.2f}", "資料來源": "Yahoo Finance"})
+    
+    # 匯入其他關鍵財務與估值指標
+    fin_data.extend([
+        {"指標": "近 4 季 EPS (TTM)", "數值": f"{ttm_eps_val:.2f}", "資料來源": ttm_src},
+        {"指標": "最近年度 EPS", "數值": f"{annual_eps_val:.2f}", "資料來源": annual_src},
+        {"指標": "歷史本益比", "數值": f"{hist_pe:.1f} 倍", "資料來源": "即時股價 / TTM EPS"},
+        {"指標": "遠期本益比", "數值": f"{fwd_pe:.1f} 倍", "資料來源": "即時股價 / 調整後預估 EPS"},
+    ])
+    
+    # 使用 dataframe 呈現總表，隱藏 index 並撐滿寬度
+    st.dataframe(pd.DataFrame(fin_data), hide_index=True, use_container_width=True)
 
     st.markdown("**AI 模型核心指標狀態：**")
     col_m1, col_m2, col_m3 = st.columns(3)
@@ -804,12 +816,6 @@ with right:
         with st.expander("🔍 檢視近 1 週抓取到的新聞標題清單"):
             for idx, t_title in enumerate(titles_1w[:10]):
                 st.write(f"{idx+1}. {t_title}")
-
-    st.markdown("**近 4 季單季 EPS：**")
-    if q_eps_list:
-        st.dataframe(pd.DataFrame(q_eps_list, columns=["財報季度", "單季 EPS (元)"]), hide_index=True)
-    else:
-        st.caption("Yahoo Finance 未提供單季 EPS 資料，可於側邊欄手動輸入。")
 
     st.subheader("四、實質風險與動態波動率量化模組")
     st.info(f"**匯率風險 (USDTWD=X)：** 最新匯率 {fx_latest:.2f}，年化波動率 {fx_annual_vol:.2f}% (68% 區間: {fx_low:.2f} ~ {fx_high:.2f})")
