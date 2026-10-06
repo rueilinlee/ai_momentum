@@ -431,7 +431,7 @@ sent_1m, growth_1m, status_1m, titles_1m = comprehensive_quant_evaluation(symbol
 # ==========================================
 # 7. 主程式執行與即時行情、計量模型運算
 # ==========================================
-with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料（NVDA、SOX 等），並進行機器學習訓練與價格模擬...'):
+with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料（NVDA、SOX 等）,並進行機器學習訓練與價格模擬...'):
     stock_code = symbol.split('.')[0]
     exchange = symbol.split('.')[1] if '.' in symbol else "TW"
     tickers = [symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']
@@ -838,25 +838,13 @@ with left:
     st.markdown(f"📉 **線性基準模型：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**")
     st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
 
-    # 🌟 主畫面一整列悲觀、基準、樂觀目標價總覽
+    # 🎯 簡潔俐落的主畫面目標價總覽（悲觀、基準、樂觀）
     st.markdown("#### 🎯 報告目標價總覽")
     s1, s2, s3 = st.columns(3)
     bear_label = f"PE: {pe_lower:.1f}x" + (" (15x下限防護)" if pessimistic_capped else f" (-{sd_k}σ)")
     s1.metric("悲觀目標價", f"${tp_lower:,.0f}", bear_label, delta_color="off")
     s2.metric("基準目標價", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x (Base)", delta_color="off")
     s3.metric("樂觀目標價", f"${tp_upper:,.0f}", f"PE: {pe_upper_selected:.1f}x (+{sd_k}σ)", delta_color="off")
-
-    # 🌟 新增：樂觀下方 2 欄位（1倍、2倍標準差），悲觀下方新增負 0.5 倍標準差
-    st.markdown("#### 📊 標準差細分區間比較")
-    sub_c1, sub_c2 = st.columns(2)
-    with sub_c1:
-        bear_05_label = f"PE: {pe_lower_05:.1f}x" + (" (15x下限防護)" if pessimistic_05_capped else " (-0.5σ)")
-        st.metric("悲觀 (-0.5σ)", f"${tp_lower_05:,.0f}", bear_05_label, delta_color="off")
-    with sub_c2:
-        st.markdown("**樂觀多重標準差分欄**")
-        bull_sub1, bull_sub2 = st.columns(2)
-        bull_sub1.metric("+1.0σ 樂觀", f"${tp_upper_1:,.0f}", f"PE: {pe_upper_1:.1f}x", delta_color="off")
-        bull_sub2.metric("+2.0σ 樂觀", f"${tp_upper_2:,.0f}", f"PE: {pe_upper_2:.1f}x", delta_color="off")
 
 with right:
     st.subheader("三、財務檢核與 AI 預測指標")
