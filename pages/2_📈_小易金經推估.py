@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (先尋找代碼，再優先選 .TW 後 .TWO)
+# 1. 標的解析與中英文名稱對照機制 (智慧動態反查與先 .TW 後 .TWO 驗證)
 # ==========================================
 def _has_price(symbol):
     try:
@@ -49,7 +49,7 @@ def resolve_symbol(user_input):
         }
         clean_query = re.sub(r'\s+', '', text)
 
-        # 1. 先透過證交所與櫃買中心 ISIN 網站尋找公司代碼（純數字）
+        # 1. 透過證交所與櫃買中心 ISIN 網站尋找公司代碼（支援模糊包含與字串清洗）
         for mode in ["2", "4"]:
             try:
                 url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
@@ -104,6 +104,15 @@ def resolve_symbol(user_input):
 def get_company_name(symbol):
     if symbol == "^TWII":
         return "大盤加權指數 (^TWII)"
+
+    cn_mapping = {
+        "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
+        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
+        "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)"
+    }
+    clean_sym = symbol.upper().strip()
+    if clean_sym in cn_mapping:
+        return cn_mapping[clean_sym]
 
     try:
         session = requests.Session()
@@ -189,7 +198,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         return None, str(e)
 
 # ==========================================
-# 2. 核心引擎 (v4.9)
+# 2. 核心引擎 (v5.0)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -285,7 +294,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 4.9 版】實戰分析報告
+【易經三義量化時空分析 5.0 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
