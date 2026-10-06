@@ -146,7 +146,7 @@ def get_company_name(symbol):
 def resolve_yahoo_ticker(user_input):
     resolved_sym = resolve_symbol(user_input)
     if resolved_sym == "^TWII":
-        return "^TWII", "大盤加權指數", "大盤指數"
+        return "^TWII", "大盤加權指數", "大盤指數", "0000"
 
     full_name_str = get_company_name(resolved_sym)
     match = re.match(r"^(.*?)\s*\(", full_name_str)
@@ -201,7 +201,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         return None, str(e)
 
 # ==========================================
-# 2. 核心引擎 (v4.0)
+# 2. 核心引擎 (v4.1)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -297,7 +297,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 4.0 版】實戰分析報告
+【易經三義量化時空分析 4.1 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -374,7 +374,7 @@ class IChingTrinitySpatiotemporalEngine:
 # ==========================================
 st.set_page_config(page_title="易經三義量化時空分析", layout="wide", page_icon="☯️")
 
-st.title("☯️ 易經三義量化時空分析系統 (多時框日內版)")
+st.title("☯️️ 易經三義量化時空分析系統 (多時框日內版)")
 st.markdown("整合 **小波變換動能 (變易)**、**重力井空間 (不易)** 與 **馬可夫狀態機率 (簡易)**。支援直接輸入公司名稱或代碼（輸入 `0000` 代表台股大盤）。")
 
 with st.sidebar:
@@ -486,3 +486,4 @@ if run_btn:
             3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
             4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({pure_code})**，最後 K 棒時間：**{full_last_time}**。
             """)
+            
