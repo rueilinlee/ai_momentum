@@ -315,7 +315,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"最新即時成交價：{ctx['price']:,.2f}（成交時間 {ctx['trade_date']}，當日漲跌 {ctx['change_txt']}）")
     doc.add_paragraph(f"AI 動態非線性模型目標價：{ctx['tp_base']:,.2f}（{ctx['rec']}）")
     doc.add_paragraph(f"藍色動能區（建議買點）：{ctx['blue_price']:,.2f} 元 | 紅色動能區（建議賣價）：{ctx['red_price']:,.2f} 元")
-    doc.add_paragraph(f"目標價區間：[{ctx['tp_lower']:,.0f}, {ctx['tp_upper']:,.0f}]")
+    doc.add_paragraph(f"目標價區間：[{ctx['tp_lower']:,.0f}, {ctx['tp_upper']:,.0f}]（標準差 k={ctx['sd_k']}，PE std={ctx['pe_std']:.2f}）")
 
     doc.add_heading("一、多期報酬率表現", level=1)
     ret_table = doc.add_table(rows=1, cols=2)
@@ -356,7 +356,7 @@ def generate_word_report(ctx):
     doc.add_heading("三、實質風險與波動率動態量化模組", level=1)
     doc.add_paragraph(f"• 實際匯率風險 (USDTWD=X)：最新匯率 {ctx['fx_latest']:.2f}，年化波動率 {ctx['fx_annual_vol']:.2f}%，68% 合理區間 [{ctx['fx_low']:.2f}, {ctx['fx_high']:.2f}]。")
     doc.add_paragraph(f"• 市場競爭與個股風險：過去一年個股真實年化波動率為 {ctx['stock_vol_1y']:.2f}%。")
-    doc.add_paragraph(f"• 估值模型安全邊際：近四季 TTM EPS {ctx['ttm']:.2f} 元，歷史最高 PE {ctx['actual_max_pe']:.1f} 倍、最低 PE {ctx['actual_min_pe']:.1f} 倍，最悲觀防守安全價為 {ctx['real_safety_price']:.2f} 元。")
+    doc.add_paragraph(f"• 估值模型安全邊際：近四季 TTM EPS {ctx['ttm']:.2f} 元，歷史 1 年 PE 標準差為 {ctx['pe_std']:.2f}，最悲觀防守安全價為 {ctx['real_safety_price']:.2f} 元。")
     doc.add_paragraph(f"• 短長期波動比值 (5日 vs 20日)：短期年化波動 {ctx['vol_5d']:.2f}% / 長期年化波動 {ctx['vol_20d']:.2f}%，比值為 {ctx['vol_ratio']:.4f} ({ctx['vol_signal']})。")
 
     doc.add_heading("四、AI 模型預測與動能區間", level=1)
@@ -365,7 +365,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"AI 建議逢高賣出價：{ctx['red_price']:,.2f} 元（預估 RSI 升至 {ctx['red_rsi']:.1f}）")
 
     doc.add_heading("五、基本面估值模型", level=1)
-    doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x，目標價 {ctx['tp_base']:,.2f}")
+    doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x（基準 PE: {ctx['pe_base']:.1f}x），目標價 {ctx['tp_base']:,.2f}")
     doc.add_paragraph(f"線性基準 PE = {ctx['pe_linear']:.1f}x，目標價 {ctx['tp_linear']:,.2f}")
     doc.add_paragraph(f"調整後預估 EPS：{ctx['eps_adj']:.2f}")
 
@@ -379,7 +379,7 @@ def generate_word_report(ctx):
         r[0].text, r[1].text, r[2].text = f"單季 EPS ({label})", f"{val:.2f}", "Yahoo Finance"
     rows = [
         ("近 4 季 EPS (TTM)", f"{ctx['ttm']:.2f}", ctx["ttm_src"]),
-        ("最近年度 EPS", f"{ctx['annual']:.2f}", ctx["annual_src"]),
+        (f"最近年度 EPS{ctx.get('annual_year', '')}", f"{ctx['annual']:.2f}", ctx["annual_src"]),
         ("歷史本益比", f"{ctx['hist_pe']:.1f} 倍", "即時股價 / TTM EPS"),
         ("遠期本益比", f"{ctx['fwd_pe']:.1f} 倍", "即時股價 / 調整後預估 EPS"),
     ]
@@ -434,7 +434,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
     
     raw_market_data = yf.download(tickers, start=fetch_start, end=end_date, progress=False, session=session)['Close']
-    # 🌟 徹底排除重複欄位標籤，防止 pandas 運算衝突
     market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
 
     if symbol not in market_data.columns or market_data[symbol].dropna().empty:
@@ -467,6 +466,8 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     tkr_fin = yf.Ticker(symbol, session=session)
     q_eps_list = []
     ttm_eps, annual_eps = None, None
+    annual_year_str = ""
+    
     try:
         s_q = _eps_series(tkr_fin.quarterly_income_stmt)
         if s_q is not None:
@@ -478,20 +479,33 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
 
     try:
         s_a = _eps_series(tkr_fin.income_stmt)
-        if s_a is not None:
+        if s_a is not None and not s_a.empty:
             annual_eps = round(float(s_a.iloc[0]), 2)
+            if hasattr(s_a.index[0], 'year'):
+                annual_year_str = f" ({s_a.index[0].year})"
     except Exception:
         pass
         
-    # 🌟 動態歷史本益比定錨 (PE_base 推算)
+    # 動態歷史本益比定錨與標準差計算
     auto_pe_base = 15.0
+    pe_std = 4.0 # 預設 fallback 標準差
     try:
         if ttm_eps and ttm_eps > 0:
             s_full_for_pe = yf.download(symbol, period="1y", progress=False, session=session)
             if not s_full_for_pe.empty:
-                median_price = float(s_full_for_pe['Close'].median().iloc[0] if isinstance(s_full_for_pe['Close'].median(), pd.Series) else s_full_for_pe['Close'].median())
+                s_close_pe = s_full_for_pe['Close']
+                if isinstance(s_close_pe, pd.DataFrame):
+                    s_close_pe = s_close_pe.iloc[:, 0]
+                
+                median_price = float(s_close_pe.median())
                 calculated_pe = median_price / ttm_eps
                 auto_pe_base = max(8.0, min(calculated_pe, 40.0))
+                
+                # 計算過去 1 年歷史本益比標準差
+                hist_pe_series = (s_close_pe / ttm_eps).dropna()
+                hist_pe_filtered = hist_pe_series[(hist_pe_series > 0) & (hist_pe_series < 200)]
+                if len(hist_pe_filtered) > 10:
+                    pe_std = float(hist_pe_filtered.std())
     except Exception:
         pass
 
@@ -602,7 +616,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
 
     model = lgb.LGBMClassifier(n_estimators=80, learning_rate=0.03, max_depth=3, min_child_samples=40, subsample=0.7, colsample_bytree=0.7, reg_alpha=0.5, reg_lambda=0.5, random_state=42, verbose=-1)
     
-    # 🌟 AI 交叉驗證防呆機制（避免樣本不足觸發 TimeSeriesSplit 錯誤）
     n_samples = len(X)
     n_splits_val = 5
     gap = 5
@@ -621,7 +634,6 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
             cv_test_acc.append(accuracy_score(y.iloc[test_index], model.predict(X.iloc[test_index])))
             cv_test_auc.append(roc_auc_score(y.iloc[test_index], model.predict_proba(X.iloc[test_index])[:, 1]))
     except Exception:
-        # 若時間序列切分失敗，退回直接訓練
         model.fit(X, y)
 
     latest_features = X.iloc[[-1]]
@@ -649,27 +661,29 @@ if use_manual:
     ttm_eps_val = st.sidebar.number_input("近 4 季 EPS (TTM)", value=float(ttm_eps or 3.0), step=0.1, format="%.2f")
     annual_eps_val = st.sidebar.number_input("最近年度 EPS", value=float(annual_eps or ttm_eps_val), step=0.1, format="%.2f")
     ttm_src = annual_src = "手動輸入"
+    annual_year_display = ""
 else:
     ttm_eps_val, annual_eps_val = ttm_eps or 3.0, annual_eps or 3.0
     ttm_src = annual_src = "Yahoo Finance"
+    annual_year_display = annual_year_str
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("估值模型變數")
 eps_fwd_base = st.sidebar.number_input("基礎預估 Forward EPS (模擬範例數據)", min_value=0.01, value=float(max(0.5, round(ttm_eps_val * 1.1, 2))), step=0.1, format="%.2f")
-
-# 🌟 自動定錨 PE_base
 pe_base = st.sidebar.number_input(
     "產業中樞本益比 (PE_base)", 
     min_value=1.0, 
     value=float(round(auto_pe_base, 1)), 
-    help="系統已根據過去一年歷史股價中位數與 TTM EPS 自動定錨。您也可手動微調。"
+    help="系統已根據過去一年歷史股價中位數與 TTM EPS 自動定錨。"
 )
+
+# 🌟 選擇標準差倍數 k (支援 1.0 或 2.0)
+sd_k = st.sidebar.selectbox("區間標準差倍數 (k)", [1.0, 2.0], index=0, help="用於計算樂觀與悲觀本益比區間的歷史標準差倍數 (PE_target ± k * std)")
 
 st.sidebar.info(f"📰 輿情狀態：{status_1w}")
 sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) [手動微調用]", 0.0, 10.0, float(sent_1w), 0.1)
 growth_score = st.sidebar.slider("展望成長評分 (0~10) [手動微調用]", 0.0, 10.0, float(growth_1w), 0.1)
 
-# 🌟 整合跨期動態 Risk 模組
 st.sidebar.markdown("---")
 risk_mode = st.sidebar.radio("下行風險折價 (-PE) 設定模式", ["🤖 AI 跨期動態推算", "✋ 手動設定"])
 
@@ -687,7 +701,7 @@ else:
     risk_val = st.sidebar.slider("自訂下行風險折價", 0.0, 10.0, 1.0, 0.1)
 
 # ==========================================
-# 9. 估值核心計算
+# 9. 估值核心計算（結合歷史標準差 k）
 # ==========================================
 hot_triggered = beta3_trend_val > 0
 eps_triggered = ttm_eps_val > annual_eps_val > 0
@@ -708,8 +722,9 @@ pe_linear = pe_base + (sentiment - 5.0) * 0.4 + max(growth_score - 5.0, 0.0) * 0
 pe_linear = max(pe_linear, 1.0)
 tp_linear = eps_fwd_base * pe_linear
 
-pe_upper = pe_target + 4.0
-pe_lower = max(min(pe_base - 3.0, pe_target - 3.0), 1.0)
+# 🌟 採用歷史本益比標準差與倍數 k 計算樂觀與悲觀本益比
+pe_upper = pe_target + sd_k * pe_std
+pe_lower = max(1.0, pe_target - sd_k * pe_std)
 
 tp_base = eps_adj * pe_target
 tp_upper = eps_adj * pe_upper
@@ -743,7 +758,6 @@ change_txt = fmt_pct(change)
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("最新即時成交價", f"${price:,.2f}", f"{trade_date} ({change_txt})")
 c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間")
-# 🌟 修正 AI 綜合評等，將括號內文字顯示於 delta 區域
 c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
 
@@ -786,9 +800,9 @@ ctx = {
     "real_safety_price": real_safety_price, "vol_5d": vol_5d, "vol_20d": vol_20d, "vol_ratio": vol_ratio,
     "vol_signal": vol_signal,
     "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
-    "ttm_src": ttm_src, "annual_src": annual_src,
+    "ttm_src": ttm_src, "annual_src": annual_src, "annual_year": annual_year_display,
     "pe_target": pe_target, "pe_linear": pe_linear, "eps_adj": eps_adj,
-    "hist_pe": hist_pe, "fwd_pe": fwd_pe,
+    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "pe_std": pe_std, "sd_k": sd_k, "pe_base": pe_base,
     "news_status": status_1w, "news_titles": titles_1w
 }
 
@@ -812,36 +826,32 @@ with left:
     st.subheader("二、估值模型對照（動態非線性 vs 線性）")
     st.markdown(f"🚀 **動態非線性模型：** PE **{pe_target:.1f}x** → 目標價 **${tp_base:,.0f}**")
     if pe_capped:
-        st.caption(f"⚠️️ 原始 PE {pe_target_raw:.1f}x 超出範圍，已自動套用上下限保護。")
+        st.caption(f"⚠ 原始 PE {pe_target_raw:.1f}x 超出範圍，已自動套用上下限保護。")
     st.markdown(f"📉 **線性基準模型：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**")
     st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
 
     s1, s2, s3 = st.columns(3)
-    s1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x", delta_color="off")
+    s1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x (-{sd_k}σ)", delta_color="off")
     s2.metric("基準 (Base)", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x", delta_color="off")
-    s3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x (動能PE+4x)", delta_color="off")
+    s3.metric("樂觀 (Bull)", f"${tp_upper:,.0f}", f"PE: {pe_upper:.1f}x (+{sd_k}σ, std:{pe_std:.1f})", delta_color="off")
 
 with right:
     st.subheader("三、財務檢核與 AI 預測指標")
     
-    # 🌟 整合原有的單季EPS與財務指標，統一輸出為「財務檢核數據總表」
     st.markdown("**財務檢核數據總表：**")
     fin_data = []
     
-    # 加入近四季單季 EPS
     if q_eps_list:
         for label, val in q_eps_list:
             fin_data.append({"指標": f"單季 EPS ({label})", "數值": f"{val:.2f}", "資料來源": "Yahoo Finance"})
     
-    # 匯入其他關鍵財務與估值指標
     fin_data.extend([
         {"指標": "近 4 季 EPS (TTM)", "數值": f"{ttm_eps_val:.2f}", "資料來源": ttm_src},
-        {"指標": "最近年度 EPS", "數值": f"{annual_eps_val:.2f}", "資料來源": annual_src},
+        {"指標": f"最近年度 EPS{annual_year_display}", "數值": f"{annual_eps_val:.2f}", "資料來源": annual_src},
         {"指標": "歷史本益比", "數值": f"{hist_pe:.1f} 倍", "資料來源": "即時股價 / TTM EPS"},
         {"指標": "遠期本益比", "數值": f"{fwd_pe:.1f} 倍", "資料來源": "即時股價 / 調整後預估 EPS"},
     ])
     
-    # 使用 dataframe 呈現總表，隱藏 index 並撐滿寬度
     st.dataframe(pd.DataFrame(fin_data), hide_index=True, use_container_width=True)
 
     st.markdown("**AI 模型核心指標狀態：**")
@@ -857,7 +867,7 @@ with right:
 
     st.subheader("四、實質風險與動態波動率量化模組")
     st.info(f"**匯率風險 (USDTWD=X)：** 最新匯率 {fx_latest:.2f}，年化波動率 {fx_annual_vol:.2f}% (68% 區間: {fx_low:.2f} ~ {fx_high:.2f})")
-    st.warning(f"**市場競爭與歷史波動：** 過去一年個股年化波動率 {stock_vol_1y:.2f}%")
+    st.warning(f"**市場競爭與歷史波動：** 過去一年個股年化波動率 {stock_vol_1y:.2f}% (PE 標準差: {pe_std:.2f})")
     st.success(f"**模型安全邊際：** 歷史最高 PE {actual_max_pe:.1f}x / 最低 PE {actual_min_pe:.1f}x，最悲觀防守價 **{real_safety_price:.2f} 元**")
     st.error(f"**短長期波動比值 (5日 / 20日)：** {vol_ratio:.4f} → {vol_signal}")
 
