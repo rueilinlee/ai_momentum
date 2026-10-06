@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, Tuple
 
 # ==========================================
-# 1. 標的解析與中英文名稱對照機制 (強固模糊比對版)
+# 1. 標的解析與中英文名稱對照機制 (動態 ISIN 模糊對應修正版)
 # ==========================================
 def _has_price(symbol):
     try:
@@ -52,23 +52,21 @@ def resolve_symbol(user_input):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
     }
     
-    # 清洗使用者輸入的字串（去除空格、轉為簡化比對）
     clean_query = re.sub(r'\s+', '', text)
 
-    # 嘗試透過證交所 ISIN 網站動態反查中文公司名稱（支援模糊包含）
-    for mode, suffix in [("2", ".TW"), ("4", ".TWO")]:
+    # 優先順序：同時支援上櫃 ("4", ".TWO") 與上市公司 ("2", ".TW") 動態模糊反查
+    for mode, suffix in [("4", ".TWO"), ("2", ".TW")]:
         try:
             url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
-            response = requests.get(url, headers=headers, timeout=5)
+            response = requests.get(url, headers=headers, timeout=6)
             response.encoding = 'big5'
             
             soup = BeautifulSoup(response.text, 'html.parser')
             for row in soup.find_all('tr'):
                 tds = row.find_all('td')
-                if tds:
+                if tds and len(tds) > 0:
                     cell_text = tds[0].get_text().strip()
                     clean_cell = re.sub(r'\s+', '', cell_text)
-                    # 只要儲存格內包含使用者輸入的關鍵字（例如「今國光」包含在「6209今國光學工業股份有限公司」中）
                     if clean_query in clean_cell:
                         parts = cell_text.split()
                         if parts and parts[0].isdigit() and len(parts[0]) in (4, 5):
@@ -104,18 +102,6 @@ def resolve_symbol(user_input):
 def get_company_name(symbol):
     if symbol == "^TWII":
         return "大盤加權指數 (^TWII)"
-
-    cn_mapping = {
-        "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
-        "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
-        "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)",
-        "6209.TW": "今國光 (6209.TW)", "6209.TWO": "今國光 (6209.TWO)",
-        "6147.TW": "頎邦 (6147.TW)", "3105.TWO": "穩懋 (3105.TWO)",
-        "2330.TW": "台積電 (2330.TW)", "2454.TW": "聯發科 (2454.TW)"
-    }
-    clean_sym = symbol.upper().strip()
-    if clean_sym in cn_mapping:
-        return cn_mapping[clean_sym]
 
     try:
         session = requests.Session()
@@ -201,7 +187,7 @@ def fetch_yahoo_data(ticker_symbol, interval, period):
         return None, str(e)
 
 # ==========================================
-# 2. 核心引擎 (v4.7)
+# 2. 核心引擎 (v4.8)
 # ==========================================
 class IChingTrinitySpatiotemporalEngine:
     def __init__(self, df: pd.DataFrame, ticker: str, company_name: str, timeframe: str):
@@ -297,7 +283,7 @@ class IChingTrinitySpatiotemporalEngine:
         turning = self.predict_spatiotemporal_turning_window(current_regime_bars)
         
         report = f"""==================================================
-【易經三義量化時空分析 4.7 版】實戰分析報告
+【易經三義量化時空分析 4.8 版】實戰分析報告
 ==================================================
 公司/指數: {self.company_name}
 標的代碼: {self.ticker} | 分析級別: {self.timeframe}
@@ -486,4 +472,3 @@ if run_btn:
             3. ⚡ **當前動能狀態**：`{bian_data['dynamics_status']}`（高頻能量密度: `{bian_data['high_freq_energy']:.2f}`）。
             4. 👁️ **讀圖指引**：分析標的為 **{company_name} ({resolved_sym})**，最後 K 棒時間：**{full_last_time}**。
             """)
-
