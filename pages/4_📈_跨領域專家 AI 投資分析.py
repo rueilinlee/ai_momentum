@@ -433,8 +433,11 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
     fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
     
-    market_data = yf.download(tickers, start=fetch_start, end=end_date, progress=False, session=session)['Close']
+    raw_market_data = yf.download(tickers, start=fetch_start, end=end_date, progress=False, session=session)['Close']
     
+    # 🌟 徹底排除重複欄位標籤，防止 pandas 運算衝突
+    market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
+
     if symbol not in market_data.columns or market_data[symbol].dropna().empty:
         st.error(f"❌ 找不到 {symbol} 的股價資料，或遭遇 Yahoo Finance 暫時封鎖，請稍後再試。")
         st.stop()
@@ -587,15 +590,28 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     y = df_ai['Target_Label']
 
     model = lgb.LGBMClassifier(n_estimators=80, learning_rate=0.03, max_depth=3, min_child_samples=40, subsample=0.7, colsample_bytree=0.7, reg_alpha=0.5, reg_lambda=0.5, random_state=42, verbose=-1)
-    tscv = TimeSeriesSplit(n_splits=5)
-    gap = 5 
+    
+    # 🌟 AI 交叉驗證防呆機制（避免樣本不足觸發 TimeSeriesSplit 錯誤）
+    n_samples = len(X)
+    n_splits_val = 5
+    gap = 5
+    if n_samples < (n_splits_val + 1) * 10:
+        n_splits_val = max(2, n_samples // 15)
+
+    tscv = TimeSeriesSplit(n_splits=n_splits_val)
     cv_test_acc, cv_test_auc = [], []
 
-    for train_index, test_index in tscv.split(X):
-        safe_train_index = train_index[:-gap] if len(train_index) > gap else train_index
-        model.fit(X.iloc[safe_train_index], y.iloc[safe_train_index])
-        cv_test_acc.append(accuracy_score(y.iloc[test_index], model.predict(X.iloc[test_index])))
-        cv_test_auc.append(roc_auc_score(y.iloc[test_index], model.predict_proba(X.iloc[test_index])[:, 1]))
+    try:
+        for train_index, test_index in tscv.split(X):
+            safe_train_index = train_index[:-gap] if len(train_index) > gap else train_index
+            if len(safe_train_index) < 5 or len(test_index) < 1:
+                continue
+            model.fit(X.iloc[safe_train_index], y.iloc[safe_train_index])
+            cv_test_acc.append(accuracy_score(y.iloc[test_index], model.predict(X.iloc[test_index])))
+            cv_test_auc.append(roc_auc_score(y.iloc[test_index], model.predict_proba(X.iloc[test_index])[:, 1]))
+    except Exception:
+        # 若時間序列切分失敗，退回直接訓練
+        model.fit(X, y)
 
     latest_features = X.iloc[[-1]]
     latest_proba = model.predict_proba(latest_features)[:, 1][0]
@@ -677,7 +693,6 @@ elif latest_proba < 0.45:
 else:
     rec_title, rec_desc = "中性震盪", "建議持有"
 
-rec_combined = f"{rec_title}\n({rec_desc})"
 rec_icon = "🟢" if "買" in rec_desc else ("🔴" if "賣" in rec_desc else "🟡")
 
 def fmt_pct(v):
