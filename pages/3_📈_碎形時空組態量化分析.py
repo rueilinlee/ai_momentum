@@ -64,8 +64,8 @@ st.sidebar.header("⚙️ 參數設定面板")
 
 user_input_code = st.sidebar.text_input(
     "輸入公司代號或名稱",
-    value="6531",
-    help="例如: 6531, 愛普, 3105, 穩懋, 2330, 台積電, 0000(大盤)",
+    value="0000",
+    help="例如: 0000(大盤), PANW, NVDA, 6531, 愛普, 2330, 台積電",
 )
 
 interval_map = {
@@ -79,7 +79,7 @@ selected_freq = st.sidebar.selectbox("選擇 K 棒頻率", list(interval_map.key
 
 
 # ==========================================
-# 2. 標的解析與中英文名稱對照機制
+# 2. 標的解析與中英文名稱對照機制 (含 0000 -> ^TWII)
 # ==========================================
 def _has_price(symbol):
   try:
@@ -100,6 +100,7 @@ def resolve_symbol(user_input):
   text = user_input.strip()
   upper_text = text.upper()
 
+  # 支援輸入 0000 或 ^TWII 直接對應大盤加權指數
   if upper_text == "0000" or upper_text == "^TWII":
     return "^TWII"
 
@@ -112,6 +113,9 @@ def resolve_symbol(user_input):
       if _has_price(symbol):
         return symbol
     return upper_text + ".TW"
+
+  if upper_text.isalpha() and len(upper_text) <= 5:
+    return upper_text
 
   headers = {
       "User-Agent": (
@@ -170,6 +174,7 @@ def get_company_name(symbol):
     return "大盤加權指數 (^TWII)"
 
   cn_mapping = {
+      "PANW": "帕羅奧圖網路 (Palo Alto Networks)",
       "NVDA": "輝達 (NVIDIA)",
       "AAPL": "蘋果 (Apple)",
       "TSLA": "特斯拉 (Tesla)",
@@ -232,7 +237,6 @@ def resolve_yahoo_ticker(user_input):
     return "^TWII", "大盤加權指數", "台灣市場指數"
 
   full_name_str = get_company_name(resolved_sym)
-  # 從 "公司名稱 (代號)" 中萃取出純公司名稱
   match = re.match(r"^(.*?)\s*\(", full_name_str)
   company_name = match.group(1).strip() if match else full_name_str
 
@@ -700,6 +704,6 @@ if st.sidebar.button("🚀 開始執行碎形推論", type="primary"):
       )
 else:
   st.info(
-      "👈 請在左側側邊欄輸入公司代碼或公司名稱（例如 6531、愛普、3105、穩懋、2330、台積電或"
-      " 0000 大盤），選擇 K 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
+      "👈 請在左側側邊欄輸入公司代號或名稱（例如 0000 大盤、PANW、6531、愛普、2330、台積電），"
+      "選擇 K 棒頻率，然後點擊「開始執行碎形推論」按鈕。"
   )
