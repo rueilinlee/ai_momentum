@@ -315,7 +315,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"最新即時成交價：{ctx['price']:,.2f}（成交時間 {ctx['trade_date']}，當日漲跌 {ctx['change_txt']}）")
     doc.add_paragraph(f"AI 動態非線性模型目標價：{ctx['tp_base']:,.2f}（{ctx['rec']}）")
     doc.add_paragraph(f"藍色動能區（建議買點）：{ctx['blue_price']:,.2f} 元 | 紅色動能區（建議賣價）：{ctx['red_price']:,.2f} 元")
-    doc.add_paragraph(f"目標價區間：[{ctx['tp_lower']:,.0f}, {ctx['tp_upper']:,.0f}]（標準差 k={ctx['sd_k']}，PE std={ctx['pe_std']:.2f}）")
+    doc.add_paragraph(f"情境目標價：悲觀(-0.5σ) {ctx['tp_lower']:,.2f} 元 ({ctx['pe_lower']:.1f}x) | 基準 {ctx['tp_base']:,.2f} 元 ({ctx['pe_target']:.1f}x) | 樂觀(+1σ) {ctx['tp_upper_1']:,.2f} 元 ({ctx['pe_upper_1']:.1f}x) | 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元 ({ctx['pe_upper_2']:.1f}x)")
 
     doc.add_heading("一、多期報酬率表現", level=1)
     ret_table = doc.add_table(rows=1, cols=2)
@@ -364,16 +364,14 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"AI 建議逢低買點：{ctx['blue_price']:,.2f} 元（預估 RSI 降至 {ctx['blue_rsi']:.1f}）")
     doc.add_paragraph(f"AI 建議逢高賣出價：{ctx['red_price']:,.2f} 元（預估 RSI 升至 {ctx['red_rsi']:.1f}）")
 
-    doc.add_heading("五、基本面估值模型與標準差區間", level=1)
-    doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x（基準 PE: {ctx['pe_base']:.1f}x），基準目標價 {ctx['tp_base']:,.2f}")
+    doc.add_heading("五、基本面估值模型與情境目標價", level=1)
+    doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x（基準 PE: {ctx['pe_base']:.1f}x），目標價 {ctx['tp_base']:,.2f}")
     doc.add_paragraph(f"線性基準 PE = {ctx['pe_linear']:.1f}x，目標價 {ctx['tp_linear']:,.2f}")
     doc.add_paragraph(f"調整後預估 EPS：{ctx['eps_adj']:.2f}")
-    doc.add_paragraph(f"• 悲觀目標價 (-{ctx['sd_k']}σ)：{ctx['tp_lower']:,.2f} 元（本益比 {ctx['pe_lower']:.1f}x）" + (" [已觸發15倍本益比下限防護]" if ctx.get('pessimistic_capped', False) else ""))
-    doc.add_paragraph(f"• 悲觀側補充 (-0.5σ)：{ctx['tp_lower_05']:,.2f} 元（本益比 {ctx['pe_lower_05']:.1f}x）" + (" [已觸發15倍本益比下限防護]" if ctx.get('pessimistic_05_capped', False) else ""))
-    doc.add_paragraph(f"• 基準目標價 (Base)：{ctx['tp_base']:,.2f} 元（本益比 {ctx['pe_target']:.1f}x）")
-    doc.add_paragraph(f"• 樂觀目標價 (+{ctx['sd_k']}σ)：{ctx['tp_upper']:,.2f} 元（本益比 {ctx['pe_upper_selected']:.1f}x）")
-    doc.add_paragraph(f"• 樂觀側分欄 (+1.0σ)：{ctx['tp_upper_1']:,.2f} 元（本益比 {ctx['pe_upper_1']:.1f}x）")
-    doc.add_paragraph(f"• 樂觀側分欄 (+2.0σ)：{ctx['tp_upper_2']:,.2f} 元（本益比 {ctx['pe_upper_2']:.1f}x）")
+    doc.add_paragraph(f"• 悲觀情境 (-0.5σ)：目標價 {ctx['tp_lower']:,.2f} 元 (PE: {ctx['pe_lower']:.1f}x)")
+    doc.add_paragraph(f"• 基準情境 (Base)：目標價 {ctx['tp_base']:,.2f} 元 (PE: {ctx['pe_target']:.1f}x)")
+    doc.add_paragraph(f"• 樂觀情境一 (+1.0σ)：目標價 {ctx['tp_upper_1']:,.2f} 元 (PE: {ctx['pe_upper_1']:.1f}x)")
+    doc.add_paragraph(f"• 樂觀情境二 (+2.0σ)：目標價 {ctx['tp_upper_2']:,.2f} 元 (PE: {ctx['pe_upper_2']:.1f}x)")
 
     doc.add_heading("六、財務檢核數據", level=1)
     table = doc.add_table(rows=1, cols=3)
@@ -431,7 +429,7 @@ sent_1m, growth_1m, status_1m, titles_1m = comprehensive_quant_evaluation(symbol
 # ==========================================
 # 7. 主程式執行與即時行情、計量模型運算
 # ==========================================
-with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料（NVDA、SOX 等）,並進行機器學習訓練與價格模擬...'):
+with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料（NVDA、SOX 等），並進行機器學習訓練與價格模擬...'):
     stock_code = symbol.split('.')[0]
     exchange = symbol.split('.')[1] if '.' in symbol else "TW"
     tickers = [symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']
@@ -458,15 +456,17 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
 
     change = (price / float(valid_stock_data.iloc[-2]) - 1) * 100 if len(valid_stock_data) >= 2 else 0.0
 
+    # 多期報酬率自動計算模組
     def get_ret(n):
         return (price / float(valid_stock_data.iloc[-1 - n]) - 1) * 100 if len(valid_stock_data) > n else None
 
-    ret_1w = get_ret(5)
-    ret_2w = get_ret(10)
-    ret_1m = get_ret(20)
-    ret_2m = get_ret(40)
-    ret_3m = get_ret(60)
+    ret_1w = get_ret(5)    # 近 1 週 (5日)
+    ret_2w = get_ret(10)   # 近 2 週 (10日)
+    ret_1m = get_ret(20)   # 近 1 個月 (20日)
+    ret_2m = get_ret(40)   # 近 2 個月 (40日)
+    ret_3m = get_ret(60)   # 近 3 個月 (60日)
 
+    # 財報數據抓取
     tkr_fin = yf.Ticker(symbol, session=session)
     q_eps_list = []
     ttm_eps, annual_eps = None, None
@@ -490,8 +490,9 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     except Exception:
         pass
         
+    # 動態歷史本益比定錨與標準差計算
     auto_pe_base = 15.0
-    pe_std = 4.0
+    pe_std = 4.0 
     try:
         if ttm_eps and ttm_eps > 0:
             s_full_for_pe = yf.download(symbol, period="1y", progress=False, session=session)
@@ -511,6 +512,7 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     except Exception:
         pass
 
+    # 實質風險與波動率動態量化模組運算
     fx_latest, fx_annual_vol, fx_low, fx_high = 32.0, 4.5, 30.5, 33.5
     try:
         fx_data = yf.download("USDTWD=X", period="1y", progress=False, session=session)
@@ -563,9 +565,11 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     else:
         vol_signal = "⚖️ [觀望/中性訊號] 多空力道平衡，維持原有部位"
 
+    # 計算藍紅動能區價格
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
+    # 計量模型特徵工程
     returns = market_data[[symbol, 'NVDA', '^SOX', '^DJI', '^TWII']].pct_change().dropna()
     rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
     df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
@@ -582,6 +586,7 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     df['RSI_14'] = (100 - (100 / (1 + rs))).shift(1)
     df = df.dropna()
 
+    # 迴歸模型
     Y_ortho = df['NVDA'] - df['RF_US']
     X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']})
     X_ortho = sm.add_constant(X_ortho)
@@ -603,6 +608,7 @@ with st.spinner(f'正在取得 {company_name} 即時報價與美股市場資料�
     plot_gamma = params_df['Interaction_Term'].dropna()
     plot_beta3 = params_df['NVDA_Pure_Shock'].dropna()
 
+    # AI 模型訓練
     threshold = 0.005 
     df['Target_Label'] = ((market_data[symbol].pct_change(5).shift(-5) - market_data['^TWII'].pct_change(5).shift(-5)) > threshold).astype(int)
     df_ai = df.dropna()
@@ -674,8 +680,6 @@ pe_base = st.sidebar.number_input(
     help="系統已根據過去一年歷史股價中位數與 TTM EPS 自動定錨。"
 )
 
-sd_k = st.sidebar.selectbox("區間標準差倍數 (k)", [1.0, 2.0], index=0, help="用於計算樂觀與悲觀本益比區間的歷史標準差倍數")
-
 st.sidebar.info(f"📰 輿情狀態：{status_1w}")
 sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) [手動微調用]", 0.0, 10.0, float(sent_1w), 0.1)
 growth_score = st.sidebar.slider("展望成長評分 (0~10) [手動微調用]", 0.0, 10.0, float(growth_1w), 0.1)
@@ -689,12 +693,15 @@ if risk_mode == "🤖 AI 跨期動態推算":
     avg_growth = (growth_1w + growth_2w + growth_1m) / 3
     chronic_penalty = 1.5 if avg_growth < 3.0 else 0.0
     calculated_risk = min(10.0, level_penalty + trend_penalty + chronic_penalty)
+    
+    st.sidebar.info(f"**AI 動態推算 Risk = {calculated_risk:.1f}**\n\n"
+                    f"(包含絕對低迷: {level_penalty:.1f}, 跨期惡化: {trend_penalty:.1f}, 慢性衰退: {chronic_penalty:.1f})")
     risk_val = calculated_risk
 else:
     risk_val = st.sidebar.slider("自訂下行風險折價", 0.0, 10.0, 1.0, 0.1)
 
 # ==========================================
-# 9. 估值核心計算與 15 倍本益比下限約束
+# 9. 估值核心計算（情境模擬目標價）
 # ==========================================
 hot_triggered = beta3_trend_val > 0
 eps_triggered = ttm_eps_val > annual_eps_val > 0
@@ -715,26 +722,20 @@ pe_linear = pe_base + (sentiment - 5.0) * 0.4 + max(growth_score - 5.0, 0.0) * 0
 pe_linear = max(pe_linear, 1.0)
 tp_linear = eps_fwd_base * pe_linear
 
-# 樂觀側 PE 與目標價
-pe_upper_selected = pe_target + sd_k * pe_std
-pe_upper_1 = pe_target + 1.0 * pe_std
-pe_upper_2 = pe_target + 2.0 * pe_std
-
-tp_base = eps_adj * pe_target
-tp_upper = eps_adj * pe_upper_selected
-tp_upper_1 = eps_adj * pe_upper_1
-tp_upper_2 = eps_adj * pe_upper_2
-
-# 悲觀側 PE 與目標價（套用低於 15 倍則以 15 倍計算的防護規則）
-pe_lower_raw = pe_target - sd_k * pe_std
-pessimistic_capped = pe_lower_raw < 15.0
+# 🌟 悲觀 (-0.5σ)：若低於 15 倍則以 15 倍計算
+pe_lower_raw = pe_target - 0.5 * pe_std
 pe_lower = max(15.0, pe_lower_raw)
 tp_lower = eps_adj * pe_lower
 
-pe_lower_05_raw = pe_target - 0.5 * pe_std
-pessimistic_05_capped = pe_lower_05_raw < 15.0
-pe_lower_05 = max(15.0, pe_lower_05_raw)
-tp_lower_05 = eps_adj * pe_lower_05
+# 基準 (Base)
+tp_base = eps_adj * pe_target
+
+# 樂觀一 (+1.0σ) 與 樂觀二 (+2.0σ)
+pe_upper_1 = pe_target + 1.0 * pe_std
+tp_upper_1 = eps_adj * pe_upper_1
+
+pe_upper_2 = pe_target + 2.0 * pe_std
+tp_upper_2 = eps_adj * pe_upper_2
 
 upside = (tp_base / price - 1) * 100
 fwd_pe = price / eps_adj if eps_adj > 0 else 0.0
@@ -765,8 +766,9 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("最新即時成交價", f"${price:,.2f}", f"{trade_date} ({change_txt})")
 c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間")
 c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
-c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper:,.0f}]")
+c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper_2:,.0f}]")
 
+# 多期報酬率呈現
 st.markdown("---")
 st.markdown("### ⏱️ 多期報酬率表現 (自動計算模組)")
 r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns(5)
@@ -776,6 +778,7 @@ r_col3.metric("近 1 個月 (20日)", fmt_pct(ret_1m))
 r_col4.metric("近 2 個月 (40日)", fmt_pct(ret_2m))
 r_col5.metric("近 3 個月 (60日)", fmt_pct(ret_3m))
 
+# 多時段輿情情緒與展望成長呈現
 st.markdown("---")
 st.markdown("### 📰 多時段財經新聞輿情與展望成長評分")
 s_col1, s_col2, s_col3 = st.columns(3)
@@ -792,7 +795,9 @@ with s_col3:
 ctx = {
     "name": company_name, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
-    "tp_lower": tp_lower, "tp_upper": tp_upper, "rec": f"{rec_title} ({rec_desc})",
+    "tp_lower": tp_lower, "tp_upper_1": tp_upper_1, "tp_upper_2": tp_upper_2, 
+    "pe_lower": pe_lower, "pe_target": pe_target, "pe_upper_1": pe_upper_1, "pe_upper_2": pe_upper_2,
+    "rec": f"{rec_title} ({rec_desc})",
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
     "blue_rsi": blue_rsi, "red_rsi": red_rsi,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
@@ -806,11 +811,7 @@ ctx = {
     "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
     "ttm_src": ttm_src, "annual_src": annual_src, "annual_year": annual_year_display,
     "pe_target": pe_target, "pe_linear": pe_linear, "eps_adj": eps_adj,
-    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "pe_std": pe_std, "sd_k": sd_k, "pe_base": pe_base,
-    "pe_lower": pe_lower, "pe_lower_05": pe_lower_05, "tp_lower_05": tp_lower_05,
-    "pe_upper_selected": pe_upper_selected, "pe_upper_1": pe_upper_1, "tp_upper_1": tp_upper_1,
-    "pe_upper_2": pe_upper_2, "tp_upper_2": tp_upper_2,
-    "pessimistic_capped": pessimistic_capped, "pessimistic_05_capped": pessimistic_05_capped,
+    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "pe_std": pe_std, "pe_base": pe_base,
     "news_status": status_1w, "news_titles": titles_1w
 }
 
@@ -838,13 +839,28 @@ with left:
     st.markdown(f"📉 **線性基準模型：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**")
     st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
 
-    # 🎯 簡潔俐落的主畫面目標價總覽（悲觀、基準、樂觀）
-    st.markdown("#### 🎯 報告目標價總覽")
-    s1, s2, s3 = st.columns(3)
-    bear_label = f"PE: {pe_lower:.1f}x" + (" (15x下限防護)" if pessimistic_capped else f" (-{sd_k}σ)")
-    s1.metric("悲觀目標價", f"${tp_lower:,.0f}", bear_label, delta_color="off")
-    s2.metric("基準目標價", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x (Base)", delta_color="off")
-    s3.metric("樂觀目標價", f"${tp_upper:,.0f}", f"PE: {pe_upper_selected:.1f}x (+{sd_k}σ)", delta_color="off")
+    # 🌟 主畫面新增：一整列列出悲觀、基準、樂觀（分成 2 欄位顯示 +1σ 與 +2σ）
+    st.markdown("---")
+    st.markdown("### 🎯 情境目標價與本益比對照表")
+    sc1, sc2, sc3 = st.columns(3)
+    
+    with sc1:
+        st.metric("悲觀 (-0.5σ)", f"${tp_lower:,.0f}", delta_color="off")
+        st.caption(f"({pe_lower:.1f}x)")
+        
+    with sc2:
+        st.metric("基準 (Base)", f"${tp_base:,.0f}", delta_color="off")
+        st.caption(f"({pe_target:.1f}x)")
+        
+    with sc3:
+        st.markdown("**樂觀情境 (+σ / +2σ)**")
+        sub_c1, sub_c2 = st.columns(2)
+        with sub_c1:
+            st.metric("+1.0σ", f"${tp_upper_1:,.0f}", delta_color="off")
+            st.caption(f"({pe_upper_1:.1f}x)")
+        with sub_c2:
+            st.metric("+2.0σ", f"${tp_upper_2:,.0f}", delta_color="off")
+            st.caption(f"({pe_upper_2:.1f}x)")
 
 with right:
     st.subheader("三、財務檢核與 AI 預測指標")
