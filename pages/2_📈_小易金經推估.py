@@ -436,7 +436,8 @@ class IChingTrinitySpatiotemporalEngine:
 
     def predict_spatiotemporal_turning_window(self, current_regime_bars: int) -> Dict[str, Any]:
         bu_yi = self.analyze_bu_yi()
-        bars_to_primary = max(1, int(round(self.tau_adj - current_regime_bars)))
+        diff = self.tau_adj - current_regime_bars
+        bars_to_primary = max(1, int(round(diff))) if not np.isnan(diff) else 1
         bars_to_secondary = bars_to_primary + 2
         return {
             "primary_window": f"未來 第 {bars_to_primary} – {bars_to_primary + 1} 根 K 棒",
