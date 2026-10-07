@@ -548,9 +548,8 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     exchange = symbol.split('.')[1] if '.' in symbol else "TW"
     tickers = [symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']
     
-    # 動態調整抓取區間：分鐘線因 Yahoo 限制最多抓 59 天，日線抓 4 年
     if interval in ["60m", "30m", "15m", "5m"]:
-        fetch_start = None  # 分鐘線通常使用 period 參數
+        fetch_start = None
         fetch_period = "59d" if interval in ["15m", "30m", "5m"] else "730d"
     else:
         fetch_period = None
@@ -692,21 +691,24 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
-    # 確保多頻率下齊全的欄位對齊
     available_tickers = [t for t in [symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII'] if t in market_data.columns]
     returns = market_data[available_tickers].pct_change().dropna()
     
+    # 🛡️ 修正：安全處理無風險利率與報酬率的合併，避免欄位名稱重複衝突
     if '^IRX' in market_data.columns:
-        rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
-        df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
+        rf_us_s = (market_data['^IRX'].dropna() / 100) / 365
+        df = returns.copy()
+        df['RF_US'] = rf_us_s
+        df = df.dropna(subset=['RF_US'])
     else:
-        df = returns
+        df = returns.copy()
         df['RF_US'] = 0.01 / 365
 
     df['RF_TW'] = 0.017 / 365 
 
-    df['Price_Mom_30D'] = (market_data[symbol].pct_change(30) - (market_data['^TWII'].pct_change(30) if '^TWII' in market_data.columns else 0)).shift(1)
-    df['Price_Mom_5D'] = (market_data[symbol].pct_change(5) - (market_data['^TWII'].pct_change(5) if '^TWII' in market_data.columns else 0)).shift(1)
+    twii_series = market_data['^TWII'] if '^TWII' in market_data.columns else pd.Series(0, index=market_data.index)
+    df['Price_Mom_30D'] = (market_data[symbol].pct_change(30) - twii_series.pct_change(30)).shift(1)
+    df['Price_Mom_5D'] = (market_data[symbol].pct_change(5) - twii_series.pct_change(5)).shift(1)
     df['Vol_10D'] = market_data[symbol].pct_change().rolling(10).std().shift(1)
 
     delta = market_data[symbol].diff()
@@ -744,7 +746,7 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     plot_beta3 = df['Beta_3_Rolling'].dropna()
 
     threshold = 0.005 
-    twii_col = market_data['^TWII'].pct_change(5).shift(-5) if '^TWII' in market_data.columns else 0
+    twii_col = twii_series.pct_change(5).shift(-5)
     df['Target_Label'] = ((market_data[symbol].pct_change(5).shift(-5) - twii_col) > threshold).astype(int)
     df_ai = df.dropna()
 
