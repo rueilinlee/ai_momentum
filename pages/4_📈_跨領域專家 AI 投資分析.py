@@ -72,9 +72,7 @@ def _is_us_ticker(text: str) -> bool:
 
 def _has_price(symbol):
     try:
-        session = requests.Session()
-        session.headers.update(HEADERS)
-        return not yf.Ticker(symbol, session=session).history(period="5d").empty
+        return not yf.Ticker(symbol).history(period="5d").empty
     except Exception:
         return False
 
@@ -252,19 +250,17 @@ def get_company_name(symbol):
                 return f"{name} ({symbol})"
 
     try:
-        session = requests.Session()
-        session.headers.update(HEADERS)
         if ".TW" in symbol or ".TWO" in symbol:
             stock_id = symbol.split('.')[0]
             tw_yahoo_url = f"https://tw.stock.yahoo.com/quote/{stock_id}"
-            res = session.get(tw_yahoo_url, timeout=5)
+            res = requests.get(tw_yahoo_url, headers=HEADERS, timeout=5)
             match = re.search(r'<title>(.*?)\(', res.text)
             if match:
                 extracted_name = match.group(1).strip()
                 if extracted_name and "Yahoo" not in extracted_name and "找不到" not in extracted_name:
                     return f"{extracted_name} ({symbol})"
 
-        stock = yf.Ticker(symbol, session=session)
+        stock = yf.Ticker(symbol)
         info = stock.info
         name = info.get("longName") or info.get("shortName")
         if name:
@@ -279,26 +275,26 @@ def get_company_name(symbol):
 def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, growth_neg, base_adj=3.0):
     if not titles:
         return 5.0, 5.0, 0, 0, 0
-    
+
     s_sum = 5.0
     g_sum = 5.0
     total_bullish_hits = 0
     total_bearish_hits = 0
-    
+
     for title in titles:
         b_hits = sum(1 for w in bullish_words if w in title)
         r_hits = sum(1 for w in bearish_words if w in title)
         gp_hits = sum(1 for w in growth_pos if w in title)
         gn_hits = sum(1 for w in growth_neg if w in title)
-        
+
         total_bullish_hits += (b_hits + gp_hits)
         total_bearish_hits += (r_hits + gn_hits)
-        
+
         if b_hits > r_hits:
             s_sum += 1.5 * b_hits
         elif r_hits > b_hits:
             s_sum -= 1.5 * r_hits
-            
+
         if gp_hits > gn_hits:
             g_sum += 1.5 * gp_hits
         elif gn_hits > gp_hits:
@@ -307,7 +303,7 @@ def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, 
     count = len(titles)
     final_sentiment = max(0.0, min(10.0, round(s_sum / max(1, count) + base_adj, 1)))
     final_growth = max(0.0, min(10.0, round(g_sum / max(1, count) + 2.0, 1)))
-    
+
     return final_sentiment, final_growth, total_bullish_hits, total_bearish_hits, count
 
 def fetch_anue_with_time(stock_code, hours=168):
@@ -357,14 +353,14 @@ def fetch_yahoo_tw(stock_code, hours=168):
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     anue_titles = fetch_anue_with_time(stock_code, hours)
     yahoo_titles = fetch_yahoo_tw(stock_code, hours)
-    
+
     all_titles = list(set(anue_titles + yahoo_titles))
-    
+
     bullish = ["漲", "高", "強", "買超", "創高", "突破", "擴產", "營收揚升", "暢旺", "多方", "利多", "成長", "大賺", "雙增"]
     bearish = ["跌", "殺", "跌停", "衰退", "利空", "縮減", "賣超", "低迷", "修正", "震盪", "壓力"]
     growth_pos = ["展望佳", "成長", "擴產", "訂單滿", "創高", "突破", "上修", "看好", "強勁", "增溫", "新單"]
     growth_neg = ["下修", "衰退", "保守", "庫存", "壓力", "疲弱", "下滑", "淡季"]
-    
+
     if not all_titles:
         base_seed = sum(ord(c) for c in stock_code) + int(hours)
         simulated_count = max(5, int(hours / 24) * 2)
@@ -383,11 +379,11 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     s_score, g_score, bull_cnt, bear_cnt, total_cnt = calculate_detailed_scores(
         all_titles, bullish, bearish, growth_pos, growth_neg, base_adj=3.0
     )
-    
+
     time_decay_factor = min(1.0, hours / 1440.0)
     s_score = round(max(0.0, min(10.0, s_score * (0.95 + 0.05 * time_decay_factor))), 1)
     g_score = round(max(0.0, min(10.0, g_score * (0.95 + 0.05 * time_decay_factor))), 1)
-    
+
     status_msg = f"成功獲取 {total_cnt} 篇真實新聞進行文本量化分析 (時段: {hours}H)"
     return s_score, g_score, max(1, bull_cnt), max(0, bear_cnt), total_cnt, status_msg, all_titles
 
@@ -409,21 +405,22 @@ def _eps_series(df):
 # ==========================================
 def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     last_close = close_prices.iloc[-1]
-    step = last_close * 0.005 
+    step = last_close * 0.005
     sim_price = last_close
-    
+
     def calc_single_rsi(prices_series):
         delta = prices_series.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         return (100 - (100 / (1 + rs))).iloc[-1]
-        
+
     current_rsi = calc_single_rsi(close_prices)
-    
+
     if mode == 'drop':
         if current_rsi <= target_rsi:
             return last_close, current_rsi
+        sim_rsi = current_rsi
         for _ in range(100):
             sim_price -= step
             sim_series = pd.concat([close_prices, pd.Series([sim_price])]).reset_index(drop=True)
@@ -431,10 +428,11 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
             if pd.notna(sim_rsi) and sim_rsi <= target_rsi:
                 return sim_price, sim_rsi
         return sim_price, sim_rsi
-        
+
     elif mode == 'rise':
         if current_rsi >= target_rsi:
             return last_close, current_rsi
+        sim_rsi = current_rsi
         for _ in range(100):
             sim_price += step
             sim_series = pd.concat([close_prices, pd.Series([sim_price])]).reset_index(drop=True)
@@ -442,6 +440,102 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
             if pd.notna(sim_rsi) and sim_rsi >= target_rsi:
                 return sim_price, sim_rsi
         return sim_price, sim_rsi
+
+# ==========================================
+# 4.5 跨時區特徵對齊（台股 K 棒為主軸 + 美股日線）
+# ==========================================
+def download_us_daily(years: int = 5) -> pd.DataFrame:
+    """美股相關資料一律抓日線，避免與台股分鐘線時段完全沒有交集"""
+    raw = yf.download(["NVDA", "^SOX", "^DJI", "^IRX"], period=f"{years}y",
+                      interval="1d", progress=False)["Close"]
+    if isinstance(raw, pd.Series):
+        raw = raw.to_frame()
+    raw = raw.loc[:, ~raw.columns.duplicated()]
+    raw.index = pd.DatetimeIndex(raw.index).tz_localize(None).normalize()
+    return raw
+
+def _to_bar_dates(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    idx = pd.DatetimeIndex(index)
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)  # 保留當地時間的日期
+    return idx.normalize()
+
+def _map_daily_to_bars(daily: pd.Series, bar_index: pd.DatetimeIndex) -> np.ndarray:
+    """
+    美股第 D 日收盤約等於台北 D+1 日清晨，所以該值從 D+1 起才「已知」；
+    週末/假日以 ffill 沿用最近一個已知值，避免偷看未來。
+    """
+    s = daily.dropna().copy()
+    bar_dates = _to_bar_dates(bar_index)
+    if s.empty:
+        return np.full(len(bar_dates), np.nan)
+    s.index = s.index + pd.Timedelta(days=1)
+    s = s[~s.index.duplicated(keep="last")].sort_index()
+    union = s.index.union(bar_dates.unique())
+    return s.reindex(union).ffill().reindex(bar_dates).values
+
+def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.DataFrame,
+                        rf_tw_daily: float = 0.017 / 365):
+    """
+    回傳 (df, fwd_excess)：
+      df         已對齊、無 NaN 的特徵表 (以標的自身 K 棒為列)
+      fwd_excess 未來 5 期超額報酬，供建立 Target_Label
+    """
+    stock = market_data[symbol].dropna()
+    if "^TWII" in market_data.columns:
+        twii = market_data["^TWII"].reindex(stock.index).ffill()
+    else:
+        twii = pd.Series(stock.values, index=stock.index)  # 無大盤時退化為自身 (超額報酬=0)
+
+    # ---- 日線層級：NVDA 純淨衝擊 (扣除 DJI/SOX 與無風險利率) ----
+    us_cols = [c for c in ["NVDA", "^SOX", "^DJI"] if c in us_daily.columns]
+    us_ret = us_daily[us_cols].pct_change() if us_cols else pd.DataFrame(index=us_daily.index)
+    if "^IRX" in us_daily.columns:
+        rf_us = (us_daily["^IRX"] / 100 / 365).ffill()
+    else:
+        rf_us = pd.Series(0.01 / 365, index=us_daily.index)
+
+    shock = pd.Series(0.0, index=us_daily.index)
+    if symbol.upper() != "NVDA" and {"NVDA", "^SOX", "^DJI"}.issubset(us_ret.columns):
+        sub = us_ret.assign(RF=rf_us.reindex(us_ret.index).ffill()).dropna()
+        if len(sub) > 30:
+            y = sub["NVDA"] - sub["RF"]
+            X = sm.add_constant(pd.DataFrame({
+                "DJI_Excess": sub["^DJI"] - sub["RF"],
+                "SOX_Excess": sub["^SOX"] - sub["RF"]}, index=sub.index))
+            shock = sm.OLS(y, X).fit().resid.reindex(us_daily.index).fillna(0.0)
+
+    # ---- 以標的自身時間軸建表 ----
+    df = pd.DataFrame(index=stock.index)
+    df[symbol] = stock.pct_change()
+    if symbol != "^TWII":
+        df["^TWII"] = twii.pct_change()
+    df["NVDA_Pure_Shock"] = _map_daily_to_bars(shock, stock.index)
+    if "^SOX" in us_ret.columns:
+        df["^SOX"] = _map_daily_to_bars(us_ret["^SOX"], stock.index)
+    else:
+        df["^SOX"] = np.nan
+    df["RF_US"] = _map_daily_to_bars(rf_us, stock.index)
+    df["RF_TW"] = rf_tw_daily
+
+    # 美股資料缺漏 (例如歷史起點之前) 時以中性值補上，避免整列被刪除
+    df["NVDA_Pure_Shock"] = df["NVDA_Pure_Shock"].fillna(0.0)
+    df["^SOX"] = df["^SOX"].fillna(0.0)
+    df["RF_US"] = df["RF_US"].fillna(0.01 / 365)
+
+    df["Price_Mom_30D"] = (stock.pct_change(30) - twii.pct_change(30)).shift(1)
+    df["Price_Mom_5D"] = (stock.pct_change(5) - twii.pct_change(5)).shift(1)
+    df["Vol_10D"] = stock.pct_change().rolling(10).std().shift(1)
+
+    delta = stock.diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df["RSI_14"] = (100 - 100 / (1 + gain / loss)).shift(1)
+    df["Interaction_Term"] = df["NVDA_Pure_Shock"] * df["Price_Mom_30D"]
+
+    fwd_excess = stock.pct_change(5).shift(-5) - twii.pct_change(5).shift(-5)
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+    return df, fwd_excess
 
 # ==========================================
 # 5. Word 報告生成
@@ -479,7 +573,7 @@ def generate_word_report(ctx):
     sent_table.style = "Table Grid"
     sh = sent_table.rows[0].cells
     sh[0].text, sh[1].text, sh[2].text = "時間維度", "新聞情緒分數 (利多/利空/篇數)", "未來展望成長分數 (利多/利空/篇數)"
-    
+
     sent_rows_data = [
         ("近 1 週 (168H)", ctx['sent_1w'], ctx['growth_1w'], ctx['b1w'], ctx['r1w'], ctx['c1w']),
         ("近 2 週 (336H)", ctx['sent_2w'], ctx['growth_2w'], ctx['b2w'], ctx['r2w'], ctx['c2w']),
@@ -555,7 +649,7 @@ with st.sidebar.form(key="search_form"):
     user_query = st.text_input(
         "輸入公司名稱或代號（如 今國光, 6209, 台積電, 2330, NVDA）", value="2330"
     ).strip()
-    
+
     interval_options = {
         "日線 (1d)": "1d",
         "60分鐘 (60m)": "60m",
@@ -563,17 +657,14 @@ with st.sidebar.form(key="search_form"):
         "15分鐘 (15m)": "15m",
         "5分鐘 (5m)": "5m"
     }
-    selected_interval_label = st.sidebar.selectbox("選擇 K 線時間頻率", list(interval_options.keys()), index=0)
+    selected_interval_label = st.selectbox("選擇 K 線時間頻率", list(interval_options.keys()), index=0)
     interval = interval_options[selected_interval_label]
-    
+
     st.form_submit_button("📊 執行 AI 與基本面綜合分析")
 
 if not user_query:
     st.info("請在左側輸入公司名稱或代號。")
     st.stop()
-
-session = requests.Session()
-session.headers.update(HEADERS)
 
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
@@ -590,7 +681,7 @@ sent_2m, growth_2m, b2m, r2m, c2m, status_2m, titles_2m = comprehensive_quant_ev
 with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時報價與跨時區市場資料，並進行機器學習訓練與價格模擬...'):
     stock_code = symbol.split('.')[0]
     exchange = symbol.split('.')[1] if '.' in symbol else "TW"
-    
+
     # 針對日內高頻資料調整抓取區間限制（避免 Yahoo Finance 限制）
     if interval in ["60m", "30m", "15m", "5m"]:
         fetch_start = None
@@ -600,18 +691,19 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
         fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
 
     end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
-    tickers = [symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']
-    
+    # 只抓標的與大盤；美股資料改由日線函式另外取得（避免分鐘線時段無交集）
+    tickers = list(dict.fromkeys([symbol, '^TWII']))
+
     try:
         if fetch_period:
-            raw_market_data = yf.download(tickers, period=fetch_period, interval=interval, progress=False, session=session)['Close']
+            raw_market_data = yf.download(tickers, period=fetch_period, interval=interval, progress=False)['Close']
         else:
-            raw_market_data = yf.download(tickers, start=fetch_start, end=end_date, interval=interval, progress=False, session=session)['Close']
+            raw_market_data = yf.download(tickers, start=fetch_start, end=end_date, interval=interval, progress=False)['Close']
     except Exception:
-        raw_market_data = yf.download(symbol, period="59d", interval=interval, progress=False, session=session)['Close']
+        raw_market_data = yf.download(symbol, period="59d", interval=interval, progress=False)['Close']
 
     if isinstance(raw_market_data, pd.Series):
-        market_data = raw_market_data.to_frame()
+        market_data = raw_market_data.to_frame(symbol)
     else:
         market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
 
@@ -620,9 +712,9 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
         st.stop()
 
     valid_stock_data = market_data[symbol].dropna()
-    
+
     try:
-        tkr = yf.Ticker(symbol, session=session)
+        tkr = yf.Ticker(symbol)
         price = float(tkr.fast_info['last_price'])
         trade_date = get_taiwan_time_str('%Y-%m-%d %H:%M:%S')
     except Exception:
@@ -640,11 +732,11 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     ret_2m = get_ret(40)
     ret_3m = get_ret(60)
 
-    tkr_fin = yf.Ticker(symbol, session=session)
+    tkr_fin = yf.Ticker(symbol)
     q_eps_list = []
     ttm_eps, annual_eps = None, None
     annual_year_str = ""
-    
+
     try:
         s_q = _eps_series(tkr_fin.quarterly_income_stmt)
         if s_q is not None:
@@ -662,21 +754,21 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
                 annual_year_str = f" ({s_a.index[0].year})"
     except Exception:
         pass
-        
+
     auto_pe_base = 15.0
-    pe_std = 4.0 
+    pe_std = 4.0
     try:
         if ttm_eps and ttm_eps > 0:
-            s_full_for_pe = yf.download(symbol, period="1y", interval="1d", progress=False, session=session)
+            s_full_for_pe = yf.download(symbol, period="1y", interval="1d", progress=False)
             if not s_full_for_pe.empty:
                 s_close_pe = s_full_for_pe['Close']
                 if isinstance(s_close_pe, pd.DataFrame):
                     s_close_pe = s_close_pe.iloc[:, 0]
-                
+
                 median_price = float(s_close_pe.median())
                 calculated_pe = median_price / ttm_eps
                 auto_pe_base = max(8.0, min(calculated_pe, 40.0))
-                
+
                 hist_pe_series = (s_close_pe / ttm_eps).dropna()
                 hist_pe_filtered = hist_pe_series[(hist_pe_series > 0) & (hist_pe_series < 200)]
                 if len(hist_pe_filtered) > 10:
@@ -686,7 +778,7 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
 
     fx_latest, fx_annual_vol, fx_low, fx_high = 32.0, 4.5, 30.5, 33.5
     try:
-        fx_data = yf.download("USDTWD=X", period="1y", interval="1d", progress=False, session=session)
+        fx_data = yf.download("USDTWD=X", period="1y", interval="1d", progress=False)
         if not fx_data.empty:
             fx_close = fx_data['Close']
             if isinstance(fx_close, pd.DataFrame):
@@ -702,16 +794,16 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     stock_vol_1y = 25.0
     actual_max_pe, actual_min_pe, real_safety_price = 25.0, 10.0, 10.0
     try:
-        s_full = yf.download(symbol, period="1y", interval="1d", progress=False, session=session)
+        s_full = yf.download(symbol, period="1y", interval="1d", progress=False)
         if not s_full.empty:
             s_close = s_full['Close']
             if isinstance(s_close, pd.DataFrame):
                 s_close = s_close.iloc[:, 0]
             stock_vol_1y = float(s_close.pct_change().std() * math.sqrt(252) * 100)
-            
+
             high_p = float(s_full['High'].max().iloc[0] if isinstance(s_full['High'].max(), pd.Series) else s_full['High'].max())
             low_p = float(s_full['Low'].min().iloc[0] if isinstance(s_full['Low'].min(), pd.Series) else s_full['Low'].min())
-            
+
             base_eps_for_risk = ttm_eps if ttm_eps and ttm_eps > 0 else 1.0
             actual_max_pe = high_p / base_eps_for_risk
             actual_min_pe = low_p / base_eps_for_risk
@@ -739,67 +831,62 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
-    # 對齊市場與計量模型特徵
-    available_cols = [c for c in [symbol, 'NVDA', '^SOX', '^DJI', '^TWII'] if c in market_data.columns]
-    returns = market_data[available_cols].pct_change().dropna()
-    if '^IRX' in market_data.columns:
-        rf_us_daily = (market_data['^IRX'].dropna() / 100) / 365
-        df = returns.join(rf_us_daily, how='inner').rename(columns={'^IRX': 'RF_US'})
-    else:
-        df = returns.copy()
-        df['RF_US'] = 0.01 / 365
+    # ------------------------------------------
+    # 跨時區特徵對齊：以標的 K 棒為主軸，美股用日線
+    # ------------------------------------------
+    try:
+        us_daily = download_us_daily()
+    except Exception:
+        us_daily = pd.DataFrame()
 
-    df['RF_TW'] = 0.017 / 365 
+    df, fwd_excess = build_feature_frame(symbol, market_data, us_daily)
 
-    twii_col = '^TWII' if '^TWII' in market_data.columns else symbol
-    df['Price_Mom_30D'] = (market_data[symbol].pct_change(30) - market_data[twii_col].pct_change(30)).shift(1)
-    df['Price_Mom_5D'] = (market_data[symbol].pct_change(5) - market_data[twii_col].pct_change(5)).shift(1)
-    df['Vol_10D'] = market_data[symbol].pct_change().rolling(10).std().shift(1)
+    if len(df) < 80:
+        st.error(
+            f"❌ [{selected_interval_label}] 對齊後可用 K 棒僅 {len(df)} 根，不足以進行滾動回歸與機器學習。"
+            "請改用日線或 60 分鐘線，或稍後再試。"
+        )
+        st.stop()
 
-    delta = market_data[symbol].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI_14'] = (100 - (100 / (1 + rs))).shift(1)
-    df = df.dropna()
-
-    if 'NVDA' in df.columns and '^DJI' in df.columns and '^SOX' in df.columns:
-        Y_ortho = df['NVDA'] - df['RF_US']
-        X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']}, index=df.index)
-        X_ortho = sm.add_constant(X_ortho)
-        df['NVDA_Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid
-    else:
-        df['NVDA_Pure_Shock'] = 0.0
-
-    df['Interaction_Term'] = df['NVDA_Pure_Shock'] * df['Price_Mom_30D']
     Y_rolling = df[symbol] - df['RF_TW']
-    
-    roll_cols = [c for c in ['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term'] if c in df.columns]
+
+    # 排除與被解釋變數相同、或完全沒有變異的欄位，避免共線性
+    roll_candidates = ['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term']
+    roll_cols = [c for c in roll_candidates if c in df.columns and c != symbol and float(df[c].std()) > 0]
     X_rolling = sm.add_constant(df[roll_cols])
 
     dyn_window = min(252, max(30, len(df) // 3))
     rolling_res = RollingOLS(Y_rolling, X_rolling, window=dyn_window).fit()
     params_df = rolling_res.params
-    
+
     df['Beta_3_Rolling'] = params_df['NVDA_Pure_Shock'] if 'NVDA_Pure_Shock' in params_df else 0.0
     df['Gamma_Rolling'] = params_df['Interaction_Term'] if 'Interaction_Term' in params_df else 0.0
     df['Beta_3_Trend_5D'] = df['Beta_3_Rolling'].diff(5)
     df['Gamma_Trend_5D'] = df['Gamma_Rolling'].diff(5)
-    
+
     plot_gamma = df['Gamma_Rolling'].dropna()
     plot_beta3 = df['Beta_3_Rolling'].dropna()
 
-    threshold = 0.005 
-    fwd_diff = market_data[symbol].pct_change(5).shift(-5) - market_data[twii_col].pct_change(5).shift(-5)
-    df['Target_Label'] = (fwd_diff > threshold).astype(int)
-    df_ai = df.dropna()
+    # 目標標籤：未來 5 期是否擊敗大盤 (尚無未來資料的最後 5 根保持 NaN，訓練時剔除)
+    threshold = 0.005
+    fwd = fwd_excess.reindex(df.index)
+    df['Target_Label'] = np.where(fwd.isna(), np.nan, (fwd > threshold).astype(float))
 
-    features = [c for c in ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D'] if c in df_ai.columns]
+    features = [c for c in ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D'] if c in df.columns]
+
+    # 最新一根 K 棒的特徵 (不需要標籤，用於即時預測)
+    feat_all = df[features].dropna()
+
+    df_ai = df.dropna(subset=features + ['Target_Label'])
     X = df_ai[features]
-    y = df_ai['Target_Label']
+    y = df_ai['Target_Label'].astype(int)
+
+    if len(X) < 30 or y.nunique() < 2:
+        st.error("❌ 可用於訓練的樣本不足或標籤只有單一類別，請改用日線或 60 分鐘線。")
+        st.stop()
 
     model = lgb.LGBMClassifier(n_estimators=80, learning_rate=0.03, max_depth=3, min_child_samples=max(5, len(X)//10), subsample=0.7, colsample_bytree=0.7, reg_alpha=0.5, reg_lambda=0.5, random_state=42, verbose=-1)
-    
+
     n_samples = len(X)
     n_splits_val = 5
     gap = 3
@@ -808,25 +895,33 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
 
     tscv = TimeSeriesSplit(n_splits=n_splits_val)
     cv_test_acc, cv_test_auc = [], []
+    test_index = np.array([], dtype=int)
 
     try:
-        for train_index, test_index in tscv.split(X):
+        for train_index, t_idx in tscv.split(X):
             safe_train_index = train_index[:-gap] if len(train_index) > gap else train_index
-            if len(safe_train_index) < 3 or len(test_index) < 1:
+            if len(safe_train_index) < 3 or len(t_idx) < 1:
+                continue
+            if y.iloc[safe_train_index].nunique() < 2:
                 continue
             model.fit(X.iloc[safe_train_index], y.iloc[safe_train_index])
-            cv_test_acc.append(accuracy_score(y.iloc[test_index], model.predict(X.iloc[test_index])))
-            cv_test_auc.append(roc_auc_score(y.iloc[test_index], model.predict_proba(X.iloc[test_index])[:, 1]))
+            test_index = t_idx
+            cv_test_acc.append(accuracy_score(y.iloc[t_idx], model.predict(X.iloc[t_idx])))
+            if y.iloc[t_idx].nunique() > 1:
+                cv_test_auc.append(roc_auc_score(y.iloc[t_idx], model.predict_proba(X.iloc[t_idx])[:, 1]))
     except Exception:
-        model.fit(X, y)
+        pass
 
-    latest_features = X.iloc[[-1]] if not X.empty else pd.DataFrame(columns=features)
-    latest_proba = model.predict_proba(latest_features)[:, 1][0] if not latest_features.empty else 0.5
+    # 交叉驗證後以全部樣本重新訓練，作為最終預測模型
+    model.fit(X, y)
+
+    latest_features = feat_all.iloc[[-1]] if not feat_all.empty else pd.DataFrame(columns=features)
+    latest_proba = float(model.predict_proba(latest_features)[:, 1][0]) if not latest_features.empty else 0.5
     current_beta3 = plot_beta3.iloc[-1] if not plot_beta3.empty else 0.0
-    beta3_trend_val = df_ai['Beta_3_Trend_5D'].iloc[-1] if 'Beta_3_Trend_5D' in df_ai.columns else 0.0
+    beta3_trend_val = df['Beta_3_Trend_5D'].dropna().iloc[-1] if df['Beta_3_Trend_5D'].notna().any() else 0.0
     beta3_trend_str = "上升 ↗" if beta3_trend_val > 0 else "下降 ↘"
     current_gamma = plot_gamma.iloc[-1] if not plot_gamma.empty else 0.0
-    gamma_trend_val = df_ai['Gamma_Trend_5D'].iloc[-1] if 'Gamma_Trend_5D' in df_ai.columns else 0.0
+    gamma_trend_val = df['Gamma_Trend_5D'].dropna().iloc[-1] if df['Gamma_Trend_5D'].notna().any() else 0.0
     gamma_trend_str = "加速湧入 ↗" if gamma_trend_val > 0 else "動能衰退 ↘"
 
 # ==========================================
@@ -855,9 +950,9 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("估值模型變數")
 eps_fwd_base = st.sidebar.number_input("基礎預估 Forward EPS (模擬範例數據)", min_value=0.01, value=float(max(0.5, round(ttm_eps_val * 1.1, 2))), step=0.1, format="%.2f")
 pe_base = st.sidebar.number_input(
-    "產業中樞本益比 (PE_base)", 
-    min_value=1.0, 
-    value=float(round(auto_pe_base, 1)), 
+    "產業中樞本益比 (PE_base)",
+    min_value=1.0,
+    value=float(round(auto_pe_base, 1)),
     help="系統已根據過去一年歷史股價中位數與 TTM EPS 自動定錨。"
 )
 
@@ -874,7 +969,7 @@ if risk_mode == "🤖 AI 跨期動態推算":
     avg_growth = (growth_1w + growth_2w + growth_1m) / 3
     chronic_penalty = 1.5 if avg_growth < 3.0 else 0.0
     calculated_risk = min(10.0, level_penalty + trend_penalty + chronic_penalty)
-    
+
     st.sidebar.info(f"**AI 動態推算 Risk = {calculated_risk:.1f}**\n\n"
                     f"(包含絕對低迷: {level_penalty:.1f}, 跨期惡化: {trend_penalty:.1f}, 慢性衰退: {chronic_penalty:.1f})")
     risk_val = calculated_risk
@@ -943,7 +1038,7 @@ elif interval in ["60m", "30m"]:
     freq_advice_text = (
         f"【{selected_interval_label} 頻率特性與模型建議】\n"
         "• 適用場景：適合結合機器學習分類（LightGBM）與動能區間（藍紅動能區）進行短線波段操作。\n"
-        "• 模型提醒：每日多達多根 K 棒，滾動窗口（Rolling Window）已自動對齊以維持統計顯著性，能靈敏反應盤中法人與輿情動態。"
+        "• 模型提醒：美股衝擊以「前一個已收盤美股交易日」的日線值對應到每根 K 棒，分鐘線下 Beta/Gamma 僅適合觀察相對變化。"
     )
 else:
     freq_advice_text = (
@@ -998,7 +1093,7 @@ st.info(freq_advice_text)
 ctx = {
     "name": company_name, "interval_label": selected_interval_label, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
-    "tp_15x": tp_15x, "tp_lower": tp_lower, "tp_upper_1": tp_upper_1, "tp_upper_2": tp_upper_2, 
+    "tp_15x": tp_15x, "tp_lower": tp_lower, "tp_upper_1": tp_upper_1, "tp_upper_2": tp_upper_2,
     "pe_lower": pe_lower, "pe_target": pe_target, "pe_upper_1": pe_upper_1, "pe_upper_2": pe_upper_2,
     "rec": f"{rec_title} ({rec_desc})",
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
@@ -1014,7 +1109,7 @@ ctx = {
     "vol_signal": vol_signal,
     "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
     "ttm_src": ttm_src, "annual_src": annual_src, "annual_year": annual_year_display,
-    "pe_target": pe_target, "pe_linear": pe_linear, "eps_adj": eps_adj,
+    "pe_linear": pe_linear, "eps_adj": eps_adj,
     "hist_pe": hist_pe, "fwd_pe": fwd_pe, "pe_std": pe_std, "pe_base": pe_base,
     "news_status": status_1w, "news_titles": titles_1w,
     "freq_advice": freq_advice_text
@@ -1035,7 +1130,7 @@ with left:
     st.subheader("一、AI 決策動能區間 (買賣點建議)")
     st.info(f"**🟦 藍色動能區 (建議逢低試單點)**\n\n預估跌至 **{blue_price_target:.2f} 元** 時，RSI 將降至 {blue_rsi:.1f} (超賣區)。歷史數據顯示此時模型勝率最高，為極佳的防守反擊點。")
     st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**\n\n預估漲至 **{red_price_target:.2f} 元** 時，RSI 將飆至 {red_rsi:.1f} (過熱區)。系統判定此時追高勝率極差，容易遭遇主力倒貨，建議分批停利。")
-    
+
     st.markdown("---")
     st.subheader("二、估值模型對照（動態非線性 vs 線性）")
     st.markdown(f"🚀 **動態非線性模型：** PE **{pe_target:.1f}x** → 目標價 **${tp_base:,.0f}**")
@@ -1047,44 +1142,44 @@ with left:
     st.markdown("---")
     st.markdown("### 🎯 情境目標價與本益比對照表")
     sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-    
+
     with sc1:
         st.metric("15倍地板", f"${tp_15x:,.0f}", delta_color="off")
         st.caption("(15.0x)")
-        
+
     with sc2:
         st.metric("悲觀(-0.5σ)", f"${tp_lower:,.0f}", delta_color="off")
         st.caption(f"({pe_lower:.1f}x)")
-        
+
     with sc3:
         st.metric("基準(Base)", f"${tp_base:,.0f}", delta_color="off")
         st.caption(f"({pe_target:.1f}x)")
-        
+
     with sc4:
         st.metric("樂觀(+1σ)", f"${tp_upper_1:,.0f}", delta_color="off")
         st.caption(f"({pe_upper_1:.1f}x)")
-        
+
     with sc5:
         st.metric("樂觀(+2σ)", f"${tp_upper_2:,.0f}", delta_color="off")
         st.caption(f"({pe_upper_2:.1f}x)")
 
 with right:
     st.subheader("三、財務檢核與 AI 預測指標")
-    
+
     st.markdown("**財務檢核數據總表：**")
     fin_data = []
-    
+
     if q_eps_list:
         for label, val in q_eps_list:
             fin_data.append({"指標": f"單季 EPS ({label})", "數值": f"{val:.2f}", "資料來源": "Yahoo Finance"})
-    
+
     fin_data.extend([
         {"指標": "近 4 季 EPS (TTM)", "數值": f"{ttm_eps_val:.2f}", "資料來源": ttm_src},
         {"指標": f"最近年度 EPS{annual_year_display}", "數值": f"{annual_eps_val:.2f}", "資料來源": annual_src},
         {"指標": "歷史本益比", "數值": f"{hist_pe:.1f} 倍", "資料來源": "即時股價 / TTM EPS"},
         {"指標": "遠期本益比", "數值": f"{fwd_pe:.1f} 倍", "資料來源": "即時股價 / 調整後預估 EPS"},
     ])
-    
+
     st.dataframe(pd.DataFrame(fin_data), hide_index=True, use_container_width=True)
 
     st.markdown("**AI 模型核心指標狀態：**")
@@ -1092,6 +1187,10 @@ with right:
     col_m1.metric("模型預測勝率", f"{latest_proba:.2%}")
     col_m2.metric("AI 晶片純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
     col_m3.metric("資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
+
+    if cv_test_acc:
+        auc_txt = f"{np.mean(cv_test_auc):.3f}" if cv_test_auc else "N/A"
+        st.caption(f"時序交叉驗證：平均準確率 {np.mean(cv_test_acc):.3f}｜平均 AUC {auc_txt}（{len(cv_test_acc)} 折）")
 
     if titles_1w:
         with st.expander("🔍 檢視近 1 週抓取到的新聞標題清單"):
@@ -1112,7 +1211,7 @@ st.markdown(f"### 📊 歷史波段回測與 SHAP AI 決策邏輯 ({selected_int
 
 if not plot_beta3.empty:
     min_beta3_date = plot_beta3.idxmin()
-    period_returns = market_data[symbol].loc[min_beta3_date:plot_beta3.loc[min_beta3_date:].idxmax()].pct_change().dropna()
+    period_returns = market_data[symbol].dropna().loc[min_beta3_date:plot_beta3.loc[min_beta3_date:].idxmax()].pct_change().dropna()
 else:
     period_returns = pd.Series(dtype=float)
 
@@ -1123,7 +1222,7 @@ with fig_col1:
     if not plot_gamma.empty:
         ax1.plot(plot_gamma.index, plot_gamma, color='purple', label='Gamma (Crowding)')
     ax1.axhline(0, color='red', linestyle='--'); ax1.legend(loc='upper left'); ax1.grid(True, alpha=0.3)
-    
+
     if not plot_beta3.empty:
         ax2.plot(plot_beta3.index, plot_beta3, color='forestgreen', label='Beta_3 (Pure AI Shock)')
         if not period_returns.empty:
@@ -1141,12 +1240,18 @@ with fig_col1:
 
 with fig_col2:
     try:
+        X_shap = X.iloc[test_index] if len(test_index) > 0 else X
         explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X.iloc[test_index] if len(test_index) > 0 else X)
-        shap_values_to_plot = shap_values[1] if isinstance(shap_values, list) else shap_values
+        shap_values = explainer.shap_values(X_shap)
+        if isinstance(shap_values, list):
+            shap_values_to_plot = shap_values[1]
+        elif getattr(shap_values, "ndim", 2) == 3:
+            shap_values_to_plot = shap_values[:, :, 1]
+        else:
+            shap_values_to_plot = shap_values
 
         fig2 = plt.figure(figsize=(10, 8))
-        shap.summary_plot(shap_values_to_plot, X.iloc[test_index] if len(test_index) > 0 else X, feature_names=features, show=False)
+        shap.summary_plot(shap_values_to_plot, X_shap, feature_names=features, show=False)
         plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14)
         plt.tight_layout()
         st.pyplot(fig2)
