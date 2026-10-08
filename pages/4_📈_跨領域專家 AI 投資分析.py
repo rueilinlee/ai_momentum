@@ -100,7 +100,7 @@ def _fetch_company_list(suffix, candidates):
                 rows = df.to_dict("records")
             out = []
             for row in rows:
-                row = {str(k).lstrip("﻿").strip(): v for k, v in row.items()}
+                row = {str(k).lstrip("\ufeff").strip(): v for k, v in row.items()}
                 code = str(row.get("公司代號", "")).strip()
                 short = _norm(row.get("公司簡稱"))
                 full = _norm(row.get("公司名稱"))
@@ -338,7 +338,6 @@ def fetch_yahoo_tw(stock_code, hours=168):
     titles = []
     clean_code = stock_code.split('.')[0]
     
-    # 網址 1: 現代個股新聞專頁
     urls = [
         f"https://tw.stock.yahoo.com/quote/{clean_code}/news",
         f"https://tw.stock.yahoo.com/class-html?category=qsp-news&stock_id={clean_code}"
@@ -349,7 +348,6 @@ def fetch_yahoo_tw(stock_code, hours=168):
             res = requests.get(url, headers=HEADERS, timeout=5)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
-                # 抓取包含 /news/ 連結或特定 H3/A 標籤
                 elements = soup.find_all(['h3', 'a'], href=re.compile(r'/news/'))
                 if not elements:
                     elements = soup.find_all(['h3', 'a'], class_=lambda c: c and ('convert' in c or 'Fw' in c))
@@ -370,7 +368,6 @@ def fetch_google_news_rss(company_name, stock_code, hours=168):
     days = max(1, int(hours / 24))
     clean_code = stock_code.split('.')[0]
     
-    # 清理公司簡稱 (如將 "今國光 (6209.TW)" 提取為 "今國光")
     clean_name = company_name.split('(')[0].strip()
     search_query = f"{clean_name} {clean_code} when:{days}d"
     encoded_query = urllib.parse.quote(search_query)
@@ -384,7 +381,6 @@ def fetch_google_news_rss(company_name, stock_code, hours=168):
                 title_elem = item.find('title')
                 if title_elem is not None and title_elem.text:
                     title = title_elem.text.strip()
-                    # 去除 Google News 標題末尾來源 (例如 " - 自由時報")
                     title_clean = re.sub(r"\s*-\s*[^-]+$", "", title)
                     if title_clean and len(title_clean) > 6:
                         titles.append(title_clean)
@@ -399,14 +395,12 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     yahoo_titles = fetch_yahoo_tw(stock_code, hours)
     google_titles = fetch_google_news_rss(company_name, stock_code, hours)
 
-    # 記錄各新聞來源成功抓取的真實筆數
     sources_count = {
         "Google News": len(google_titles),
         "鉅亨網 Anue": len(anue_titles),
         "Yahoo 股市": len(yahoo_titles)
     }
 
-    # 合併不重複標題
     all_titles = list(set(anue_titles + yahoo_titles + google_titles))
 
     bullish = ["漲", "高", "強", "買超", "創高", "突破", "擴產", "營收揚升", "暢旺", "多方", "利多", "成長", "大賺", "雙增"]
@@ -1005,9 +999,7 @@ if risk_mode == "🤖 AI 跨期動態推算":
     chronic_penalty = 1.5 if avg_growth < 3.0 else 0.0
     calculated_risk = min(10.0, level_penalty + trend_penalty + chronic_penalty)
 
-    st.sidebar.info(f"**AI 動態推算 Risk = {calculated_risk:.1f}**
-
-"
+    st.sidebar.info(f"**AI 動態推算 Risk = {calculated_risk:.1f}**\n\n"
                     f"(包含絕對低迷: {level_penalty:.1f}, 跨期惡化: {trend_penalty:.1f}, 慢性衰退: {chronic_penalty:.1f})")
     risk_val = calculated_risk
 else:
@@ -1067,26 +1059,20 @@ def fmt_pct(v):
 
 if interval == "1d":
     freq_advice_text = (
-        "【日線 (1d) 頻率特性與模型建議】
-"
-        "• 適用場景：最適合中長線基本面分析、本益比評價（PE Valuation）、總體經濟與美股跨時區衝擊模型。
-"
+        "【日線 (1d) 頻率特性與模型建議】\n"
+        "• 適用場景：最適合中長線基本面分析、本益比評價（PE Valuation）、總體經濟與美股跨時區衝擊模型。\n"
         "• 模型優勢：樣本數充足、跨牛熊週期完整，Rolling OLS 與 LightGBM 機器學習預測之穩定度最高。"
     )
 elif interval in ["60m", "30m"]:
     freq_advice_text = (
-        f"【{selected_interval_label} 頻率特性與模型建議】
-"
-        "• 適用場景：適合結合機器學習分類（LightGBM）與動能區間（藍紅動能區）進行短線波段操作。
-"
+        f"【{selected_interval_label} 頻率特性與模型建議】\n"
+        "• 適用場景：適合結合機器學習分類（LightGBM）與動能區間（藍紅動能區）進行短線波段操作。\n"
         "• 模型提醒：美股衝擊以「前一個已收盤美股交易日」的日線值對應到每根 K 棒，分鐘線下 Beta/Gamma 僅適合觀察相對變化。"
     )
 else:
     freq_advice_text = (
-        f"【{selected_interval_label} 高頻特性與模型提醒】
-"
-        "• 適用場景：建議僅用於當日（Intraday）短線技術支撐、委買委賣跳動觀察及即時 RSI 超賣/超買點（藍紅動能區）模擬。
-"
+        f"【{selected_interval_label} 高頻特性與模型提醒】\n"
+        "• 適用場景：建議僅用於當日（Intraday）短線技術支撐、委買委賣跳動觀察及即時 RSI 超賣/超買點（藍紅動能區）模擬。\n"
         "• 嚴重限制：受限於 Yahoo Finance 高頻歷史資料天數僅約 60 天，樣本過短且易受市場微觀雜訊干擾，不適合做長期機器學習交叉驗證。"
     )
 
@@ -1117,7 +1103,6 @@ r_col5.metric("近 60 期", fmt_pct(ret_3m))
 st.markdown("---")
 st.markdown("### 📰 多來源真實新聞爬取筆數統計與輿情評分")
 
-# 新增：展示各新聞來源成功抓取筆數的指標卡片
 sc_col1, sc_col2, sc_col3, sc_col4 = st.columns(4)
 sc_col1.metric("🌐 Google News RSS", f"{sources_1w.get('Google News', 0)} 筆", "近 1 週成功爬取")
 sc_col2.metric("📰 鉅亨網 (Anue)", f"{sources_1w.get('鉅亨網 Anue', 0)} 筆", "近 1 週成功爬取")
@@ -1179,12 +1164,8 @@ left, right = st.columns(2)
 
 with left:
     st.subheader("一、AI 決策動能區間 (買賣點建議)")
-    st.info(f"**🟦 藍色動能區 (建議逢低試單點)**
-
-預估跌至 **{blue_price_target:.2f} 元** 時，RSI 將降至 {blue_rsi:.1f} (超賣區)。歷史數據顯示此時模型勝率最高，為極佳的防守反擊點。")
-    st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**
-
-預估漲至 **{red_price_target:.2f} 元** 時，RSI 將飆至 {red_rsi:.1f} (過熱區)。系統判定此時追高勝率極差，容易遭遇主力倒貨，建議分批停利。")
+    st.info(f"**🟦 藍色動能區 (建議逢低試單點)**\n\n預估跌至 **{blue_price_target:.2f} 元** 時，RSI 將降至 {blue_rsi:.1f} (超賣區)。歷史數據顯示此時模型勝率最高，為極佳的防守反擊點。")
+    st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**\n\n預估漲至 **{red_price_target:.2f} 元** 時，RSI 將飆至 {red_rsi:.1f} (過熱區)。系統判定此時追高勝率極差，容易遭遇主力倒貨，建議分批停利。")
 
     st.markdown("---")
     st.subheader("二、估值模型對照（動態非線性 vs 線性）")
