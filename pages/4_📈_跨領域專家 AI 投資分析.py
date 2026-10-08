@@ -405,7 +405,7 @@ def _eps_series(df):
     return None
 
 # ==========================================
-# 4. 跨時區對齊與特徵建構模組 (新增)
+# 4. 跨時區對齊與特徵建構模組
 # ==========================================
 def download_us_daily(years: int = 5) -> pd.DataFrame:
     """美股相關資料一律抓日線，避免與台股分鐘線時段無交集"""
@@ -574,7 +574,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"• 實際匯率風險 (USDTWD=X)：最新匯率 {ctx['fx_latest']:.2f}，年化波動率 {ctx['fx_annual_vol']:.2f}%。")
     doc.add_paragraph(f"• 模型安全邊際：近四季 TTM EPS {ctx['ttm']:.2f} 元，最悲觀防守安全價為 {ctx['real_safety_price']:.2f} 元。")
 
-    doc.add_heading("四、AI 模型預測與動ne區間", level=1)
+    doc.add_heading("四、AI 模型預測與動能區間", level=1)
     doc.add_paragraph(f"擊敗大盤勝率預測：{ctx['latest_proba']:.2%}")
     doc.add_paragraph(f"AI 建議逢低買點：{ctx['blue_price']:,.2f} 元 | 逢高賣出價：{ctx['red_price']:,.2f} 元")
 
@@ -906,8 +906,10 @@ tp_15x = eps_adj * 15.0
 pe_lower = max(15.0, pe_target - 0.5 * pe_std)
 tp_lower = eps_adj * pe_lower
 tp_base = eps_adj * pe_target
-tp_upper_1 = eps_adj * (pe_target + 1.0 * pe_std)
-tp_upper_2 = eps_adj * (pe_target + 2.0 * pe_std)
+pe_upper_1 = pe_target + 1.0 * pe_std
+tp_upper_1 = eps_adj * pe_upper_1
+pe_upper_2 = pe_target + 2.0 * pe_std
+tp_upper_2 = eps_adj * pe_upper_2
 
 upside = (tp_base / price - 1) * 100
 fwd_pe = price / eps_adj if eps_adj > 0 else 0.0
