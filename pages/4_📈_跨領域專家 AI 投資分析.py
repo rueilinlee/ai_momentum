@@ -410,9 +410,9 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
 
     if not all_titles:
         base_seed = sum(ord(c) for c in stock_code) + int(hours)
-        simulated_count = max(5, int(hours / 24) * 2)
-        bull_cnt = max(2, (base_seed % 7) + int(hours / 168))
-        bear_cnt = max(1, (base_seed % 4))
+        simulated_count = max(3, int(hours / 24) * 2)
+        bull_cnt = max(1, (base_seed % 5) + int(hours / 168))
+        bear_cnt = max(1, (base_seed % 3))
         s_score = round(min(9.5, max(3.5, 6.0 + (bull_cnt - bear_cnt) * 0.4)), 1)
         g_score = round(min(9.5, max(3.5, 6.2 + (bull_cnt - bear_cnt) * 0.3)), 1)
         status_msg = f"未抓取到即時新聞，已啟動智慧推算模型 (時段: {hours}H，模擬分析 {simulated_count} 筆輿情)"
@@ -603,7 +603,7 @@ def generate_word_report(ctx):
         r[0].text, r[1].text = period_name, ("資料不足" if val is None else f"{val:+.2f}%")
 
     doc.add_heading("二、新聞來源爬取筆數統計與輿情評分", level=1)
-    doc.add_paragraph("【各新聞管道成功爬取真實新聞筆數】")
+    doc.add_paragraph("【近 1 週各新聞管道成功爬取真實新聞筆數】")
     for src_name, src_cnt in ctx['sources_1w'].items():
         doc.add_paragraph(f"• {src_name}：成功抓取 {src_cnt} 篇新聞")
     
@@ -613,6 +613,7 @@ def generate_word_report(ctx):
     sh[0].text, sh[1].text, sh[2].text = "時間維度", "新聞情緒分數 (利多/利空/篇數)", "未來展望成長分數 (利多/利空/篇數)"
 
     sent_rows_data = [
+        ("近 48 小時 (48H)", ctx['sent_48h'], ctx['growth_48h'], ctx['b48h'], ctx['r48h'], ctx['c48h']),
         ("近 1 週 (168H)", ctx['sent_1w'], ctx['growth_1w'], ctx['b1w'], ctx['r1w'], ctx['c1w']),
         ("近 2 週 (336H)", ctx['sent_2w'], ctx['growth_2w'], ctx['b2w'], ctx['r2w'], ctx['c2w']),
         ("近 1 個月 (720H)", ctx['sent_1m'], ctx['growth_1m'], ctx['b1m'], ctx['r1m'], ctx['c1m']),
@@ -707,7 +708,8 @@ if not user_query:
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 執行多時段新聞爬蟲與量化評分
+# 執行多時段新聞爬蟲與量化評分 (包含新增之 48H)
+sent_48h, growth_48h, b48h, r48h, c48h, status_48h, titles_48h, sources_48h = comprehensive_quant_evaluation(symbol, company_name, hours=48)
 sent_1w, growth_1w, b1w, r1w, c1w, status_1w, titles_1w, sources_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
 sent_2w, growth_2w, b2w, r2w, c2w, status_2w, titles_2w, sources_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
 sent_1m, growth_1m, b1m, r1m, c1m, status_1m, titles_1m, sources_1m = comprehensive_quant_evaluation(symbol, company_name, hours=720)
@@ -985,7 +987,7 @@ pe_base = st.sidebar.number_input(
     help="系統已根據過去一年歷史股價中位數與 TTM EPS 自動定錨。"
 )
 
-st.sidebar.info(f"📰 輿情狀態：{status_1w}")
+st.sidebar.info(f"📰 輿情狀態 (48H)：{status_48h}")
 sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) [手動微調用]", 0.0, 10.0, float(sent_1w), 0.1)
 growth_score = st.sidebar.slider("展望成長評分 (0~10) [手動微調用]", 0.0, 10.0, float(growth_1w), 0.1)
 
@@ -1109,7 +1111,11 @@ sc_col2.metric("📰 鉅亨網 (Anue)", f"{sources_1w.get('鉅亨網 Anue', 0)} 
 sc_col3.metric("💹 Yahoo 股市", f"{sources_1w.get('Yahoo 股市', 0)} 筆", "近 1 週成功爬取")
 sc_col4.metric("📊 合併真實新聞 (去重)", f"{c1w} 篇", "用於量化評分標題數")
 
-s_col1, s_col2, s_col3, s_col4 = st.columns(4)
+# 擴充為 5 欄：包含新增的「近 48 小時 (48H)」
+s_col0, s_col1, s_col2, s_col3, s_col4 = st.columns(5)
+with s_col0:
+    st.metric("近 48 小時輿情情緒", f"{sent_48h:.1f} 分", f"利多:{b48h} | 利空:{r48h} | 篇數:{c48h}")
+    st.metric("近 48 小時展望成長", f"{growth_48h:.1f} 分", f"利多:{b48h} | 利空:{r48h} | 篇數:{c48h}")
 with s_col1:
     st.metric("近 1 週輿情情緒", f"{sent_1w:.1f} 分", f"利多:{b1w} | 利空:{r1w} | 篇數:{c1w}")
     st.metric("近 1 週展望成長", f"{growth_1w:.1f} 分", f"利多:{b1w} | 利空:{r1w} | 篇數:{c1w}")
@@ -1135,6 +1141,7 @@ ctx = {
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
     "blue_rsi": blue_rsi, "red_rsi": red_rsi,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
+    "sent_48h": sent_48h, "growth_48h": growth_48h, "b48h": b48h, "r48h": r48h, "c48h": c48h, "sources_48h": sources_48h,
     "sent_1w": sent_1w, "growth_1w": growth_1w, "b1w": b1w, "r1w": r1w, "c1w": c1w, "sources_1w": sources_1w,
     "sent_2w": sent_2w, "growth_2w": growth_2w, "b2w": b2w, "r2w": r2w, "c2w": c2w, "sources_2w": sources_2w,
     "sent_1m": sent_1m, "growth_1m": growth_1m, "b1m": b1m, "r1m": r1m, "c1m": c1m, "sources_1m": sources_1m,
@@ -1228,9 +1235,11 @@ with right:
         auc_txt = f"{np.mean(cv_test_auc):.3f}" if cv_test_auc else "N/A"
         st.caption(f"時序交叉驗證：平均準確率 {np.mean(cv_test_acc):.3f}｜平均 AUC {auc_txt}（{len(cv_test_acc)} 折）")
 
-    if titles_1w:
-        with st.expander("🔍 檢視近 1 週抓取到的新聞標題清單"):
-            for idx, t_title in enumerate(titles_1w[:10]):
+    # 提供近 48 小時與 1 週之熱門標題檢視
+    if titles_48h or titles_1w:
+        display_titles = titles_48h if titles_48h else titles_1w
+        with st.expander("🔍 檢視近 48 小時 / 1 週抓取到的新聞標題清單"):
+            for idx, t_title in enumerate(display_titles[:10]):
                 st.write(f"{idx+1}. {t_title}")
 
     st.subheader("四、實質風險與動態波動率量化模組")
