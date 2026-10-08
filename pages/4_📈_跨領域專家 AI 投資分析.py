@@ -405,7 +405,90 @@ def _eps_series(df):
     return None
 
 # ==========================================
-# 4. 藍紅動能區建議價格模擬器
+# 4. 跨時區對齊與特徵建構模組 (新增)
+# ==========================================
+def download_us_daily(years: int = 5) -> pd.DataFrame:
+    """美股相關資料一律抓日線，避免與台股分鐘線時段無交集"""
+    raw = yf.download(["NVDA", "^SOX", "^DJI", "^IRX"], period=f"{years}y",
+                        interval="1d", progress=False, session=session)["Close"]
+    if isinstance(raw, pd.Series):
+        raw = raw.to_frame()
+    raw = raw.loc[:, ~raw.columns.duplicated()]
+    raw.index = pd.DatetimeIndex(raw.index).tz_localize(None).normalize()
+    return raw
+
+def _to_bar_dates(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    idx = pd.DatetimeIndex(index)
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)  # 保留台北當地時間的日期
+    return idx.normalize()
+
+def _map_daily_to_bars(daily: pd.Series, bar_index: pd.DatetimeIndex) -> np.ndarray:
+    """
+    美股第 D 日收盤 ≈ 台北 D+1 日清晨，所以該值從 D+1 起才「已知」；
+    週末/假日以 ffill 沿用最近一個已知值，避免偷看未來。
+    """
+    s = daily.dropna().copy()
+    s.index = s.index + pd.Timedelta(days=1)
+    s = s[~s.index.duplicated(keep="last")].sort_index()
+    bar_dates = _to_bar_dates(bar_index)
+    union = s.index.union(bar_dates.unique())
+    return s.reindex(union).ffill().reindex(bar_dates).values
+
+def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.DataFrame,
+                        rf_tw_daily: float = 0.017 / 365):
+    """
+    回傳 (df, fwd_excess)：
+      df         已對齊、無 NaN 的特徵表 (以標的自身 K 棒為列)
+      fwd_excess 未來 5 期超額報酬，供建立 Target_Label
+    """
+    stock = market_data[symbol].dropna()
+    if "^TWII" in market_data.columns:
+        twii = market_data["^TWII"].reindex(stock.index).ffill()
+    else:
+        twii = pd.Series(stock.values, index=stock.index)  # 無大盤時退化為自身 (超額報酬=0)
+
+    # ---- 日線層級：NVDA 純淨衝擊 (扣除 DJI/SOX 與無風險利率) ----
+    us_ret = us_daily[[c for c in ["NVDA", "^SOX", "^DJI"] if c in us_daily.columns]].pct_change()
+    rf_us = (us_daily["^IRX"] / 100 / 365).ffill() if "^IRX" in us_daily.columns \
+        else pd.Series(0.01 / 365, index=us_daily.index)
+
+    shock = pd.Series(0.0, index=us_daily.index)
+    need = {"NVDA", "^SOX", "^DJI"}
+    if symbol.upper() != "NVDA" and need.issubset(us_ret.columns):
+        sub = us_ret.assign(RF=rf_us.reindex(us_ret.index).ffill()).dropna()
+        if len(sub) > 30:
+            y = sub["NVDA"] - sub["RF"]
+            X = sm.add_constant(pd.DataFrame({
+                "DJI_Excess": sub["^DJI"] - sub["RF"],
+                "SOX_Excess": sub["^SOX"] - sub["RF"]}, index=sub.index))
+            shock = sm.OLS(y, X).fit().resid.reindex(us_daily.index).fillna(0.0)
+
+    # ---- 以標的自身時間軸建表 ----
+    df = pd.DataFrame(index=stock.index)
+    df[symbol] = stock.pct_change()
+    df["^TWII"] = twii.pct_change()
+    df["NVDA_Pure_Shock"] = _map_daily_to_bars(shock, stock.index)
+    df["^SOX"] = _map_daily_to_bars(us_ret["^SOX"], stock.index) if "^SOX" in us_ret.columns else 0.0
+    df["RF_US"] = _map_daily_to_bars(rf_us, stock.index)
+    df["RF_TW"] = rf_tw_daily
+
+    df["Price_Mom_30D"] = (stock.pct_change(30) - twii.pct_change(30)).shift(1)
+    df["Price_Mom_5D"] = (stock.pct_change(5) - twii.pct_change(5)).shift(1)
+    df["Vol_10D"] = stock.pct_change().rolling(10).std().shift(1)
+
+    delta = stock.diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df["RSI_14"] = (100 - 100 / (1 + gain / loss)).shift(1)
+    df["Interaction_Term"] = df["NVDA_Pure_Shock"] * df["Price_Mom_30D"]
+
+    fwd_excess = stock.pct_change(5).shift(-5) - twii.pct_change(5).shift(-5)
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+    return df, fwd_excess
+
+# ==========================================
+# 5. 藍紅動能區建議價格模擬器
 # ==========================================
 def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     last_close = close_prices.iloc[-1]
@@ -444,7 +527,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 5. Word 報告生成
+# 6. Word 報告生成
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -491,7 +574,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"• 實際匯率風險 (USDTWD=X)：最新匯率 {ctx['fx_latest']:.2f}，年化波動率 {ctx['fx_annual_vol']:.2f}%。")
     doc.add_paragraph(f"• 模型安全邊際：近四季 TTM EPS {ctx['ttm']:.2f} 元，最悲觀防守安全價為 {ctx['real_safety_price']:.2f} 元。")
 
-    doc.add_heading("四、AI 模型預測與動能區間", level=1)
+    doc.add_heading("四、AI 模型預測與動ne區間", level=1)
     doc.add_paragraph(f"擊敗大盤勝率預測：{ctx['latest_proba']:.2%}")
     doc.add_paragraph(f"AI 建議逢低買點：{ctx['blue_price']:,.2f} 元 | 逢高賣出價：{ctx['red_price']:,.2f} 元")
 
@@ -503,7 +586,7 @@ def generate_word_report(ctx):
     return buf.getvalue()
 
 # ==========================================
-# 6. 側邊欄參數設定 (新增頻率選單)
+# 7. 側邊欄參數設定 (新增頻率選單)
 # ==========================================
 st.sidebar.title("⚙️ 標的與參數設定")
 
@@ -541,12 +624,11 @@ sent_1m, growth_1m, b1m, r1m, c1m, status_1m, titles_1m = comprehensive_quant_ev
 sent_2m, growth_2m, b2m, r2m, c2m, status_2m, titles_2m = comprehensive_quant_evaluation(symbol, company_name, hours=1440)
 
 # ==========================================
-# 7. 主程式執行與即時行情、計量模型運算
+# 8. 主程式執行與即時行情、計量模型運算
 # ==========================================
-with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時報價與多頻率市場資料，進行機器學習與價格模擬...'):
+with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時報價與跨時區對齊市場資料，進行機器學習與價格模擬...'):
     stock_code = symbol.split('.')[0]
     exchange = symbol.split('.')[1] if '.' in symbol else "TW"
-    tickers = [symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII']
     
     if interval in ["60m", "30m", "15m", "5m"]:
         fetch_start = None
@@ -557,15 +639,20 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
 
     end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
     
+    # 1. 抓取標的與大盤的 K 棒資料
+    target_tickers = [symbol, '^TWII']
     try:
         if fetch_period:
-            raw_market_data = yf.download(tickers, period=fetch_period, interval=interval, progress=False, session=session)['Close']
+            raw_market_data = yf.download(target_tickers, period=fetch_period, interval=interval, progress=False, session=session)['Close']
         else:
-            raw_market_data = yf.download(tickers, start=fetch_start, end=end_date, interval=interval, progress=False, session=session)['Close']
+            raw_market_data = yf.download(target_tickers, start=fetch_start, end=end_date, interval=interval, progress=False, session=session)['Close']
     except Exception:
         raw_market_data = yf.download(symbol, period="59d", interval=interval, progress=False, session=session)['Close']
 
-    market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
+    if isinstance(raw_market_data, pd.Series):
+        market_data = raw_market_data.to_frame(name=symbol)
+    else:
+        market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
 
     if symbol not in market_data.columns or market_data[symbol].dropna().empty:
         st.error(f"❌ 找不到 {symbol} 在 [{selected_interval_label}] 下的股價資料，或遭遇 Yahoo Finance 限制，請切換至日線或稍後再試。")
@@ -573,6 +660,10 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
 
     valid_stock_data = market_data[symbol].dropna()
     
+    # 2. 透過新模組取得美股日線並對齊至標的時間軸
+    us_daily_df = download_us_daily(years=4)
+    df, fwd_excess = build_feature_frame(symbol, market_data, us_daily_df, rf_tw_daily=0.017/365)
+
     try:
         tkr = yf.Ticker(symbol, session=session)
         price = float(tkr.fast_info['last_price'])
@@ -691,47 +782,10 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
-    available_tickers = [t for t in [symbol, 'NVDA', '^SOX', '^DJI', '^IRX', '^TWII'] if t in market_data.columns]
-    returns = market_data[available_tickers].pct_change().dropna()
-    
-    # 🛡️ 修正：安全處理無風險利率與報酬率的合併，避免欄位名稱重複衝突
-    if '^IRX' in market_data.columns:
-        rf_us_s = (market_data['^IRX'].dropna() / 100) / 365
-        df = returns.copy()
-        df['RF_US'] = rf_us_s
-        df = df.dropna(subset=['RF_US'])
-    else:
-        df = returns.copy()
-        df['RF_US'] = 0.01 / 365
-
-    df['RF_TW'] = 0.017 / 365 
-
-    twii_series = market_data['^TWII'] if '^TWII' in market_data.columns else pd.Series(0, index=market_data.index)
-    df['Price_Mom_30D'] = (market_data[symbol].pct_change(30) - twii_series.pct_change(30)).shift(1)
-    df['Price_Mom_5D'] = (market_data[symbol].pct_change(5) - twii_series.pct_change(5)).shift(1)
-    df['Vol_10D'] = market_data[symbol].pct_change().rolling(10).std().shift(1)
-
-    delta = market_data[symbol].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI_14'] = (100 - (100 / (1 + rs))).shift(1)
-    df = df.dropna()
-
-    if symbol.upper() == "NVDA" or 'NVDA' not in df.columns or '^SOX' not in df.columns or '^DJI' not in df.columns:
-        df['NVDA_Pure_Shock'] = 0.0
-    else:
-        Y_ortho = df['NVDA'] - df['RF_US']
-        X_ortho = pd.DataFrame({'DJI_Excess': df['^DJI'] - df['RF_US'], 'SOX_Excess': df['^SOX'] - df['RF_US']})
-        X_ortho = sm.add_constant(X_ortho)
-        df['NVDA_Pure_Shock'] = sm.OLS(Y_ortho, X_ortho).fit().resid 
-
-    df['Interaction_Term'] = df['NVDA_Pure_Shock'] * df['Price_Mom_30D']
-    Y_rolling = df[symbol] - df['RF_TW']
-    
+    # Rolling OLS 模型計算
+    Y_rolling = df[symbol] - df["RF_TW"]
     reg_features = [c for c in ['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term'] if c in df.columns]
-    X_rolling = df[reg_features]
-    X_rolling = sm.add_constant(X_rolling)
+    X_rolling = sm.add_constant(df[reg_features])
 
     roll_window = min(252, max(30, len(df) // 3))
     rolling_res = RollingOLS(Y_rolling, X_rolling, window=roll_window).fit()
@@ -746,8 +800,7 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     plot_beta3 = df['Beta_3_Rolling'].dropna()
 
     threshold = 0.005 
-    twii_col = twii_series.pct_change(5).shift(-5)
-    df['Target_Label'] = ((market_data[symbol].pct_change(5).shift(-5) - twii_col) > threshold).astype(int)
+    df['Target_Label'] = (fwd_excess > threshold).astype(int)
     df_ai = df.dropna()
 
     features = [c for c in ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D'] if c in df_ai.columns]
@@ -786,7 +839,7 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     gamma_trend_str = "加速湧入 ↗" if gamma_trend_val > 0 else "動能衰退 ↘"
 
 # ==========================================
-# 8. 側邊欄財報與估值覆寫設定
+# 9. 側邊欄財報與估值覆寫設定
 # ==========================================
 st.sidebar.markdown("---")
 st.sidebar.subheader("財報 EPS 設定")
@@ -829,7 +882,7 @@ else:
     risk_val = st.sidebar.slider("自訂下行風險折價", 0.0, 10.0, 1.0, 0.1)
 
 # ==========================================
-# 9. 估值核心計算
+# 10. 估值核心計算
 # ==========================================
 hot_triggered = beta3_trend_val > 0
 eps_triggered = ttm_eps_val > annual_eps_val > 0
@@ -873,7 +926,7 @@ def fmt_pct(v):
     return "資料不足" if v is None else f"{v:+.2f}%"
 
 # ==========================================
-# 10. 主畫面呈現
+# 11. 主畫面呈現
 # ==========================================
 st.title("📈 跨領域專家 AI 投資分析與量化預測")
 st.subheader(f"🏢 {company_name} — 【{selected_interval_label} 頻率】")
@@ -938,7 +991,7 @@ with right:
     col_m3.metric("資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
 
 # ==========================================
-# 11. 歷史回測與 SHAP 決策圖表
+# 12. 歷史回測與 SHAP 決策圖表
 # ==========================================
 st.markdown("---")
 st.markdown("### 📊 歷史波段回測與 SHAP AI 決策邏輯")
