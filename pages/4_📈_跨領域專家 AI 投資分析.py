@@ -41,26 +41,11 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
 # 1. 標的解析與中英文名稱對照機制
 # ==========================================
 LOCAL_NAME_MAP = {
-    "今國光": "6209",
-    "台積電": "2330",
-    "鴻海": "2317",
-    "聯發科": "2454",
-    "聯電": "2303",
-    "台達電": "2308",
-    "中華電": "2412",
-    "富邦金": "2881",
-    "國泰金": "2882",
-    "長榮": "2603",
-    "陽明": "2609",
-    "萬海": "2615",
-    "廣達": "2382",
-    "緯創": "3231",
-    "技嘉": "2376",
-    "華碩": "2357",
-    "宏碁": "2353",
-    "大立光": "3008",
-    "元太": "8069",
-    "世界": "5347",
+    "今國光": "6209", "台積電": "2330", "鴻海": "2317", "聯發科": "2454",
+    "聯電": "2303", "台達電": "2308", "中華電": "2412", "富邦金": "2881",
+    "國泰金": "2882", "長榮": "2603", "陽明": "2609", "萬海": "2615",
+    "廣達": "2382", "緯創": "3231", "技嘉": "2376", "華碩": "2357",
+    "宏碁": "2353", "大立光": "3008", "元太": "8069", "世界": "5347",
     "環球晶": "6488",
 }
 
@@ -272,7 +257,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 多管道真實新聞爬蟲與輿情評分模組 (升級版)
+# 2. 多管道真實新聞爬蟲與輿情評分模組 (升級與強化版)
 # ==========================================
 def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, growth_neg, base_adj=3.0):
     if not titles:
@@ -308,41 +293,47 @@ def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, 
 
     return final_sentiment, final_growth, total_bullish_hits, total_bearish_hits, count
 
-def fetch_anue_with_time(stock_code, hours=168):
-    """來源一：鉅亨網 (Anue) API 爬蟲"""
+def fetch_anue_with_time(stock_code, company_name="", hours=168):
+    """來源一：鉅亨網 (Anue) API 爬蟲（升級版：代號+中文名雙重備用檢索，修正時間戳記邏輯）"""
     titles = []
-    try:
-        clean_code = stock_code.split('.')[0]
-        url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={clean_code}&limit=50"
-        headers = {**HEADERS, "Referer": "https://news.cnyes.com/"}
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            items = data.get("items", {}).get("data", [])
-            now_ts = datetime.now().timestamp()
-            time_threshold = now_ts - (hours * 3600)
-            for item in items:
-                pub_time = item.get("publishAt", 0)
-                if pub_time > 100000000000:
-                    pub_time = pub_time / 1000.0
-                if pub_time >= time_threshold:
-                    title = item.get("title", "")
-                    if title and len(title) > 5:
-                        titles.append(title)
-    except Exception:
-        pass
+    clean_code = stock_code.split('.')[0]
+    clean_name = company_name.split('(')[0].strip() if company_name else ""
+    
+    # 使用代號與公司名稱進行多路檢索
+    keywords = list(filter(None, [clean_code, clean_name]))
+    now_ts = datetime.now().timestamp()
+    time_threshold = now_ts - (hours * 3600)
+    
+    for kw in keywords:
+        try:
+            url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={urllib.parse.quote(kw)}&limit=50"
+            headers = {**HEADERS, "Referer": "https://news.cnyes.com/"}
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                items = data.get("items", {}).get("data", [])
+                for item in items:
+                    pub_time = item.get("publishAt", 0)
+                    # 處理毫秒格式 (長度13碼)
+                    if pub_time > 10000000000:
+                        pub_time = pub_time / 1000.0
+                    # 若無法準確判斷時間或時間符合門檻皆予以列入
+                    if pub_time == 0 or pub_time >= time_threshold:
+                        title = item.get("title", "")
+                        if title and len(title) > 5:
+                            titles.append(title)
+        except Exception:
+            continue
     return list(set(titles))
 
 def fetch_yahoo_tw(stock_code, hours=168):
-    """來源二：Yahoo 股市新聞爬蟲 (多重備用網址)"""
+    """來源二：Yahoo 股市新聞爬蟲"""
     titles = []
     clean_code = stock_code.split('.')[0]
-    
     urls = [
         f"https://tw.stock.yahoo.com/quote/{clean_code}/news",
         f"https://tw.stock.yahoo.com/class-html?category=qsp-news&stock_id={clean_code}"
     ]
-    
     for url in urls:
         try:
             res = requests.get(url, headers=HEADERS, timeout=5)
@@ -351,7 +342,6 @@ def fetch_yahoo_tw(stock_code, hours=168):
                 elements = soup.find_all(['h3', 'a'], href=re.compile(r'/news/'))
                 if not elements:
                     elements = soup.find_all(['h3', 'a'], class_=lambda c: c and ('convert' in c or 'Fw' in c))
-                
                 for el in elements:
                     title = el.get_text().strip()
                     if title and len(title) > 8 and "Yahoo" not in title and "隱私權" not in title:
@@ -363,16 +353,14 @@ def fetch_yahoo_tw(stock_code, hours=168):
     return list(set(titles))
 
 def fetch_google_news_rss(company_name, stock_code, hours=168):
-    """來源三：Google News RSS 爬蟲 (極度穩定、支援中文關鍵字)"""
+    """來源三：Google News RSS 爬蟲"""
     titles = []
     days = max(1, int(hours / 24))
     clean_code = stock_code.split('.')[0]
-    
     clean_name = company_name.split('(')[0].strip()
     search_query = f"{clean_name} {clean_code} when:{days}d"
     encoded_query = urllib.parse.quote(search_query)
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    
     try:
         res = requests.get(rss_url, headers=HEADERS, timeout=5)
         if res.status_code == 200:
@@ -391,7 +379,7 @@ def fetch_google_news_rss(company_name, stock_code, hours=168):
 @st.cache_data(ttl=1800)
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     """整合各新聞管道，回傳統計筆數、情緒分數與新聞標題"""
-    anue_titles = fetch_anue_with_time(stock_code, hours)
+    anue_titles = fetch_anue_with_time(stock_code, company_name, hours)
     yahoo_titles = fetch_yahoo_tw(stock_code, hours)
     google_titles = fetch_google_news_rss(company_name, stock_code, hours)
 
@@ -572,7 +560,7 @@ def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.Dat
     return df, fwd_excess
 
 # ==========================================
-# 5. Word 報告生成
+# 5. Word 報告生成 (全時段爬取筆數完整輸出)
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -602,11 +590,30 @@ def generate_word_report(ctx):
         r = ret_table.add_row().cells
         r[0].text, r[1].text = period_name, ("資料不足" if val is None else f"{val:+.2f}%")
 
-    doc.add_heading("二、新聞來源爬取筆數統計與輿情評分", level=1)
-    doc.add_paragraph("【近 1 週各新聞管道成功爬取真實新聞筆數】")
-    for src_name, src_cnt in ctx['sources_1w'].items():
-        doc.add_paragraph(f"• {src_name}：成功抓取 {src_cnt} 篇新聞")
+    doc.add_heading("二、跨時間維度新聞爬取筆數與輿情評分統計", level=1)
     
+    # 全時段來源明細表格
+    src_table = doc.add_table(rows=1, cols=5)
+    src_table.style = "Table Grid"
+    sch = src_table.rows[0].cells
+    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text = "時間維度", "Google News RSS", "鉅亨網 (Anue)", "Yahoo 股市", "合併去重篇數"
+    
+    sources_summary = [
+        ("近 48 小時", ctx['sources_48h'], ctx['c48h']),
+        ("近 1 週", ctx['sources_1w'], ctx['c1w']),
+        ("近 2 週", ctx['sources_2w'], ctx['c2w']),
+        ("近 1 個月", ctx['sources_1m'], ctx['c1m']),
+        ("近 2 個月", ctx['sources_2m'], ctx['c2m']),
+    ]
+    for p_label, src_dict, merged_c in sources_summary:
+        row_cells = src_table.add_row().cells
+        row_cells[0].text = p_label
+        row_cells[1].text = f"{src_dict.get('Google News', 0)} 筆"
+        row_cells[2].text = f"{src_dict.get('鉅亨網 Anue', 0)} 筆"
+        row_cells[3].text = f"{src_dict.get('Yahoo 股市', 0)} 筆"
+        row_cells[4].text = f"{merged_c} 篇"
+
+    doc.add_paragraph("")
     sent_table = doc.add_table(rows=1, cols=3)
     sent_table.style = "Table Grid"
     sh = sent_table.rows[0].cells
@@ -626,6 +633,7 @@ def generate_word_report(ctx):
         sr[2].text = f"{g_val:.1f} 分 (利多:{b_cnt}, 利空:{r_cnt}, 篇數:{total_c})"
 
     if ctx['news_titles']:
+        doc.add_paragraph("")
         doc.add_paragraph("近期抓取之代表性新聞標題：")
         for title in ctx['news_titles'][:5]:
             doc.add_paragraph(f"• {title}", style="List Bullet")
@@ -708,7 +716,7 @@ if not user_query:
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 執行多時段新聞爬蟲與量化評分 (包含新增之 48H)
+# 執行多時段新聞爬蟲與量化評分 (完整包含 48H, 1W, 2W, 1M, 2M)
 sent_48h, growth_48h, b48h, r48h, c48h, status_48h, titles_48h, sources_48h = comprehensive_quant_evaluation(symbol, company_name, hours=48)
 sent_1w, growth_1w, b1w, r1w, c1w, status_1w, titles_1w, sources_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
 sent_2w, growth_2w, b2w, r2w, c2w, status_2w, titles_2w, sources_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
@@ -1105,13 +1113,18 @@ r_col5.metric("近 60 期", fmt_pct(ret_3m))
 st.markdown("---")
 st.markdown("### 📰 多來源真實新聞爬取筆數統計與輿情評分")
 
-sc_col1, sc_col2, sc_col3, sc_col4 = st.columns(4)
-sc_col1.metric("🌐 Google News RSS", f"{sources_1w.get('Google News', 0)} 筆", "近 1 週成功爬取")
-sc_col2.metric("📰 鉅亨網 (Anue)", f"{sources_1w.get('鉅亨網 Anue', 0)} 筆", "近 1 週成功爬取")
-sc_col3.metric("💹 Yahoo 股市", f"{sources_1w.get('Yahoo 股市', 0)} 筆", "近 1 週成功爬取")
-sc_col4.metric("📊 合併真實新聞 (去重)", f"{c1w} 篇", "用於量化評分標題數")
+# 新增：跨時間維度來源爬取筆數總覽表格 (含 48H, 1W, 2W, 1M, 2M)
+st.markdown("#### 🌐 跨時間維度新聞管道爬取成功筆數對照表")
+src_df_data = [
+    {"時間維度": "近 48 小時 (48H)", "Google News RSS": f"{sources_48h.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_48h.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_48h.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c48h} 篇"},
+    {"時間維度": "近 1 週 (168H)", "Google News RSS": f"{sources_1w.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_1w.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_1w.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c1w} 篇"},
+    {"時間維度": "近 2 週 (336H)", "Google News RSS": f"{sources_2w.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_2w.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_2w.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c2w} 篇"},
+    {"時間維度": "近 1 個月 (720H)", "Google News RSS": f"{sources_1m.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_1m.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_1m.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c1m} 篇"},
+    {"時間維度": "近 2 個月 (1440H)", "Google News RSS": f"{sources_2m.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_2m.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_2m.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c2m} 篇"},
+]
+st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-# 擴充為 5 欄：包含新增的「近 48 小時 (48H)」
+st.markdown("#### 📊 各時間維度 NLP 情緒與展望評分")
 s_col0, s_col1, s_col2, s_col3, s_col4 = st.columns(5)
 with s_col0:
     st.metric("近 48 小時輿情情緒", f"{sent_48h:.1f} 分", f"利多:{b48h} | 利空:{r48h} | 篇數:{c48h}")
@@ -1235,7 +1248,6 @@ with right:
         auc_txt = f"{np.mean(cv_test_auc):.3f}" if cv_test_auc else "N/A"
         st.caption(f"時序交叉驗證：平均準確率 {np.mean(cv_test_acc):.3f}｜平均 AUC {auc_txt}（{len(cv_test_acc)} 折）")
 
-    # 提供近 48 小時與 1 週之熱門標題檢視
     if titles_48h or titles_1w:
         display_titles = titles_48h if titles_48h else titles_1w
         with st.expander("🔍 檢視近 48 小時 / 1 週抓取到的新聞標題清單"):
