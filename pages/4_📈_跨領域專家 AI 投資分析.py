@@ -40,27 +40,14 @@ def get_taiwan_time_str(fmt="%Y-%m-%d %H:%M:%S"):
 # 1. 標的解析與中英文名稱對照機制
 # ==========================================
 LOCAL_NAME_MAP = {
-    "今國光": "6209",
-    "台積電": "2330",
-    "鴻海": "2317",
-    "聯發科": "2454",
-    "聯電": "2303",
-    "台達電": "2308",
-    "中華電": "2412",
-    "富邦金": "2881",
-    "國泰金": "2882",
-    "長榮": "2603",
-    "陽明": "2609",
-    "萬海": "2615",
-    "廣達": "2382",
-    "緯創": "3231",
-    "技嘉": "2376",
-    "華碩": "2357",
-    "宏碁": "2353",
-    "大立光": "3008",
-    "元太": "8069",
-    "世界": "5347",
-    "環球晶": "6488",
+    "穩懋": "3105", "亞元": "6109", "今國光": "6209",
+    "台積電": "2330", "鴻海": "2317", "聯發科": "2454",
+    "聯電": "2303", "台達電": "2308", "中華電": "2412",
+    "富邦金": "2881", "國泰金": "2882", "長榮": "2603",
+    "陽明": "2609", "萬海": "2615", "廣達": "2382",
+    "緯創": "3231", "技嘉": "2376", "華碩": "2357",
+    "宏碁": "2353", "大立光": "3008", "元太": "8069",
+    "世界": "5347", "環球晶": "6488",
 }
 
 HEADERS = {
@@ -408,7 +395,6 @@ def _eps_series(df):
 # 4. 跨時區對齊與特徵建構模組
 # ==========================================
 def download_us_daily(years: int = 5) -> pd.DataFrame:
-    """美股相關資料一律抓日線，避免與台股分鐘線時段無交集"""
     raw = yf.download(["NVDA", "^SOX", "^DJI", "^IRX"], period=f"{years}y",
                         interval="1d", progress=False, session=session)["Close"]
     if isinstance(raw, pd.Series):
@@ -420,14 +406,10 @@ def download_us_daily(years: int = 5) -> pd.DataFrame:
 def _to_bar_dates(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     idx = pd.DatetimeIndex(index)
     if idx.tz is not None:
-        idx = idx.tz_localize(None)  # 保留台北當地時間的日期
+        idx = idx.tz_localize(None)
     return idx.normalize()
 
 def _map_daily_to_bars(daily: pd.Series, bar_index: pd.DatetimeIndex) -> np.ndarray:
-    """
-    美股第 D 日收盤 ≈ 台北 D+1 日清晨，所以該值從 D+1 起才「已知」；
-    週末/假日以 ffill 沿用最近一個已知值，避免偷看未來。
-    """
     s = daily.dropna().copy()
     s.index = s.index + pd.Timedelta(days=1)
     s = s[~s.index.duplicated(keep="last")].sort_index()
@@ -437,18 +419,12 @@ def _map_daily_to_bars(daily: pd.Series, bar_index: pd.DatetimeIndex) -> np.ndar
 
 def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.DataFrame,
                         rf_tw_daily: float = 0.017 / 365):
-    """
-    回傳 (df, fwd_excess)：
-      df         已對齊、無 NaN 的特徵表 (以標的自身 K 棒為列)
-      fwd_excess 未來 5 期超額報酬，供建立 Target_Label
-    """
     stock = market_data[symbol].dropna()
     if "^TWII" in market_data.columns:
         twii = market_data["^TWII"].reindex(stock.index).ffill()
     else:
-        twii = pd.Series(stock.values, index=stock.index)  # 無大盤時退化為自身 (超額報酬=0)
+        twii = pd.Series(stock.values, index=stock.index)
 
-    # ---- 日線層級：NVDA 純淨衝擊 (扣除 DJI/SOX 與無風險利率) ----
     us_ret = us_daily[[c for c in ["NVDA", "^SOX", "^DJI"] if c in us_daily.columns]].pct_change()
     rf_us = (us_daily["^IRX"] / 100 / 365).ffill() if "^IRX" in us_daily.columns \
         else pd.Series(0.01 / 365, index=us_daily.index)
@@ -464,7 +440,6 @@ def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.Dat
                 "SOX_Excess": sub["^SOX"] - sub["RF"]}, index=sub.index))
             shock = sm.OLS(y, X).fit().resid.reindex(us_daily.index).fillna(0.0)
 
-    # ---- 以標的自身時間軸建表 ----
     df = pd.DataFrame(index=stock.index)
     df[symbol] = stock.pct_change()
     df["^TWII"] = twii.pct_change()
@@ -527,7 +502,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 6. Word 報告生成
+# 6. Word 報告生成 (包含頻率評估與提醒)
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -538,9 +513,11 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"資料頻率設定：{ctx['interval_label']}")
     doc.add_paragraph(f"最新即時成交價：{ctx['price']:,.2f}（成交時間 {ctx['trade_date']}，當日漲跌 {ctx['change_txt']}）")
     doc.add_paragraph(f"AI 動態非線性模型目標價：{ctx['tp_base']:,.2f}（{ctx['rec']}）")
+    doc.add_paragraph(f"線性基準模型目標價：{ctx['tp_linear']:,.2f}")
     doc.add_paragraph(f"藍色動能區（建議買點）：{ctx['blue_price']:,.2f} 元 | 紅色動能區（建議賣價）：{ctx['red_price']:,.2f} 元")
+    doc.add_paragraph(f"目標價區間：[{ctx['tp_lower']:,.0f}, {ctx['tp_upper_2']:,.0f}]")
 
-    doc.add_heading("一、多期報酬率表現", level=1)
+    doc.add_heading("一、技術動能與多期報酬率表現", level=1)
     ret_table = doc.add_table(rows=1, cols=2)
     ret_table.style = "Table Grid"
     rh = ret_table.rows[0].cells
@@ -549,6 +526,8 @@ def generate_word_report(ctx):
         ("近 1 期 (K棒)", ctx['ret_1w']),
         ("近 5 期 (K棒)", ctx['ret_2w']),
         ("近 20 期 (K棒)", ctx['ret_1m']),
+        ("近 40 期 (K棒)", ctx['ret_2m']),
+        ("近 60 期 (K棒)", ctx['ret_3m']),
     ]
     for period_name, val in returns_data:
         r = ret_table.add_row().cells
@@ -563,6 +542,8 @@ def generate_word_report(ctx):
     sent_rows_data = [
         ("近 1 週 (168H)", ctx['sent_1w'], ctx['growth_1w'], ctx['b1w'], ctx['r1w'], ctx['c1w']),
         ("近 2 週 (336H)", ctx['sent_2w'], ctx['growth_2w'], ctx['b2w'], ctx['r2w'], ctx['c2w']),
+        ("近 1 個月 (720H)", ctx['sent_1m'], ctx['growth_1m'], ctx['b1m'], ctx['r1m'], ctx['c1m']),
+        ("近 2 個月 (1440H)", ctx['sent_2m'], ctx['growth_2m'], ctx['b2m'], ctx['r2m'], ctx['c2m']),
     ]
     for p_name, s_val, g_val, b_cnt, r_cnt, total_c in sent_rows_data:
         sr = sent_table.add_row().cells
@@ -570,13 +551,35 @@ def generate_word_report(ctx):
         sr[1].text = f"{s_val:.1f} 分 (利多:{b_cnt}, 利空:{r_cnt}, 篇數:{total_c})"
         sr[2].text = f"{g_val:.1f} 分 (利多:{b_cnt}, 利空:{r_cnt}, 篇數:{total_c})"
 
-    doc.add_heading("三、實質風險與波動率動態量化模組", level=1)
-    doc.add_paragraph(f"• 實際匯率風險 (USDTWD=X)：最新匯率 {ctx['fx_latest']:.2f}，年化波動率 {ctx['fx_annual_vol']:.2f}%。")
-    doc.add_paragraph(f"• 模型安全邊際：近四季 TTM EPS {ctx['ttm']:.2f} 元，最悲觀防守安全價為 {ctx['real_safety_price']:.2f} 元。")
+    doc.add_heading("三、K線頻率特性與模型應用提醒", level=1)
+    doc.add_paragraph(ctx['freq_advice'])
 
-    doc.add_heading("四、AI 模型預測與動能區間", level=1)
-    doc.add_paragraph(f"擊敗大盤勝率預測：{ctx['latest_proba']:.2%}")
-    doc.add_paragraph(f"AI 建議逢低買點：{ctx['blue_price']:,.2f} 元 | 逢高賣出價：{ctx['red_price']:,.2f} 元")
+    doc.add_heading("四、估值模型（動態非線性 vs 線性）", level=1)
+    doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x，目標價 {ctx['tp_base']:,.2f}")
+    doc.add_paragraph(f"線性基準 PE = {ctx['pe_linear']:.1f}x，目標價 {ctx['tp_linear']:,.2f}（使用未調整 EPS）")
+    doc.add_paragraph(f"調整後預估 EPS：{ctx['eps_adj']:.2f}（基礎 {ctx['eps_base']}）")
+
+    doc.add_heading("五、財務數據檢核", level=1)
+    table = doc.add_table(rows=1, cols=3)
+    table.style = "Table Grid"
+    h = table.rows[0].cells
+    h[0].text, h[1].text, h[2].text = "指標", "數值", "資料來源"
+    for label, val in ctx["q_eps"]:
+        r = table.add_row().cells
+        r[0].text, r[1].text, r[2].text = f"單季 EPS ({label})", f"{val:.2f}", "Yahoo Finance"
+    rows = [
+        ("近 4 季 EPS (TTM)", f"{ctx['ttm']:.2f}", ctx["ttm_src"]),
+        ("最近年度 EPS", f"{ctx['annual']:.2f}", ctx["annual_src"]),
+        ("歷史本益比", f"{ctx['hist_pe']:.1f} 倍", "股價 / TTM EPS"),
+        ("遠期本益比", f"{ctx['fwd_pe']:.1f} 倍", "股價 / 調整後預估 EPS"),
+    ]
+    for a, b, c in rows:
+        r = table.add_row().cells
+        r[0].text, r[1].text, r[2].text = a, b, c
+
+    doc.add_heading("六、風險提示", level=1)
+    for r in ctx["risks"]:
+        doc.add_paragraph(f"{r[0]}：{r[1]} — {r[2]}", style="List Bullet")
 
     doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
@@ -586,13 +589,13 @@ def generate_word_report(ctx):
     return buf.getvalue()
 
 # ==========================================
-# 7. 側邊欄參數設定 (新增頻率選單)
+# 7. 側邊欄參數設定
 # ==========================================
 st.sidebar.title("⚙️ 標的與參數設定")
 
 with st.sidebar.form(key="search_form"):
     user_query = st.text_input(
-        "輸入公司名稱或代號（如 今國光, 6209, 台積電, 2330, NVDA）", value="2330"
+        "輸入公司名稱或代號（如 6109, 3105, 2330, NVDA）", value="6109"
     ).strip()
     
     interval_options = {
@@ -639,7 +642,6 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
 
     end_date = (datetime.today() + timedelta(days=1)).strftime('%Y-%m-%d')
     
-    # 1. 抓取標的與大盤的 K 棒資料
     target_tickers = [symbol, '^TWII']
     try:
         if fetch_period:
@@ -660,7 +662,6 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
 
     valid_stock_data = market_data[symbol].dropna()
     
-    # 2. 透過新模組取得美股日線並對齊至標的時間軸
     us_daily_df = download_us_daily(years=4)
     df, fwd_excess = build_feature_frame(symbol, market_data, us_daily_df, rf_tw_daily=0.017/365)
 
@@ -727,62 +728,9 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     except Exception:
         pass
 
-    fx_latest, fx_annual_vol, fx_low, fx_high = 32.0, 4.5, 30.5, 33.5
-    try:
-        fx_data = yf.download("USDTWD=X", period="1y", interval="1d", progress=False, session=session)
-        if not fx_data.empty:
-            fx_close = fx_data['Close']
-            if isinstance(fx_close, pd.DataFrame):
-                fx_close = fx_close.iloc[:, 0]
-            fx_latest = float(fx_close.iloc[-1])
-            fx_std = float(fx_close.pct_change().std())
-            fx_annual_vol = fx_std * math.sqrt(252) * 100
-            fx_low = fx_latest * (1 - fx_annual_vol / 100)
-            fx_high = fx_latest * (1 + fx_annual_vol / 100)
-    except Exception:
-        pass
-
-    stock_vol_1y = 25.0
-    actual_max_pe, actual_min_pe, real_safety_price = 25.0, 10.0, 10.0
-    try:
-        s_full = yf.download(symbol, period="1y", interval="1d", progress=False, session=session)
-        if not s_full.empty:
-            s_close = s_full['Close']
-            if isinstance(s_close, pd.DataFrame):
-                s_close = s_close.iloc[:, 0]
-            stock_vol_1y = float(s_close.pct_change().std() * math.sqrt(252) * 100)
-            
-            high_p = float(s_full['High'].max().iloc[0] if isinstance(s_full['High'].max(), pd.Series) else s_full['High'].max())
-            low_p = float(s_full['Low'].min().iloc[0] if isinstance(s_full['Low'].min(), pd.Series) else s_full['Low'].min())
-            
-            base_eps_for_risk = ttm_eps if ttm_eps and ttm_eps > 0 else 1.0
-            actual_max_pe = high_p / base_eps_for_risk
-            actual_min_pe = low_p / base_eps_for_risk
-            real_safety_price = base_eps_for_risk * actual_min_pe
-    except Exception:
-        pass
-
-    vol_5d, vol_20d, vol_ratio = 20.0, 20.0, 1.0
-    try:
-        recent_rets = valid_stock_data.pct_change().dropna()
-        if len(recent_rets) >= 20:
-            vol_5d = float(recent_rets.tail(5).std() * math.sqrt(252) * 100)
-            vol_20d = float(recent_rets.tail(20).std() * math.sqrt(252) * 100)
-            vol_ratio = vol_5d / vol_20d if vol_20d > 0 else 1.0
-    except Exception:
-        pass
-
-    if vol_ratio > 1.2:
-        vol_signal = "🚨 [減碼/防守訊號] 短期波動急遽放大，市場情緒劇烈，不宜盲目追高"
-    elif vol_ratio < 0.8:
-        vol_signal = "🎯 [加碼/佈局訊號] 短期波動極度壓縮，適合低檔分批建倉"
-    else:
-        vol_signal = "⚖️ [觀望/中性訊號] 多空力道平衡，維持原有部位"
-
     blue_price_target, blue_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=40, mode='drop')
     red_price_target, red_rsi = calculate_target_price_for_rsi(valid_stock_data, target_rsi=70, mode='rise')
 
-    # Rolling OLS 模型計算
     Y_rolling = df[symbol] - df["RF_TW"]
     reg_features = [c for c in ['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term'] if c in df.columns]
     X_rolling = sm.add_constant(df[reg_features])
@@ -854,32 +802,18 @@ if use_manual:
     ttm_eps_val = st.sidebar.number_input("近 4 季 EPS (TTM)", value=float(ttm_eps or 3.0), step=0.1, format="%.2f")
     annual_eps_val = st.sidebar.number_input("最近年度 EPS", value=float(annual_eps or ttm_eps_val), step=0.1, format="%.2f")
     ttm_src = annual_src = "手動輸入"
-    annual_year_display = ""
 else:
     ttm_eps_val, annual_eps_val = ttm_eps or 3.0, annual_eps or 3.0
     ttm_src = annual_src = "Yahoo Finance"
-    annual_year_display = annual_year_str
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("估值模型變數")
 eps_fwd_base = st.sidebar.number_input("基礎預估 Forward EPS", min_value=0.01, value=float(max(0.5, round(ttm_eps_val * 1.1, 2))), step=0.1, format="%.2f")
 pe_base = st.sidebar.number_input("產業中樞本益比 (PE_base)", min_value=1.0, value=float(round(auto_pe_base, 1)))
 
-st.sidebar.info(f"📰 輿情狀態：{status_1w}")
 sentiment = st.sidebar.slider("新聞聲量情緒 (0~10)", 0.0, 10.0, float(sent_1w), 0.1)
 growth_score = st.sidebar.slider("展望成長評分 (0~10)", 0.0, 10.0, float(growth_1w), 0.1)
-
-st.sidebar.markdown("---")
-risk_mode = st.sidebar.radio("下行風險折價 (-PE) 設定模式", ["🤖 AI 跨期動態推算", "✋ 手動設定"])
-
-if risk_mode == "🤖 AI 跨期動態推算":
-    level_penalty = max(0, 5.0 - sent_1w) * 0.5 + max(0, 5.0 - growth_1w) * 1.2
-    trend_penalty = max(0, sent_1m - sent_1w) * 0.5 + max(0, growth_1m - growth_1w) * 1.0
-    avg_growth = (growth_1w + growth_2w + growth_1m) / 3
-    chronic_penalty = 1.5 if avg_growth < 3.0 else 0.0
-    risk_val = min(10.0, level_penalty + trend_penalty + chronic_penalty)
-else:
-    risk_val = st.sidebar.slider("自訂下行風險折價", 0.0, 10.0, 1.0, 0.1)
+risk = st.sidebar.slider("下行風險折價 (-PE)", 0.0, 10.0, 1.0, 0.1)
 
 # ==========================================
 # 10. 估值核心計算
@@ -895,37 +829,62 @@ growth_exp = alpha_g * amp_factor * (math.exp(beta_g * growth_score) - 1)
 sent_diff = sentiment - 5.0
 sentiment_exp = alpha_s * amp_factor * math.copysign(1, sent_diff) * (math.exp(beta_s * abs(sent_diff)) - 1)
 
-pe_target_raw = pe_base + sentiment_exp + growth_exp - risk_val
+pe_target_raw = pe_base + sentiment_exp + growth_exp - risk
 pe_target = min(max(pe_target_raw, pe_base * 0.5), pe_base * 2.0)
 pe_capped = pe_target != pe_target_raw
 
-pe_linear = max(1.0, pe_base + (sentiment - 5.0) * 0.4 + max(growth_score - 5.0, 0.0) * 0.6 - risk_val)
+pe_linear = pe_base + (sentiment - 5.0) * 0.4 + max(growth_score - 5.0, 0.0) * 0.6 - risk
+pe_linear = max(pe_linear, 1.0)
 tp_linear = eps_fwd_base * pe_linear
 
-tp_15x = eps_adj * 15.0
-pe_lower = max(15.0, pe_target - 0.5 * pe_std)
-tp_lower = eps_adj * pe_lower
+pe_upper_2 = pe_target + 4.0
+pe_lower = max(min(pe_base - 3.0, pe_target - 3.0), 1.0)
+pe_upper_1 = pe_target + 2.0
+
 tp_base = eps_adj * pe_target
-pe_upper_1 = pe_target + 1.0 * pe_std
-tp_upper_1 = eps_adj * pe_upper_1
-pe_upper_2 = pe_target + 2.0 * pe_std
 tp_upper_2 = eps_adj * pe_upper_2
+tp_upper_1 = eps_adj * pe_upper_1
+tp_lower = eps_adj * pe_lower
 
 upside = (tp_base / price - 1) * 100
 fwd_pe = price / eps_adj if eps_adj > 0 else 0.0
 hist_pe = price / ttm_eps_val if ttm_eps_val > 0 else 0.0
 
-if latest_proba > 0.55 and beta3_trend_val > 0:
-    rec_title, rec_desc = "強烈作多", "建議買進"
-elif latest_proba < 0.45:
-    rec_title, rec_desc = "保守觀望", "建議賣出"
+if upside >= 10:
+    rec, rec_icon = "建議買進", "🟢"
+elif upside <= -10:
+    rec, rec_icon = "建議賣出", "🔴"
 else:
-    rec_title, rec_desc = "中性震盪", "建議持有"
+    rec, rec_icon = "中性持有", "🟡"
 
-rec_icon = "🟢" if "買" in rec_desc else ("🔴" if "賣" in rec_desc else "🟡")
+risks = [
+    ("總體經濟風險", "利率與匯率波動", "可能造成毛利與評價短期波動"),
+    ("市場競爭風險", "同業擴產與需求變化", "需持續追蹤訂單能見度"),
+    ("模型風險", "參數多為主觀設定", "請以多組情境檢視，勿單一依賴目標價"),
+]
 
 def fmt_pct(v):
     return "資料不足" if v is None else f"{v:+.2f}%"
+
+# 依選擇的頻率動態產生對應提醒內容
+if interval == "1d":
+    freq_advice_text = (
+        "【日線 (1d) 頻率特性與模型建議】\n"
+        "• 適用場景：最適合中長線基本面分析、本益比評價（PE Valuation）、總體經濟與美股跨時區衝擊模型。\n"
+        "• 模型優勢：樣本數充足、跨牛熊週期完整，Rolling OLS 與 LightGBM 機器學習預測之穩定度最高。"
+    )
+elif interval in ["60m", "30m"]:
+    freq_advice_text = (
+        f"【{selected_interval_label} 頻率特性與模型建議】\n"
+        "• 適用場景：適合結合機器學習分類（LightGBM）與動能區間（藍紅動能區）進行短線波段操作。\n"
+        "• 模型提醒：每日多達 4-5 根 K 棒，滾動窗口（Rolling Window）已自動放大至 4-5 倍以維持統計顯著性，能靈敏反應盤中法人與輿情動態。"
+    )
+else:
+    freq_advice_text = (
+        f"【{selected_interval_label} 高頻特性與模型提醒】\n"
+        "• 適用場景：建議僅用於當日（Intraday）短線技術支撐、委買委賣跳動觀察及即時 RSI 超賣/超買點（藍紅動能區）模擬。\n"
+        "• 嚴重限制：受限於 Yahoo Finance 高頻歷史資料天數僅約 60 天，樣本過短且易受市場微觀雜訊（Microstructure noise）干擾，不適合做長期機器學習交叉驗證與跨月回測。"
+    )
 
 # ==========================================
 # 11. 主畫面呈現
@@ -937,9 +896,9 @@ st.warning(DISCLAIMER)
 
 change_txt = fmt_pct(change)
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("最新即時成交價", f"${price:,.2f}", f"{trade_date} ({change_txt})")
-c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間")
-c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
+c1.metric("最新收盤價", f"${price:,.2f}", f"{trade_date} ({change_txt})")
+c2.metric("動態模型目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間")
+c3.metric("綜合評等", rec, rec_icon)
 c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper_2:,.0f}]")
 
 st.markdown("---")
@@ -951,22 +910,48 @@ r_col3.metric("近 20 期", fmt_pct(ret_1m))
 r_col4.metric("近 40 期", fmt_pct(ret_2m))
 r_col5.metric("近 60 期", fmt_pct(ret_3m))
 
+st.markdown("---")
+st.markdown("### 📰 多時段財經新聞輿情與展望成長評分")
+s_col1, s_col2, s_col3, s_col4 = st.columns(4)
+with s_col1:
+    st.metric("近 1 週輿情情緒", f"{sent_1w:.1f} 分", f"利多:{b1w} | 利空:{r1w} | 篇數:{c1w}")
+    st.metric("近 1 週展望成長", f"{growth_1w:.1f} 分", f"利多:{b1w} | 利空:{r1w} | 篇數:{c1w}")
+with s_col2:
+    st.metric("近 2 週輿情情緒", f"{sent_2w:.1f} 分", f"利多:{b2w} | 利空:{r2w} | 篇數:{c2w}")
+    st.metric("近 2 週展望成長", f"{growth_2w:.1f} 分", f"利多:{b2w} | 利空:{r2w} | 篇數:{c2w}")
+with s_col3:
+    st.metric("近 1 個月輿情情緒", f"{sent_1m:.1f} 分", f"利多:{b1m} | 利空:{r1m} | 篇數:{c1m}")
+    st.metric("近 1 個月展望成長", f"{growth_1m:.1f} 分", f"利多:{b1m} | 利空:{r1m} | 篇數:{c1m}")
+with s_col4:
+    st.metric("近 2 個月輿情情緒", f"{sent_2m:.1f} 分", f"利多:{b2m} | 利空:{r2m} | 篇數:{c2m}")
+    st.metric("近 2 個月展望成長", f"{growth_2m:.1f} 分", f"利多:{b2m} | 利空:{r2m} | 篇數:{c2m}")
+
+if titles_1w:
+    with st.expander("🔍 檢視近 1 週抓取到的新聞標題清單"):
+        for idx, t_title in enumerate(titles_1w[:10]):
+            st.write(f"{idx+1}. {t_title}")
+
+st.markdown("---")
+st.info(freq_advice_text)
+
 ctx = {
     "name": company_name, "interval_label": selected_interval_label, "price": price, "trade_date": trade_date,
     "change_txt": change_txt, "tp_base": tp_base, "tp_linear": tp_linear,
-    "tp_15x": tp_15x, "tp_lower": tp_lower, "tp_upper_1": tp_upper_1, "tp_upper_2": tp_upper_2, 
-    "pe_lower": pe_lower, "pe_target": pe_target, "pe_upper_1": pe_upper_1, "pe_upper_2": pe_upper_2,
-    "rec": f"{rec_title} ({rec_desc})",
-    "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
-    "blue_rsi": blue_rsi, "red_rsi": red_rsi,
+    "tp_lower": tp_lower, "tp_upper": tp_upper_2, "tp_upper_2": tp_upper_2, "rec": f"{rec} ({rec_icon})",
+    "hot_1m": growth_1w, "hot_3m": growth_2w,
+    "ret_05m_txt": fmt_pct(ret_2w), "ret_3m_txt": fmt_pct(ret_3m),
+    "pe_target": pe_target, "pe_linear": pe_linear,
+    "eps_adj": eps_adj, "eps_base": eps_fwd_base,
+    "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
+    "ttm_src": ttm_src, "annual_src": annual_src,
+    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "risks": risks,
+    "blue_price": blue_price_target, "red_price": red_price_target,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
     "sent_1w": sent_1w, "growth_1w": growth_1w, "b1w": b1w, "r1w": r1w, "c1w": c1w,
     "sent_2w": sent_2w, "growth_2w": growth_2w, "b2w": b2w, "r2w": r2w, "c2w": c2w,
-    "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol,
-    "stock_vol_1y": stock_vol_1y, "real_safety_price": real_safety_price,
-    "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
-    "ttm_src": ttm_src, "annual_src": annual_src, "annual_year": annual_year_str,
-    "news_titles": titles_1w
+    "sent_1m": sent_1m, "growth_1m": growth_1m, "b1m": b1m, "r1m": r1m, "c1m": c1m,
+    "sent_2m": sent_2m, "growth_2m": growth_2m, "b2m": b2m, "r2m": r2m, "c2m": c2m,
+    "freq_advice": freq_advice_text
 }
 
 st.download_button(
@@ -981,61 +966,52 @@ st.divider()
 left, right = st.columns(2)
 
 with left:
-    st.subheader("一、AI 決策動能區間 (買賣點建議)")
-    st.info(f"**🟦 藍色動能區 (建議逢低試單點)**\n\n預估跌至 **{blue_price_target:.2f} 元** 時，RSI 將降至 {blue_rsi:.1f} (超賣區)。")
-    st.warning(f"**🟥 紅色動能區 (建議逢高賣出價)**\n\n預估漲至 **{red_price_target:.2f} 元** 時，RSI 將飆至 {red_rsi:.1f} (過熱區)。")
+    st.subheader("一、技術動能與產業熱點")
+    st.info(f"展望成長評分：近 1 月 {growth_1w} / 10，近 2 月 {growth_2w} / 10")
+    t1, t2 = st.columns(2)
+    t1.metric("近 5 期報酬", fmt_pct(ret_2w))
+    t2.metric("近 60 期報酬", fmt_pct(ret_3m))
+
+    st.subheader("二、估值模型（動態非線性 vs 線性）")
+    st.markdown(
+        f"🔥 **AI 晶片純度趨勢（放大 PE 端）：** `{'是' if hot_triggered else '否'}` "
+        f"（Beta_3 趨勢 {beta3_trend_val:.4f}，放大係數 {amp_factor:.3f}x）"
+    )
+    st.markdown(
+        f"📈 **EPS 成長觸發（調整 EPS 端）：** `{'是' if eps_triggered else '否'}` "
+        f"（TTM {ttm_eps_val} vs 年度 {annual_eps_val}，EPS 乘數 {eps_multiplier:.3f}x）"
+    )
+    st.markdown("---")
+    st.markdown(f"🚀 **動態非線性：** PE **{pe_target:.1f}x** → 目標價 **${tp_base:,.0f}**")
+    if pe_capped:
+        st.caption(f"⚠️ 原始 PE {pe_target_raw:.1f}x 超出 0.5~2 倍產業 PE 範圍，已套用上下限。")
+    st.markdown(f"📉 **線性基準：** PE **{pe_linear:.1f}x** → 目標價 **${tp_linear:,.0f}**（使用未調整 EPS）")
+    st.markdown("---")
+    st.markdown(f"✨ **調整後 Forward EPS：** **{eps_adj:.2f}**（基礎 {eps_fwd_base}）")
+
+    s1, s2, s3 = st.columns(3)
+    s1.metric("悲觀 (Bear)", f"${tp_lower:,.0f}", f"PE: {pe_lower:.1f}x", delta_color="off")
+    s2.metric("基準 (Base)", f"${tp_base:,.0f}", f"PE: {pe_target:.1f}x", delta_color="off")
+    s3.metric("樂觀 (Bull)", f"${tp_upper_2:,.0f}", f"PE: {pe_upper_2:.1f}x", delta_color="off")
 
 with right:
-    st.subheader("二、AI 模型與波動率指標")
-    col_m1, col_m2, col_m3 = st.columns(3)
-    col_m1.metric("模型預測勝率", f"{latest_proba:.2%}")
-    col_m2.metric("AI 晶片純度趨勢", beta3_trend_str, f"{current_beta3:.4f}")
-    col_m3.metric("資金擁擠度", gamma_trend_str, f"{current_gamma:.4f}", delta_color="inverse")
+    st.subheader("三、財務檢核")
+    f1, f2, f3 = st.columns(3)
+    f1.metric("TTM EPS", f"{ttm_eps_val:.2f}", ttm_src, delta_color="off")
+    f2.metric("年度 EPS", f"{annual_eps_val:.2f}", annual_src, delta_color="off")
+    f3.metric("遠期 P/E", f"{fwd_pe:.1f}x")
 
-# ==========================================
-# 12. 歷史回測與 SHAP 決策圖表
-# ==========================================
-st.markdown("---")
-st.markdown("### 📊 歷史波段回測與 SHAP AI 決策邏輯")
+    st.markdown("**近 4 季單季 EPS：**")
+    if q_eps_list:
+        st.dataframe(
+            pd.DataFrame(q_eps_list, columns=["財報季度", "單季 EPS (元)"]),
+            hide_index=True,
+        )
+    else:
+        st.caption("Yahoo Finance 未提供單季 EPS 資料。")
 
-if not plot_beta3.empty:
-    min_beta3_date = plot_beta3.idxmin()
-    period_returns = market_data[symbol].loc[min_beta3_date:plot_beta3.loc[min_beta3_date:].idxmax()].pct_change().dropna()
-else:
-    period_returns = pd.Series(dtype=float)
-
-fig_col1, fig_col2 = st.columns(2)
-
-with fig_col1:
-    fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
-    if not plot_gamma.empty:
-        ax1.plot(plot_gamma.index, plot_gamma, color='purple', label='Gamma (Crowding)')
-    ax1.axhline(0, color='red', linestyle='--'); ax1.legend(loc='upper left'); ax1.grid(True, alpha=0.3)
-    
-    if not plot_beta3.empty:
-        ax2.plot(plot_beta3.index, plot_beta3, color='forestgreen', label='Beta_3 (Pure AI Shock)')
-        if not period_returns.empty:
-            ax2.axvspan(period_returns.index[0], period_returns.index[-1], color='yellow', alpha=0.2, label='Surge Period')
-    ax2.axhline(0, color='red', linestyle='--'); ax2.legend(loc='upper left'); ax2.grid(True, alpha=0.3)
-
-    if not period_returns.empty:
-        cum_returns = (1 + period_returns).cumprod() - 1
-        ax3.plot(cum_returns.index, cum_returns, color='darkred', label='Cumulative Return')
-    ax3.legend(loc='upper left'); ax3.grid(True, alpha=0.3)
-    fig1.suptitle(f'[{symbol}] {selected_interval_label} Econometric Surge Backtest', fontsize=14)
-    plt.tight_layout()
-    st.pyplot(fig1)
-
-with fig_col2:
-    try:
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X.iloc[test_index] if len(test_index) > 0 else X)
-        shap_values_to_plot = shap_values[1] if isinstance(shap_values, list) else shap_values
-
-        fig2 = plt.figure(figsize=(10, 8))
-        shap.summary_plot(shap_values_to_plot, X.iloc[test_index] if len(test_index) > 0 else X, feature_names=features, show=False)
-        plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14)
-        plt.tight_layout()
-        st.pyplot(fig2)
-    except Exception as e:
-        st.info(f"目前樣本數下無法渲染 SHAP 圖表：{e}")
+    st.subheader("四、風險提示")
+    st.dataframe(
+        pd.DataFrame(risks, columns=["風險維度", "關鍵影響因子", "影響評估"]),
+        hide_index=True,
+    )
