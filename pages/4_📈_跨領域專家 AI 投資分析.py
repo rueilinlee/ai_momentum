@@ -220,7 +220,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 爬蟲與強化非線性動態梯度評分引擎
+# 2. 改採 MoneyDJ 與中時 RSS 及 Google News 支援時間過濾的爬蟲引擎
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_finbert_model():
@@ -263,12 +263,12 @@ def analyze_sentiment_finbert_nonlinear(titles, hours=168):
     except Exception:
         return None, 0, 0
 
-def fetch_rss_feed(url, keyword, hours=168):
+def fetch_rss_feed_timed(rss_url, keyword, hours=168):
     titles = []
     items_with_time = []
     time_threshold = datetime.now() - timedelta(hours=hours)
     try:
-        res = requests.get(url, headers=HEADERS, timeout=5)
+        res = requests.get(rss_url, headers=HEADERS, timeout=5)
         if res.status_code == 200:
             root = ET.fromstring(res.content)
             for item in root.findall('.//item'):
@@ -289,154 +289,50 @@ def fetch_rss_feed(url, keyword, hours=168):
     except Exception: pass
     return titles, items_with_time
 
-def fetch_cnyes_rss_timed(stock_code, company_name, hours=168):
+def fetch_moneydj_rss_timed(stock_code, company_name, hours=168):
+    clean_code = stock_code.split('.')[0]
     clean_name = company_name.split('(')[0].strip()
-    url = "https://news.cnyes.com/rss/category/tw_stock"
-    titles, items = fetch_rss_feed(url, clean_name, hours)
+    rss_url = f"https://www.moneydj.com/KMDJ/rss/rss.aspx?svc=NW&a={clean_code}"
+    titles, items = fetch_rss_feed_timed(rss_url, clean_code, hours)
     if not titles:
-        titles, items = fetch_anue_with_time_timed(stock_code, company_name, hours)
+        # 備用 Google News 搜尋 MoneyDJ
+        g_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:moneydj.com&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        titles, items = fetch_rss_feed_timed(g_url, clean_name, hours)
     return titles, items
 
-def fetch_yahoo_rss_timed(stock_code, hours=168):
-    clean_code = stock_code.split('.')[0]
-    url = f"https://tw.stock.yahoo.com/rss?s={clean_code}.TW"
-    titles, items = fetch_rss_feed(url, clean_code, hours)
-    if not titles:
-        titles_raw = fetch_yahoo_tw(stock_code, hours)
-        titles = titles_raw
-        items = [(t, datetime.now()) for t in titles_raw]
-    return titles, items
-
-def fetch_edn_cny_rss_timed(company_name, hours=168):
+def fetch_chinatimes_rss_timed(company_name, stock_code, hours=168):
     clean_name = company_name.split('(')[0].strip()
-    titles = []
-    items = []
-    time_threshold = datetime.now() - timedelta(hours=hours)
-    rss_sources = [
-        f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:money.udn.com&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
-        f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:ctee.com.tw&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    ]
-    for rss_url in rss_sources:
-        try:
-            res = requests.get(rss_url, headers=HEADERS, timeout=4)
-            if res.status_code == 200:
-                root = ET.fromstring(res.text)
-                for item in root.findall('.//item'):
-                    t_elem = item.find('title')
-                    d_elem = item.find('pubDate')
-                    if t_elem is not None and t_elem.text:
-                        t_clean = re.sub(r"\s*-\s*[^-]+$", "", t_elem.text.strip())
-                        pub_dt = datetime.now()
-                        if d_elem is not None and d_elem.text:
-                            try:
-                                from email.utils import parsedate_to_datetime
-                                pub_dt = parsedate_to_datetime(d_elem.text).replace(tzinfo=None)
-                            except Exception: pass
-                        if pub_dt >= time_threshold and t_clean and len(t_clean) > 6:
-                            titles.append(t_clean)
-                            items.append((t_clean, pub_dt))
-        except Exception: continue
-    return list(set(titles)), items
-
-def fetch_anue_with_time_timed(stock_code, company_name="", hours=168):
-    titles = []
-    items = []
     clean_code = stock_code.split('.')[0]
-    clean_name = company_name.split('(')[0].strip() if company_name else ""
-    keywords = list(filter(None, [clean_code, clean_name]))
-    time_threshold = datetime.now().timestamp() - (hours * 3600)
-    
-    for kw in keywords:
-        page = 1
-        while page <= 3:
-            url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={urllib.parse.quote(kw)}&limit=20&page={page}"
-            try:
-                res = requests.get(url, headers={**HEADERS, "Referer": "https://news.cnyes.com/"}, timeout=5)
-                if res.status_code != 200: break
-                data_items = res.json().get("items", {}).get("data", [])
-                if not data_items: break
-                for item in data_items:
-                    pub_time = item.get("publishAt", 0)
-                    if pub_time > 10000000000: pub_time /= 1000.0
-                    if pub_time >= time_threshold:
-                        title = item.get("title", "")
-                        if title and len(title) > 5:
-                            titles.append(title)
-                            items.append((title, datetime.fromtimestamp(pub_time)))
-                page += 1
-            except Exception: break
-    return titles, items
-
-def fetch_yahoo_tw(stock_code, hours=168):
-    titles = []
-    clean_code = stock_code.split('.')[0]
-    offset = 0
-    while offset <= 30:
-        url = f"https://tw.stock.yahoo.com/_td/api/resource/StockQuoteNews;limit=20;offset={offset};symbol={clean_code}.TW"
-        try:
-            res = requests.get(url, headers=HEADERS, timeout=5)
-            if res.status_code == 200:
-                lst = res.json().get("list", [])
-                if not lst: break
-                for item in lst:
-                    title = item.get("title", "")
-                    if title and len(title) > 8: titles.append(title)
-                offset += 20
-            else: break
-        except Exception: break
-    return list(set(titles))
+    rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:chinatimes.com&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    return fetch_rss_feed_timed(rss_url, clean_code, hours)
 
 def fetch_google_news_rss_timed(company_name, stock_code, hours=168):
-    titles = []
-    items = []
     clean_code = stock_code.split('.')[0]
     clean_name = company_name.split('(')[0].strip()
     days_total = max(1, int(hours / 24))
-    
     now = datetime.now()
     date_after = (now - timedelta(days=days_total)).strftime("%Y-%m-%d")
     date_before = now.strftime("%Y-%m-%d")
     
     search_query = f"{clean_name} {clean_code} after:{date_after} before:{date_before}"
     rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(search_query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    try:
-        res = requests.get(rss_url, headers=HEADERS, timeout=4)
-        if res.status_code == 200:
-            root = ET.fromstring(res.text)
-            for item in root.findall('.//item'):
-                t_elem = item.find('title')
-                d_elem = item.find('pubDate')
-                if t_elem is not None and t_elem.text:
-                    title_clean = re.sub(r"\s*-\s*[^-]+$", "", t_elem.text.strip())
-                    pub_dt = now
-                    if d_elem is not None and d_elem.text:
-                        try:
-                            from email.utils import parsedate_to_datetime
-                            pub_dt = parsedate_to_datetime(d_elem.text).replace(tzinfo=None)
-                        except Exception: pass
-                    if title_clean and len(title_clean) > 6:
-                        titles.append(title_clean)
-                        items.append((title_clean, pub_dt))
-    except Exception: pass
-    return list(set(titles)), items
+    return fetch_rss_feed_timed(rss_url, clean_code, hours)
 
 @st.cache_data(ttl=1800)
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     g_titles, g_items = fetch_google_news_rss_timed(company_name, stock_code, hours)
-    a_titles, a_items = fetch_cnyes_rss_timed(stock_code, company_name, hours)
-    y_titles, y_items = fetch_yahoo_rss_timed(stock_code, hours)
-    e_titles, e_items = fetch_edn_cny_rss_timed(company_name, hours)
+    m_titles, m_items = fetch_moneydj_rss_timed(stock_code, company_name, hours)
+    c_titles, c_items = fetch_chinatimes_rss_timed(company_name, stock_code, hours)
 
     sources_count = {
         "Google News": len(g_titles), 
-        "鉅亨網": len(a_titles), 
-        "Yahoo 股市": len(y_titles),
-        "經濟/工商": len(e_titles)
+        "MoneyDJ": len(m_titles), 
+        "中時新聞網": len(c_titles)
     }
     
     seen = set()
     unique_items = []
-    for title, dt in (g_items + a_items + y_items + e_items):
+    for title, dt in (g_items + m_items + c_items):
         clean_t = re.sub(r"\s+", "", title)
         if clean_t not in seen:
             seen.add(clean_t)
@@ -628,10 +524,10 @@ def generate_word_report(ctx):
         r[3].text = ("-" if h_p is None else f"${h_p:,.2f}")
 
     doc.add_heading("三、新聞輿情與 FinBERT 跨時間維度量化評分", level=1)
-    src_table = doc.add_table(rows=1, cols=10)
+    src_table = doc.add_table(rows=1, cols=9)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
-    headers_list = ["時間", "Google", "鉅亨網", "Yahoo", "經/工商", "去重篇數", "情緒多/空", "展望多/空", "熱點(分)", "綜合評估"]
+    headers_list = ["時間", "Google", "MoneyDJ", "中時", "去重篇數", "情緒多/空", "展望多/空", "熱點(分)", "綜合評估"]
     for idx, h_text in enumerate(headers_list): sch[idx].text = h_text
 
     for p_label, src_dict, merged_c, b_cnt, r_cnt, gp_cnt, gn_cnt, h_val in [
@@ -644,14 +540,13 @@ def generate_word_report(ctx):
         r = src_table.add_row().cells
         r[0].text = p_label
         r[1].text = str(src_dict.get('Google News', 0))
-        r[2].text = str(src_dict.get('鉅亨網', 0))
-        r[3].text = str(src_dict.get('Yahoo 股市', 0))
-        r[4].text = str(src_dict.get('經濟/工商', 0))
-        r[5].text = str(merged_c)
-        r[6].text = f"{b_cnt}/{r_cnt}"
-        r[7].text = f"{gp_cnt}/{gn_cnt}"
-        r[8].text = f"{h_val:.1f}"
-        r[9].text = "FinBERT"
+        r[2].text = str(src_dict.get('MoneyDJ', 0))
+        r[3].text = str(src_dict.get('中時新聞網', 0))
+        r[4].text = str(merged_c)
+        r[5].text = f"{b_cnt}/{r_cnt}"
+        r[6].text = f"{gp_cnt}/{gn_cnt}"
+        r[7].text = f"{h_val:.1f}"
+        r[8].text = "FinBERT"
 
     doc.add_heading("四、本益比評價子項拆解與情境目標價", level=1)
     doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x ｜ 輿情情緒權重：{ctx['sentiment_exp']:+.2f}x ｜ 展望成長權重：{ctx['growth_exp']:+.2f}x")
@@ -834,7 +729,7 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     beta3_trend_val = df['Beta_3_Trend_5D'].dropna().iloc[-1] if df['Beta_3_Trend_5D'].notna().any() else 0.0
 
     # -------------------------------------------------------------------
-    # 優化：特徵驅動動態轉折點預測演算法 (取代原先寫死的陣列)
+    # 動態特徵驅動轉折點預測演算法
     # -------------------------------------------------------------------
     current_rsi_series = df['RSI_14'].dropna()
     current_rsi = float(current_rsi_series.iloc[-1]) if not current_rsi_series.empty else 50.0
@@ -845,25 +740,17 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     current_gamma_series = df['Gamma_Trend_5D'].dropna()
     current_gamma_trend = float(current_gamma_series.iloc[-1]) if not current_gamma_series.empty else 0.0
 
-    # 1. 決定方向
-    if latest_proba > 0.55:
-        turning_direction = "向上突破 ↗"
-    elif latest_proba < 0.45:
-        turning_direction = "向下回檔 ↘"
-    else:
-        turning_direction = "震盪整理 ↔"
+    if latest_proba > 0.55: turning_direction = "向上突破 ↗"
+    elif latest_proba < 0.45: turning_direction = "向下回檔 ↘"
+    else: turning_direction = "震盪整理 ↔"
 
-    # 2. 決定轉折急迫性與對應的 K 棒
     rsi_extreme_dist = max(0.0, abs(current_rsi - 50.0) - 15.0) / 35.0
     vol_factor = min(1.0, current_vol * 20.0)
     urgency = float(np.clip(rsi_extreme_dist * 0.5 + vol_factor * 0.3 + abs(current_gamma_trend) * 10.0, 0, 1))
 
-    if urgency > 0.7:
-        w = np.array([0.4, 0.3, 0.15, 0.1, 0.05])
-    elif urgency > 0.4:
-        w = np.array([0.1, 0.25, 0.4, 0.15, 0.1])
-    else:
-        w = np.array([0.05, 0.15, 0.3, 0.3, 0.2])
+    if urgency > 0.7: w = np.array([0.4, 0.3, 0.15, 0.1, 0.05])
+    elif urgency > 0.4: w = np.array([0.1, 0.25, 0.4, 0.15, 0.1])
+    else: w = np.array([0.05, 0.15, 0.3, 0.3, 0.2])
 
     model_conf = abs(latest_proba - 0.5) * 2.0
     w[0] += model_conf * 0.1
@@ -872,10 +759,7 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
 
     turning_bar_idx = int(np.argmax(w)) + 1
     turning_bar_name = f"第 {turning_bar_idx} 根 K"
-
-    # 3. 計算動態轉折發生機率
-    turning_bar_prob = 35.0 + (model_conf * 45.0) + (current_vol * 150.0) + (w[turning_bar_idx-1] * 20.0)
-    turning_bar_prob = float(np.clip(turning_bar_prob, 25.0, 92.5))
+    turning_bar_prob = float(np.clip(35.0 + (model_conf * 45.0) + (current_vol * 150.0) + (w[turning_bar_idx-1] * 20.0), 25.0, 92.5))
     # -------------------------------------------------------------------
 
     base_rsi_oversold, base_rsi_overbought = 40.0, 70.0
@@ -975,17 +859,17 @@ r_col4.metric("近 40 期", fmt_pct(ret_2m), f"低 {fmt_price(low_2m)} / 高 {fm
 r_col5.metric("近 60 期", fmt_pct(ret_3m), f"低 {fmt_price(low_3m)} / 高 {fmt_price(high_3m)}")
 
 st.markdown("---")
-st.markdown("### 📰 多來源真實新聞爬取與 FinBERT 量化評分 (含近 48H 與多空筆數)")
+st.markdown("### 📰 多來源真實新聞爬取與 FinBERT 量化評分 (Google News + MoneyDJ + 中時)")
 src_df_data = [
-    {"時間": "近 48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網',0), "Yahoo": s_48h.get('Yahoo 股市',0), "經/工商": s_48h.get('經濟/工商',0), "去重篇數": c48h, "情緒多/空": f"{b48h}/{r48h}", "展望多/空": f"{gp48h}/{gn48h}"},
-    {"時間": "近 1W (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網',0), "Yahoo": s_1w.get('Yahoo 股市',0), "經/工商": s_1w.get('經濟/工商',0), "去重篇數": c1w, "情緒多/空": f"{b1w}/{r1w}", "展望多/空": f"{gp1w}/{gn1w}"},
-    {"時間": "近 2W (336H)", "Google News": s_2w.get('Google News',0), "鉅亨網": s_2w.get('鉅亨網',0), "Yahoo": s_2w.get('Yahoo 股市',0), "經/工商": s_2w.get('經濟/工商',0), "去重篇數": c2w, "情緒多/空": f"{b2w}/{r2w}", "展望多/空": f"{gp2w}/{gn2w}"},
-    {"時間": "近 1M (720H)", "Google News": s_1m.get('Google News',0), "鉅亨網": s_1m.get('鉅亨網',0), "Yahoo": s_1m.get('Yahoo 股市',0), "經/工商": s_1m.get('經濟/工商',0), "去重篇數": c1m, "情緒多/空": f"{b1m}/{r1m}", "展望多/空": f"{gp1m}/{gn1m}"},
-    {"時間": "近 2M (1440H)", "Google News": s_2m.get('Google News',0), "鉅亨網": s_2m.get('鉅亨網',0), "Yahoo": s_2m.get('Yahoo 股市',0), "經/工商": s_2m.get('經濟/工商',0), "去重篇數": c2m, "情緒多/空": f"{b2m}/{r2m}", "展望多/空": f"{gp2m}/{gn2m}"},
+    {"時間": "近 48H", "Google News": s_48h.get('Google News',0), "MoneyDJ": s_48h.get('MoneyDJ',0), "中時": s_48h.get('中時新聞網',0), "去重篇數": c48h, "情緒多/空": f"{b48h}/{r48h}", "展望多/空": f"{gp48h}/{gn48h}"},
+    {"時間": "近 1W (168H)", "Google News": s_1w.get('Google News',0), "MoneyDJ": s_1w.get('MoneyDJ',0), "中時": s_1w.get('中時新聞網',0), "去重篇數": c1w, "情緒多/空": f"{b1w}/{r1w}", "展望多/空": f"{gp1w}/{gn1w}"},
+    {"時間": "近 2W (336H)", "Google News": s_2w.get('Google News',0), "MoneyDJ": s_2w.get('MoneyDJ',0), "中時": s_2w.get('中時新聞網',0), "去重篇數": c2w, "情緒多/空": f"{b2w}/{r2w}", "展望多/空": f"{gp2w}/{gn2w}"},
+    {"時間": "近 1M (720H)", "Google News": s_1m.get('Google News',0), "MoneyDJ": s_1m.get('MoneyDJ',0), "中時": s_1m.get('中時新聞網',0), "去重篇數": c1m, "情緒多/空": f"{b1m}/{r1m}", "展望多/空": f"{gp1m}/{gn1m}"},
+    {"時間": "近 2M (1440H)", "Google News": s_2m.get('Google News',0), "MoneyDJ": s_2m.get('MoneyDJ',0), "中時": s_2m.get('中時新聞網',0), "去重篇數": c2m, "情緒多/空": f"{b2m}/{r2m}", "展望多/空": f"{gp2m}/{gn2m}"},
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分 (已套用貝氏平滑與非線性漸近線演算法)")
+st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分 (已啟用時間序列 RSS 過濾)")
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
     st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"FinBERT情緒:{sent_48h:.1f} (多:{b48h}/空:{r48h})")
@@ -1001,7 +885,7 @@ with h_col4:
     st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1m:.1f} (多:{gp1m}/空:{gn1m})</span>", unsafe_allow_html=True)
 with h_col5:
     st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"FinBERT情緒:{sent_2m:.1f} (多:{b2m}/空:{r2m})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gp2m}/空:{gn2m})</span>", unsafe_allow_html=True)
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gp41}/空:{gn4})</span>", unsafe_allow_html=True)
 
 st.markdown("---")
 st.subheader("🎯 本益比評價子項拆解與情境目標價")
