@@ -888,6 +888,24 @@ with fig_col2:
     except Exception as e: 
         st.info(f"SHAP 渲染失敗：{e}")
 
+# 1. SHAP 說明區塊
+shap_desc_html = """
+<div style='color: #006400; background-color: #f0fdf4; padding: 12px; border-radius: 8px; border-left: 5px solid #2e8b57; margin-top: 10px; font-size: 14px;'>
+<b>💡 SHAP 圖表解讀：</b> 顯示各特徵對未來5天正報酬的推升（右側）與壓抑（左側）作用。紅點為高特徵值，藍點為低特徵值。
+</div>
+"""
+st.markdown(shap_desc_html, unsafe_allow_html=True)
+
+# 2. 回測圖說明區塊
+backtest_desc_html = """
+<div style='color: #006400; background-color: #f0fdf4; padding: 12px; border-radius: 8px; border-left: 5px solid #2e8b57; margin-top: 10px; font-size: 14px;'>
+<b>💡 回測圖解讀：</b> 
+<br>• <b>Gamma（紫線）</b>：大於0表資金簇擁，小於0表資金退潮。
+<br>• <b>Beta_3（綠線）</b>：衡量 AI 供應鏈純度，黃色區間為動能爆發推升期（Surge）。
+<br>• <b>累積報酬（紅線）</b>：驗證模型在爆發期前後捕捉波段主升段的成效。
+</div>
+"""
+st.markdown(backtest_desc_html, unsafe_allow_html=True)
 ctx = {
     "name": company_name, "interval_label": interval_label, "price": price, "change_txt": fmt_pct(change),
     "latest_proba": latest_proba, "rec": rec_title, "blue_price": blue_price, "red_price": red_price,
