@@ -374,7 +374,7 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     return s_score, g_score, h_score, max(1, bull_cnt), max(0, bear_cnt), len(all_titles), all_titles, sources_count
 
 # ==========================================
-# 3. 行情財報擷取與機器學習特徵 (含 NLP 整合)
+# 3. 行情財報擷取與機器學習特徵 (含日內與 NLP)
 # ==========================================
 def _eps_series(df):
     if df is None or getattr(df, "empty", True): return None
@@ -391,19 +391,15 @@ def download_us_daily(years: int = 5) -> pd.DataFrame:
     raw.index = pd.DatetimeIndex(raw.index).tz_localize(None).normalize()
     return raw
 
-def _to_bar_dates(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    idx = pd.DatetimeIndex(index)
-    if idx.tz is not None: idx = idx.tz_localize(None)
-    return idx.normalize()
-
 def _map_daily_to_bars(daily: pd.Series, bar_index: pd.DatetimeIndex) -> np.ndarray:
     s = daily.dropna().copy()
-    bar_dates = _to_bar_dates(bar_index)
-    if s.empty: return np.full(len(bar_dates), np.nan)
+    if s.empty: return np.full(len(bar_index), 0.0) # 修正：若無資料回傳 0.0 防呆
     s.index = s.index + pd.Timedelta(days=1)
     s = s[~s.index.duplicated(keep="last")].sort_index()
-    union = s.index.union(bar_dates.unique())
-    return s.reindex(union).ffill().reindex(bar_dates).values
+    idx_naive = pd.DatetimeIndex(bar_index)
+    if idx_naive.tz is not None: idx_naive = idx_naive.tz_localize(None)
+    union_idx = s.index.union(idx_naive).sort_values()
+    return s.reindex(union_idx).ffill().reindex(idx_naive).values
 
 def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.DataFrame, current_nlp: dict, rf_tw_daily: float = 0.017 / 365):
     stock = market_data[symbol].dropna()
@@ -424,8 +420,7 @@ def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.Dat
     df[symbol] = stock.pct_change()
     if symbol != "^TWII": df["^TWII"] = twii.pct_change()
     
-    # 填補空值防護
-    df["NVDA_Pure_Shock"] = _map_daily_to_bars(shock, stock.index) if not shock.empty else 0.0
+    df["NVDA_Pure_Shock"] = _map_daily_to_bars(shock, stock.index)
     df["^SOX"] = _map_daily_to_bars(us_ret["^SOX"], stock.index) if "^SOX" in us_ret.columns else 0.0
     
     df["RF_TW"] = rf_tw_daily
@@ -474,7 +469,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. Word 報告生成 (完整版含衍生變數論述)
+# 4. Word 報告生成 (新增波段與熱點說明)
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -520,10 +515,8 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f}，年化波動 {ctx['fx_annual_vol']:.2f}%")
     doc.add_paragraph(f"• 個股歷史波動率：{ctx['stock_vol_1y']:.2f}%，最悲觀防守安全價：{ctx['real_safety_price']:.2f} 元")
 
-    doc.add_heading("五、NVDA 衍生變數與波段決策邏輯", level=1)
-    doc.add_paragraph(f"• Beta_3 (AI 含金量)：最新數值 {ctx['beta3_latest']:.4f}。衡量個股對輝達 (NVDA) 純粹衝擊的敏感度。數值越高代表 AI 題材純度與連動性越強。")
-    doc.add_paragraph(f"• Gamma (資金簇擁度)：最新數值 {ctx['gamma_latest']:.4f}。衡量動能與 AI 衝擊的交互作用。數值若過高（紫線飆升）通常代表籌碼過度擁擠，暗示波段高點。")
-    doc.add_paragraph("• SHAP 決策歸因：揭示 LightGBM 機器學習模型判斷未來報酬機率時，各項特徵（包含 AI 變數、情緒熱點、技術面）的綜合貢獻權重。")
+    doc.add_heading("五、歷史波段回測與 SHAP AI 決策邏輯", level=1)
+    doc.add_paragraph(ctx['shap_explain_text'])
 
     doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
@@ -642,15 +635,14 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     except Exception: pass
     vol_signal = "🚨 [減碼/防守] 短期波動放大" if vol_ratio > 1.2 else ("🎯 [加碼/佈局] 短期波動壓縮" if vol_ratio < 0.8 else "⚖️ [觀望/中性] 多空平衡")
 
-    # 機器學習與預測
+    # 機器學習與預測 (修正：強制抓取美股日線以供日內填補)
     current_nlp = {'sent': sent_1w, 'growth': g_1w, 'hotspot': h_1w}
-    us_daily = download_us_daily() if interval == "1d" else pd.DataFrame()
+    us_daily = download_us_daily(years=5) 
     df, fwd_excess = build_feature_frame(symbol, market_data, us_daily, current_nlp)
 
     Y_rolling = df[symbol] - df['RF_TW']
     roll_cols = [c for c in ['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term'] if c in df.columns and c != symbol and float(df[c].std()) > 0]
     
-    # 修正：加入長度檢查避免 RollingOLS 陣列過小錯誤
     if len(df) > 30:
         rolling_res = RollingOLS(Y_rolling, sm.add_constant(df[roll_cols]), window=min(252, max(30, len(df) // 3))).fit()
         df['Beta_3_Rolling'] = rolling_res.params['NVDA_Pure_Shock'] if 'NVDA_Pure_Shock' in rolling_res.params else 0.0
@@ -664,8 +656,6 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     
     plot_gamma = df['Gamma_Rolling'].dropna()
     plot_beta3 = df['Beta_3_Rolling'].dropna()
-    beta3_latest_val = float(plot_beta3.iloc[-1]) if not plot_beta3.empty else 0.0
-    gamma_latest_val = float(plot_gamma.iloc[-1]) if not plot_gamma.empty else 0.0
 
     features = ['Beta_3_Rolling', 'Gamma_Rolling', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D', 'NLP_Sent', 'NLP_Growth', 'NLP_Hotspot']
     features = [c for c in features if c in df.columns]
@@ -741,14 +731,8 @@ tp_upper_1, tp_upper_2 = eps_adj * (pe_target + 1.0 * pe_std), eps_adj * (pe_tar
 rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else ("保守觀望" if latest_proba < 0.45 else "中性震盪")
 rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
 
-freq_advice_text = (
-    "【日線 (1d)】適用中長線基本面分析，模型穩定度最高。" if interval == "1d" else
-    f"【{interval_label}】適合結合 NLP 分類進行短線波段操作。" if interval in ["60m", "30m"] else
-    f"【{interval_label}】高頻特性僅限當沖觀察，歷史樣本過短易受雜訊干擾。"
-)
-
 # ==========================================
-# 7. 最終 UI 呈現 
+# 7. 最終 UI 呈現 (含 AI 含金量與綠色標題)
 # ==========================================
 st.title("📈 跨領域專家 AI 投資分析與量化預測")
 st.subheader(f"🏢 {company_name} — 【{interval_label}】")
@@ -757,11 +741,14 @@ st.warning(DISCLAIMER)
 
 def fmt_pct(v): return "資料不足" if v is None else f"{v:+.2f}%"
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("最新即時成交價", f"${price:,.2f}", f"{trade_date} ({fmt_pct(change)})")
-c2.metric("AI 目標價與未來機率", f"${tp_base:,.0f} ({latest_proba:.1%})", f"{upside:.1f}% 潛在空間")
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("即時成交價", f"${price:,.2f}", f"{trade_date} ({fmt_pct(change)})")
+c2.metric("AI 目標價與機率", f"${tp_base:,.0f} ({latest_proba:.1%})", f"{upside:.1f}% 潛在空間")
 c3.metric("AI 綜合評等", rec_title, f"{'🟢' if '買' in rec_desc else ('🔴' if '賣' in rec_desc else '🟡')} {rec_desc}")
-c4.metric("熱點指數與動能趨勢", f"{h_1w:.1f} 分", f"{'加速湧入 ↗' if df['Gamma_Trend_5D'].dropna().iloc[-1] > 0 else '動能衰退 ↘'}")
+c4.metric("熱點指數與動能", f"{h_1w:.1f} 分", f"{'加速湧入 ↗' if df['Gamma_Trend_5D'].dropna().iloc[-1] > 0 else '動能衰退 ↘'}")
+c5.metric("AI含金量 (Beta_3)", 
+          f"{df['Beta_3_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Beta_3_Rolling' in df.columns else "N/A", 
+          f"資金簇擁: {df['Gamma_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Gamma_Rolling' in df.columns else "N/A")
 
 st.markdown("---")
 st.markdown(f"### ⏱ 多期報酬率表現 ({interval_label} 視角)")
@@ -837,15 +824,14 @@ with right:
     if cv_test_acc: st.caption(f"時序交叉驗證：平均準確率 {np.mean(cv_test_acc):.3f}｜平均 AUC {np.mean(cv_test_auc):.3f} ({len(cv_test_acc)} 折)")
 
 st.markdown("---")
-
-# 透過 :green[...] 將標題改為綠色
-st.markdown("### :green[📊 歷史波段回測與 SHAP AI 決策邏輯 (NVDA 衍生變數模型)]")
-# 加入關於 AI 含金量與資金簇擁度的說明
-st.caption(
-    "💡 **決策變數說明**：圖表中的 **Beta_3** 代表「**AI 含金量**」(個股對 NVDA 純粹衝擊的敏感度，數值越高題材純度越高)；"
-    "**Gamma** 代表「**資金簇擁度**」(動能與 AI 題材的交互擁擠作用，飆升過高易遇獲利了結賣壓)。"
-    "右圖 **SHAP 歸因**揭示了 LightGBM 機器學習模型判定未來勝率的核心特徵權重。"
+st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決策邏輯</h3>", unsafe_allow_html=True)
+shap_explain_text = (
+    "💡 簡短說明：\n"
+    "• AI 含金量 (Beta_3)：衡量個股對輝達 (NVDA) 獨立衝擊的敏感度。數值越高，代表具備實質 AI 供應鏈純度。\n"
+    "• 資金簇擁度 (Gamma)：衡量市場資金追價的擁擠程度。當 Gamma 飆高時，通常伴隨波段主升段；反之若反轉跌破零軸，需提防人踩人風險。\n"
+    "• SHAP 歸因：圖表右側紅點代表該特徵推升上漲機率，藍點代表壓抑表現；特徵點位置越靠左右兩側，影響力越大。"
 )
+st.info(shap_explain_text)
 
 fig_col1, fig_col2 = st.columns(2)
 
@@ -853,10 +839,10 @@ with fig_col1:
     min_beta3_date = plot_beta3.idxmin() if not plot_beta3.empty else None
     period_returns = market_data[symbol].dropna().loc[min_beta3_date:plot_beta3.loc[min_beta3_date:].idxmax()].pct_change().dropna() if min_beta3_date else pd.Series(dtype=float)
     fig1, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
-    if not plot_gamma.empty: ax1.plot(plot_gamma.index, plot_gamma, color='purple', label='Gamma (Crowding)')
+    if not plot_gamma.empty: ax1.plot(plot_gamma.index, plot_gamma, color='purple', label='Gamma (資金簇擁度 / Crowding)')
     ax1.axhline(0, color='red', linestyle='--'); ax1.legend(loc='upper left'); ax1.grid(True, alpha=0.3)
     if not plot_beta3.empty:
-        ax2.plot(plot_beta3.index, plot_beta3, color='forestgreen', label='Beta_3 (Pure AI Shock)')
+        ax2.plot(plot_beta3.index, plot_beta3, color='forestgreen', label='Beta_3 (AI 含金量 / NVDA Pure Shock)')
         if not period_returns.empty: ax2.axvspan(period_returns.index[0], period_returns.index[-1], color='yellow', alpha=0.2, label='Surge')
     ax2.axhline(0, color='red', linestyle='--'); ax2.legend(loc='upper left'); ax2.grid(True, alpha=0.3)
     if not period_returns.empty:
@@ -890,9 +876,8 @@ ctx = {
     "s_1m": s_1m, "c1m": c1m, "sent_1m": sent_1m, "g_1m": g_1m, "h_1m": h_1m,
     "s_2m": s_2m, "c2m": c2m, "sent_2m": sent_2m, "g_2m": g_2m, "h_2m": h_2m,
     "pe_base": pe_base, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, "risk_val": risk_val,
-    "freq_advice": freq_advice_text, "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
+    "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "pe_std": pe_std, "real_safety_price": real_safety_price,
-    "vol_5d": vol_5d, "vol_20d": vol_20d, "vol_ratio": vol_ratio, "vol_signal": vol_signal,
-    "beta3_latest": beta3_latest_val, "gamma_latest": gamma_latest_val
+    "shap_explain_text": shap_explain_text
 }
 st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
