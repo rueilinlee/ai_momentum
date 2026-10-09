@@ -581,7 +581,7 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-# 執行所有時間維度的新聞爬取與特徵評分
+# 執行所有時間維度的新聞爬取與特徵評分 (完整接收 10 個回傳值)
 sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
 sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
 sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
@@ -820,7 +820,7 @@ c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("即時成交價", f"${price:,.2f}", f"{trade_date} ({fmt_pct(change)})")
 c2.metric("AI 目標價與機率", f"${tp_base:,.0f} ({latest_proba:.1%})", f"{upside:.1f}% 潛在空間")
 c3.metric("AI 綜合評等", rec_title, f"{'🟢' if '買' in rec_desc else ('🔴' if '賣' in rec_desc else '🟡')} {rec_desc}")
-c4.metric("熱點指數與動能", f"{h_1w:.1f} 分", f"{'加速湧入 ↗' if df['Gamma_Trend_5D'].dropna().iloc[-1] > 0 else '動能衰退 ↘'}")
+c4.metric("熱點指數與動能", f"{h_1w:.1f} 分", f"{'加速湧入 ↗' if df['Gamma_Trend_5D'].dropna().iloc[-1] > 0 else '動新衰退 ↘'}")
 c5.metric("AI含金量 (Beta_3)", 
           f"{df['Beta_3_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Beta_3_Rolling' in df.columns else "N/A", 
           f"資金簇擁: {df['Gamma_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Gamma_Rolling' in df.columns else "N/A")
@@ -940,7 +940,7 @@ shap_explain_text_plain = (
     "💡 模型圖表綜合解釋說明：\n"
     "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用，以 Price_Mom_30D 與 Beta_3 影響力最大。\n"
     "• Gamma（紫線）：大於 0 代表資金簇擁追價，小於 0 代表資金退潮。\n"
-    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動能爆發推升期 (Surge)。\n"
+    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動新爆發推升期 (Surge)。\n"
     "• 累積報酬（紅線）：驗證模型在爆發期前後捕捉波段主升段的成效。"
 )
 
@@ -1003,7 +1003,7 @@ ctx = {
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp_48h, "gn_48h": gn_48h, "sent_48h": sent_48h, "g_48h": g_48h, "h_48h": h_48h,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h, "sent_48h": sent_48h, "g_48h": g_48h, "h_48h": h_48h,
     "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "sent_1w": sent_1w, "g_1w": g_1w, "h_1w": h_1w,
     "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "sent_2w": sent_2w, "g_2w": g_2w, "h_2w": h_2w,
     "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "sent_1m": sent_1m, "g_1m": g_1m, "h_1m": h_1m,
