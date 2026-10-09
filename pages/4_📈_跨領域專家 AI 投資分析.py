@@ -868,10 +868,25 @@ with fig_col2:
         shap_values = shap.TreeExplainer(model).shap_values(X_shap)
         shap_values_to_plot = shap_values[1] if isinstance(shap_values, list) else (shap_values[:, :, 1] if getattr(shap_values, "ndim", 2) == 3 else shap_values)
         fig2 = plt.figure(figsize=(10, 8))
+        
+        # 生成 SHAP 圖表 (保持 show=False 以便後續修改)
         shap.summary_plot(shap_values_to_plot, X_shap, feature_names=features, show=False)
-        plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14)
-        plt.tight_layout(); st.pyplot(fig2)
-    except Exception as e: st.info(f"SHAP 渲染失敗：{e}")
+        
+        # 取得當前的坐標軸
+        ax = plt.gca()
+        # 強制將 Y 軸 (特徵名稱) 與 X 軸 (刻度數字) 文字改為白色
+        ax.tick_params(axis='y', colors='white')
+        ax.tick_params(axis='x', colors='white')
+        # 將底部的 X 軸標籤 (SHAP value...) 改為白色
+        ax.xaxis.label.set_color('white')
+        
+        # 將標題改為白色
+        plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14, color='white')
+        
+        plt.tight_layout()
+        st.pyplot(fig2)
+    except Exception as e: 
+        st.info(f"SHAP 渲染失敗：{e}")
 
 ctx = {
     "name": company_name, "interval_label": interval_label, "price": price, "change_txt": fmt_pct(change),
