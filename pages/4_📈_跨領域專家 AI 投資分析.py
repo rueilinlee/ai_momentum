@@ -469,22 +469,32 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. Word 報告生成
+# 4. Word 報告生成 (完整收錄主畫面所有量化與分析結果)
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
     t = doc.add_heading(f"{ctx['name']} 跨領域 AI 投資與量化分析報告", 0)
     t.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
-    doc.add_paragraph(f"資料頻率設定：{ctx['interval_label']} ｜ 最新即時成交價：{ctx['price']:,.2f}（當日漲跌 {ctx['change_txt']}）")
+    doc.add_paragraph(f"資料頻率設定：{ctx['interval_label']} ｜ 最新即時成交價：NT$ {ctx['price']:,.2f}（當日漲跌 {ctx['change_txt']}）")
 
+    # 一、核心總結與綜合評等
     doc.add_heading("一、核心總結與綜合評等", level=1)
     doc.add_paragraph(f"• AI 綜合評等：{ctx['rec']}（未來 5 天正報酬機率：{ctx['latest_proba']:.2%}）")
-    doc.add_paragraph(f"• 預期轉折時間點：模型預測最有可能發生價格反轉的時點為【{ctx['turning_bar']}】（機率 {ctx['turning_prob']:.1f}%）")
-    doc.add_paragraph(f"• 潛在空間與目標價：預估基準目標價為 {ctx['tp_base']:,.2f} 元，潛在空間 {ctx['upside']:.1f}%。")
-    doc.add_paragraph(f"• SHAP AI 動態反推價位：SHAP AI 支撐價估計為 {ctx['shap_support']:,.2f} 元 ｜ SHAP AI 壓力價估計為 {ctx['shap_resistance']:,.2f} 元。")
+    doc.add_paragraph(f"• 預期轉折時間點：模型預測最有可能發生價格反轉的時點為【{ctx['turning_bar']}】（機率 {ctx['turning_prob']:.1f}% ｜ 趨勢方向：{ctx['turning_direction']}）")
+    doc.add_paragraph(f"• 潛在空間與目標價：預估基準目標價為 NT$ {ctx['tp_base']:,.2f} 元，潛在空間 {ctx['upside']:.1f}%。")
+    doc.add_paragraph(f"• SHAP AI 動態反推價位：SHAP AI 支撐價估計為 NT$ {ctx['shap_support']:,.2f} 元 ｜ SHAP AI 壓力價估計為 NT$ {ctx['shap_resistance']:,.2f} 元。")
+    doc.add_paragraph(f"• AI 特徵含金量與資金簇擁：AI 含金量 (Beta_3) 數值為 {ctx['beta_3_val']:.3f} ｜ 資金簇擁度 (Gamma) 數值為 {ctx['gamma_val']:.3f}。")
 
-    doc.add_heading("二、未來 5 根 K 棒走勢預測與歷史報酬表現", level=1)
+    # 二、未來 5 根 K 棒走勢預測與價格區間
+    doc.add_heading("二、未來 5 根 K 棒走勢預測與價格區間", level=1)
+    doc.add_paragraph(f"• 預測正報酬勝率：{ctx['latest_proba']:.1%}（基於 LightGBM 機器學習模型）")
+    doc.add_paragraph(f"• 預估 5 根 K 預期高價：NT$ {ctx['f5_high']:,.2f} 元（潛在漲幅 +{ctx['f5_high_pct']:.2f}%）")
+    doc.add_paragraph(f"• 預估 5 根 K 預期低價：NT$ {ctx['f5_low']:,.2f} 元（潛在跌幅 {ctx['f5_low_pct']:.2f}%）")
+    doc.add_paragraph(f"• 波動區間寬度：NT$ {ctx['f5_range_width']:,.2f} 元（區間變異數比例：{ctx['f5_ret_std']*100:.2f}%）")
+
+    # 三、多期報酬率表現與區間價格
+    doc.add_heading("三、多期報酬率表現與區間價格", level=1)
     ret_table = doc.add_table(rows=1, cols=4)
     ret_table.style = "Table Grid"
     ret_table.rows[0].cells[0].text, ret_table.rows[0].cells[1].text, ret_table.rows[0].cells[2].text, ret_table.rows[0].cells[3].text = "期間", "報酬率 (%)", "區間最低價", "區間最高價"
@@ -501,19 +511,20 @@ def generate_word_report(ctx):
         r[2].text = ("-" if l_p is None else f"${l_p:,.2f}")
         r[3].text = ("-" if h_p is None else f"${h_p:,.2f}")
 
-    doc.add_heading("三、新聞輿情與 FinBERT 跨時間維度量化評分", level=1)
+    # 四、新聞輿情與 FinBERT 跨時間維度量化評分
+    doc.add_heading("四、新聞輿情與 FinBERT 跨時間維度量化評分", level=1)
     src_table = doc.add_table(rows=1, cols=9)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
     headers_list = ["時間", "Google", "MoneyDJ", "中時", "去重篇數", "情緒多/空", "展望多/空", "熱點(分)", "綜合評估"]
     for idx, h_text in enumerate(headers_list): sch[idx].text = h_text
 
-    for p_label, src_dict, merged_c, b_cnt, r_cnt, gp_cnt, gn_cnt, h_val in [
-        ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['b48h'], ctx['r48h'], ctx['gp_48h'], ctx['gn_48h'], ctx['h_48h']),
-        ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['b1w'], ctx['r1w'], ctx['gp_1w'], ctx['gn_1w'], ctx['h_1w']),
-        ("近 2W", ctx['s_2w'], ctx['c2w'], ctx['b2w'], ctx['r2w'], ctx['gp_2w'], ctx['gn_2w'], ctx['h_2w']),
-        ("近 1M", ctx['s_1m'], ctx['c1m'], ctx['b1m'], ctx['r1m'], ctx['gp_1m'], ctx['gn_1m'], ctx['h_1m']),
-        ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['b2m'], ctx['r2m'], ctx['gp_2m'], ctx['gn_2m'], ctx['h_2m'])
+    for p_label, src_dict, merged_c, b_cnt, r_cnt, gp_cnt, gn_cnt, h_val, sent_val in [
+        ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['b48h'], ctx['r48h'], ctx['gp_48h'], ctx['gn_48h'], ctx['h_48h'], ctx['sent_48h']),
+        ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['b1w'], ctx['r1w'], ctx['gp_1w'], ctx['gn_1w'], ctx['h_1w'], ctx['sent_1w']),
+        ("近 2W", ctx['s_2w'], ctx['c2w'], ctx['b2w'], ctx['r2w'], ctx['gp_2w'], ctx['gn_2w'], ctx['h_2w'], ctx['sent_2w']),
+        ("近 1M", ctx['s_1m'], ctx['c1m'], ctx['b1m'], ctx['r1m'], ctx['gp_1m'], ctx['gn_1m'], ctx['h_1m'], ctx['sent_1m']),
+        ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['b2m'], ctx['r2m'], ctx['gp_2m'], ctx['gn_2m'], ctx['h_2m'], ctx['sent_2m'])
     ]:
         r = src_table.add_row().cells
         r[0].text = p_label
@@ -524,16 +535,33 @@ def generate_word_report(ctx):
         r[5].text = f"{b_cnt}/{r_cnt}"
         r[6].text = f"{gp_cnt}/{gn_cnt}"
         r[7].text = f"{h_val:.1f}"
-        r[8].text = "FinBERT"
+        r[8].text = f"FinBERT:{sent_val:.1f}"
 
-    doc.add_heading("四、本益比評價子項拆解與情境目標價", level=1)
-    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x ｜ 輿情情緒權重：{ctx['sentiment_exp']:+.2f}x ｜ 展望成長權重：{ctx['growth_exp']:+.2f}x")
-    doc.add_paragraph(f"• 情境目標價分佈：15倍地板 {ctx['tp_15x']:,.2f} 元 ｜ 悲觀 {ctx['tp_lower']:,.2f} 元 ｜ 基準 {ctx['tp_base']:,.2f} 元 ｜ 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元")
+    # 五、本益比評價子項拆解與情境目標價
+    doc.add_heading("五、本益比評價子項拆解與情境目標價", level=1)
+    doc.add_paragraph(f"• 評價因子拆解：產業中樞本益比 (PE_base) {ctx['pe_base']:.1f}x ｜ FinBERT 輿情權重 {ctx['sentiment_exp']:+.2f}x ｜ 展望成長權重 {ctx['growth_exp']:+.2f}x ｜ 下行風險折價 -{ctx['risk_val']:.1f}x")
+    doc.add_paragraph(f"• 情境目標價分佈：15倍地板 NT$ {ctx['tp_15x']:,.2f} 元 ｜ 悲觀(-0.5σ) NT$ {ctx['tp_lower']:,.2f} 元 ｜ 基準(Base) NT$ {ctx['tp_base']:,.2f} 元 ｜ 樂觀(+1σ) NT$ {ctx['tp_upper_1']:,.2f} 元 ｜ 樂觀(+2σ) NT$ {ctx['tp_upper_2']:,.2f} 元")
 
-    doc.add_heading("五、實質風險與波動率動態量化模組", level=1)
-    doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f} ｜ 建議買進區間：${ctx['buy_low']:.2f} ~ ${ctx['buy_high']:.2f} ｜ 建議賣出區間：${ctx['sell_low']:.2f} ~ ${ctx['sell_high']:.2f}")
+    # 六、AI 決策動能區間與動態買賣建議
+    doc.add_heading("六、AI 決策動能區間與動態買賣建議", level=1)
+    doc.add_paragraph(f"• 🟦 藍色動能區（逢低試單點）：預估跌至 NT$ {ctx['blue_price']:.2f} 元時，RSI 降至超賣區，為具備歷史勝率的支撐點。")
+    doc.add_paragraph(f"• 🟥 紅色動能區（逢高賣出價）：預估漲至 NT$ {ctx['red_price']:.2f} 元時，RSI 飆至過熱區，容易遭遇主力調節。")
+    doc.add_paragraph(f"• 🎯 模型具體建議區間：建議買進區間【${ctx['buy_low']:.2f} ~ ${ctx['buy_high']:.2f}】 ｜ 建議賣出區間【${ctx['sell_low']:.2f} ~ ${ctx['sell_high']:.2f}】")
 
-    doc.add_heading("六、歷史波段回測與 SHAP AI 決策邏輯", level=1)
+    # 七、實質風險與波動率動態量化模組
+    doc.add_heading("七、實質風險與波動率動態量化模組", level=1)
+    doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新匯率 {ctx['fx_latest']:.2f} ｜ 年化波動率 {ctx['fx_annual_vol']:.2f}%（68% 常態區間：{ctx['fx_low']:.2f} ~ {ctx['fx_high']:.2f}）")
+    doc.add_paragraph(f"• 市場波動與安全邊際：過去一年個股年化波動 {ctx['stock_vol_1y']:.2f}% ｜ PE 標準差 {ctx['pe_std']:.2f} ｜ 最悲觀防守價 NT$ {ctx['real_safety_price']:.2f} 元")
+    doc.add_paragraph(f"• 短長期波動比值：{ctx['vol_ratio']:.4f} → 狀態判定：{ctx['vol_signal']}")
+
+    # 八、財務檢核與機器學習效能指標
+    doc.add_heading("八、財務檢核與機器學習效能指標", level=1)
+    doc.add_paragraph(f"• 近 4 季 EPS (TTM)：{ctx['ttm']:.2f} 元 ｜ 最近年度 EPS：{ctx['annual_eps_val']:.2f} 元")
+    doc.add_paragraph(f"• 歷史本益比：{ctx['hist_pe']:.1f} 倍 ｜ 遠期本益比：{ctx['fwd_pe']:.1f} 倍")
+    doc.add_paragraph(f"• 時序交叉驗證表現：平均準確率 {ctx['cv_acc']:.3f} ｜ 平均 AUC {ctx['cv_auc']:.3f}")
+
+    # 九、歷史波段回測與 SHAP AI 決策邏輯解釋
+    doc.add_heading("九、歷史波段回測與 SHAP AI 決策邏輯解釋", level=1)
     doc.add_paragraph(ctx['shap_explain_text'])
 
     doc.add_paragraph("")
@@ -687,9 +715,7 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     df_ai = df.dropna(subset=features)
     X, y = df_ai[features], (fwd_excess.reindex(df_ai.index) > 0.005).astype(int)
 
-    # ==========================================
     # 升級版：精細化超參數配置的 LightGBM 模型
-    # ==========================================
     model = lgb.LGBMClassifier(
         n_estimators=300,
         learning_rate=0.015,
@@ -719,6 +745,8 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     latest_features = df[features].iloc[[-1]] if not df.empty else pd.DataFrame(columns=features)
     latest_proba = float(model.predict_proba(latest_features)[:, 1][0]) if not latest_features.empty else 0.5
     beta3_trend_val = df['Beta_3_Trend_5D'].dropna().iloc[-1] if df['Beta_3_Trend_5D'].notna().any() else 0.0
+    beta_3_val = float(df['Beta_3_Rolling'].dropna().iloc[-1]) if not df.empty and 'Beta_3_Rolling' in df.columns else 0.0
+    gamma_val = float(df['Gamma_Rolling'].dropna().iloc[-1]) if not df.empty and 'Gamma_Rolling' in df.columns else 0.0
 
     # -------------------------------------------------------------------
     # 核心：SHAP 反推支撐與壓力價格計算模組
@@ -823,11 +851,19 @@ rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望"
 f5_ret_std = float(valid_stock.pct_change().tail(20).std() * math.sqrt(5)) if len(valid_stock) >= 20 else 0.02
 f5_high = price * (1 + f5_ret_std * (1.2 if latest_proba > 0.5 else 0.5))
 f5_low = price * (1 - f5_ret_std * (0.8 if latest_proba > 0.5 else 1.3))
+f5_high_pct = ((f5_high / price) - 1) * 100
+f5_low_pct = ((f5_low / price) - 1) * 100
+f5_range_width = f5_high - f5_low
 
 buy_low = min(blue_price, real_safety_price)
 buy_high = max(blue_price, real_safety_price)
 sell_low = min(red_price, tp_upper_1)
 sell_high = max(red_price, tp_upper_2)
+
+hist_pe = price / ttm_eps_val if ttm_eps_val > 0 else 0
+fwd_pe = price / eps_adj if eps_adj > 0 else 0
+cv_acc_val = float(np.mean(cv_test_acc)) if cv_test_acc else 0.0
+cv_auc_val = float(np.mean(cv_test_auc)) if cv_test_auc else 0.0
 
 # ==========================================
 # 7. 最終 UI 呈現 
@@ -845,18 +881,16 @@ c1.metric("即時成交價", f"${price:,.2f}", f"{trade_date} ({fmt_pct(change)}
 c2.metric("AI 目標價與機率", f"${tp_base:,.0f} ({latest_proba:.1%})", f"{upside:.1f}% 潛在空間")
 c3.metric("AI 綜合評等", rec_title, f"{'🟢' if '買' in rec_desc else ('🔴' if '賣' in rec_desc else '🟡')} {rec_desc}")
 c4.metric("SHAP AI 支撐/壓力", f"支撐 ${shap_support:,.1f}", f"壓力 ${shap_resistance:,.1f}")
-c5.metric("AI含金量 (Beta_3)", 
-          f"{df['Beta_3_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Beta_3_Rolling' in df.columns else "N/A", 
-          f"資金簇擁: {df['Gamma_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Gamma_Rolling' in df.columns else "N/A")
+c5.metric("AI含金量 (Beta_3)", f"{beta_3_val:.3f}", f"資金簇擁: {gamma_val:.3f}")
 
 st.markdown("---")
 st.markdown("### 🔮 未來 5 根 K 棒走勢預測與價格區間")
 fc1, fc2, fc3, fc4, fc5 = st.columns(5)
 fc1.metric("預測正報酬勝率", f"{latest_proba:.1%}", "基於 LightGBM 模型")
 fc2.metric("預估轉折時間點", turning_bar_name, f"機率: {turning_bar_prob:.1f}% ({turning_direction})")
-fc3.metric("預估 5 根 K 預期高價", f"${f5_high:,.2f}", f"+{((f5_high/price)-1)*100:.2f}%")
-fc4.metric("預估 5 根 K 預期低價", f"${f5_low:,.2f}", f"{((f5_low/price)-1)*100:.2f}%")
-fc5.metric("波動區間寬度", f"${f5_high - f5_low:,.2f}", f"區間變異: {f5_ret_std*100:.2f}%")
+fc3.metric("預估 5 根 K 預期高價", f"${f5_high:,.2f}", f"+{f5_high_pct:.2f}%")
+fc4.metric("預估 5 根 K 預期低價", f"${f5_low:,.2f}", f"{f5_low_pct:.2f}%")
+fc5.metric("波動區間寬度", f"${f5_range_width:,.2f}", f"區間變異: {f5_ret_std*100:.2f}%")
 
 st.markdown("---")
 st.markdown(f"### ⏱ 多期報酬率表現與區間價格 ({interval_label} 視角)")
@@ -930,18 +964,18 @@ with right:
     fin_data.extend([
         {"指標": "近 4 季 EPS (TTM)", "數值": f"{ttm_eps_val:.2f}", "資料來源": ttm_src},
         {"指標": f"最近年度 EPS{annual_year_display}", "數值": f"{annual_eps_val:.2f}", "資料來源": annual_src},
-        {"指標": "歷史本益比", "數值": f"{price/ttm_eps_val if ttm_eps_val>0 else 0:.1f} 倍", "資料來源": "即時股價 / TTM"},
-        {"指標": "遠期本益比", "數值": f"{price/eps_adj if eps_adj>0 else 0:.1f} 倍", "資料來源": "即時股價 / 調整後 EPS"}
+        {"指標": "歷史本益比", "數值": f"{hist_pe:.1f} 倍", "資料來源": "即時股價 / TTM"},
+        {"指標": "遠期本益比", "數值": f"{fwd_pe:.1f} 倍", "資料來源": "即時股價 / 調整後 EPS"}
     ])
     st.dataframe(pd.DataFrame(fin_data), hide_index=True, use_container_width=True)
-    if cv_test_acc: st.caption(f"時序交叉驗證：平均準確率 {np.mean(cv_test_acc):.3f}｜平均 AUC {np.mean(cv_test_auc):.3f} ({len(cv_test_acc)} 折)")
+    if cv_test_acc: st.caption(f"時序交叉驗證：平均準確率 {cv_acc_val:.3f}｜平均 AUC {cv_auc_val:.3f} ({len(cv_test_acc)} 折)")
 
 st.markdown("---")
 st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決策邏輯</h3>", unsafe_allow_html=True)
 
 shap_explain_text_plain = (
     f"💡 模型圖表綜合解釋說明：\n"
-    f"• 歷史回測圖解析：紫線 Gamma 代表市場資金簇擁與推擠度，大於 0 表示強勢追價；綠線 Beta_3 代表個股相對於輝達 (NVDA) 的獨立超額衝擊。當兩者轉強並進入黃色標示之「動新爆發推升期 (Surge)」時，紅色的累積報酬曲線呈現明確的主升段噴發。\n"
+    f"• 歷史回測圖解析：紫線 Gamma 代表市場資金簇擁與推擠度，大於 0 表示強勢追價；綠線 Beta_3 代表個股相對於輝達 (NVDA) 的獨立超額衝擊。當兩者轉強並進入黃色標示之「動能爆發推升期 (Surge)」時，紅色的累積報酬曲線呈現明確的主升段噴發。\n"
     f"• SHAP 特徵歸因解析：模型以 Price_Mom_30D（30日動能差）與 Beta_3 具備最高決策影響力。右側紅點代表特徵值偏高時會顯著推升未來正報酬機率。\n"
     f"• 🎯 SHAP 動態反推價位：結合當前特徵對模型的邊際貢獻，機器學習反推之 **AI 支撐價為 ${shap_support:,.2f} 元**，**AI 壓力價為 ${shap_resistance:,.2f} 元**。"
 )
@@ -1006,27 +1040,33 @@ with fig_col2:
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 8. 確保包含所有參數的 Word 報告打包變數
+# 8. 完整打包所有主畫面數據至 Word 報告 Context
 # ==========================================
 ctx = {
     "name": company_name, "interval_label": interval_label, "price": price, "change_txt": fmt_pct(change),
     "latest_proba": latest_proba, "rec": rec_title, "blue_price": blue_price, "red_price": red_price,
-    "tp_base": tp_base, "pe_target": pe_target, "tp_15x": tp_15x, "tp_lower": tp_lower, "tp_upper_2": tp_upper_2,
+    "tp_base": tp_base, "pe_target": pe_target, "tp_15x": tp_15x, "tp_lower": tp_lower, 
+    "tp_upper_1": tp_upper_1, "tp_upper_2": tp_upper_2,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
     "low_1w": low_1w, "high_1w": high_1w, "low_2w": low_2w, "high_2w": high_2w,
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
-    "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp_48h, "gn_48h": gn_48h, "h_48h": h_48h,
-    "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "h_1w": h_1w,
-    "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "h_2w": h_2w,
-    "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "h_1m": h_1m,
-    "s_2m": s_2m, "c2m": c2m, "b2m": b2m, "r2m": r2m, "gp_2m": gp2m, "gn_2m": gn2m, "h_2m": h_2m,
+    "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob, "turning_direction": turning_direction,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h, "h_48h": h_48h, "sent_48h": sent_48h,
+    "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "h_1w": h_1w, "sent_1w": sent_1w,
+    "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "h_2w": h_2w, "sent_2w": sent_2w,
+    "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "h_1m": h_1m, "sent_1m": sent_1m,
+    "s_2m": s_2m, "c2m": c2m, "b2m": b2m, "r2m": r2m, "gp_2m": gp2m, "gn_2m": gn2m, "h_2m": h_2m, "sent_2m": sent_2m,
     "pe_base": pe_base, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, "risk_val": risk_val,
     "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
-    "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "pe_std": pe_std, "real_safety_price": real_safety_price,
-    "shap_explain_text": shap_explain_text_plain, "f5_high": f5_high, "f5_low": f5_low, "upside": upside,
+    "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "annual_eps_val": annual_eps_val, "pe_std": pe_std, 
+    "real_safety_price": real_safety_price, "shap_explain_text": shap_explain_text_plain, 
+    "f5_high": f5_high, "f5_low": f5_low, "f5_high_pct": f5_high_pct, "f5_low_pct": f5_low_pct, 
+    "f5_range_width": f5_range_width, "f5_ret_std": f5_ret_std, "upside": upside,
     "buy_low": buy_low, "buy_high": buy_high, "sell_low": sell_low, "sell_high": sell_high,
-    "shap_support": shap_support, "shap_resistance": shap_resistance
+    "shap_support": shap_support, "shap_resistance": shap_resistance,
+    "beta_3_val": beta_3_val, "gamma_val": gamma_val, "vol_ratio": vol_ratio, "vol_signal": vol_signal,
+    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "cv_acc": cv_acc_val, "cv_auc": cv_auc_val
 }
+
 st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
