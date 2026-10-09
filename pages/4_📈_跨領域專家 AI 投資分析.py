@@ -912,13 +912,13 @@ src_df_data = [
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-# 補回：近 48H 新聞標題與明細展示
-st.markdown("#### 📰 近 48H 即時新聞標題與明細清單")
-if items_48h:
-    for idx, (t_title, t_dt) in enumerate(items_48h[:10], 1):
-        st.markdown(f"<small><b>{idx}.</b> [{t_dt.strftime('%m-%d %H:%M')}] {t_title}</small>", unsafe_allow_html=True)
-else:
-    st.info("近 48 小時內尚無符合條件的即時新聞。")
+# 增加 st.expander 摺疊/展開按鈕，用來顯示或隱藏近 48H 即時新聞標題與明細清單
+with st.expander("📰 點擊展開/收合：近 48H 即時新聞標題與明細清單", expanded=False):
+    if items_48h:
+        for idx, (t_title, t_dt) in enumerate(items_48h[:15], 1):
+            st.markdown(f"<small><b>{idx}.</b> [{t_dt.strftime('%m-%d %H:%M')}] {t_title}</small>", unsafe_allow_html=True)
+    else:
+        st.info("近 48 小時內尚無符合條件的即時新聞。")
 
 st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分 (已啟用時間序列 RSS 過濾)")
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
