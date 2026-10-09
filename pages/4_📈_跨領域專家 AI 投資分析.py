@@ -478,7 +478,7 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     total_count = max(1, len(all_titles))
     days_span = hours / 24.0
 
-    # 1. 情緒分數：結合貝氏平滑與時間對數梯度
+    # 1. 情緒分數
     if finbert_sent is not None:
         time_sentiment_boost = math.log(days_span + 1.0) * 0.25
         s_score = round(float(np.clip(finbert_sent + time_sentiment_boost * (1.0 if b_cnt >= r_cnt else -1.0), 1.5, 9.2)), 1)
@@ -488,13 +488,13 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
         s_ratio = (b_cnt - r_cnt) / (total_count + 5.0)
         s_score = round(float(np.clip(5.0 + math.tanh(s_ratio * 3.0) * 3.5 + math.log(days_span + 1) * 0.15, 1.5, 9.2)), 1)
 
-    # 2. 展望分數：非線性邊際成長率與時間軸權重，解決 1W~2M 分數死鎖
+    # 2. 展望分數
     growth_net = gp_cnt - gn_cnt
     growth_intensity = growth_net / math.pow(total_count, 0.75)
     temporal_curve = 1.0 + 0.35 * math.atan(days_span / 15.0)
     g_score = round(float(np.clip(5.0 + (math.tanh(growth_intensity * 2.8) * 3.2) * temporal_curve, 1.5, 9.2)), 1)
 
-    # 3. 熱點 (Hotspot)：改用真實爆發密度與 Arctan 漸近線非線性對應，解決全面卡死
+    # 3. 熱點 (Hotspot)
     burst_density = weighted_hotspot_sum / math.pow(days_span, 0.65)
     h_score = round(float(np.clip(2.0 + (2.0 / math.pi) * math.atan(burst_density * 0.4) * 6.5, 1.0, 9.5)), 1)
 
@@ -833,16 +833,50 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     latest_proba = float(model.predict_proba(latest_features)[:, 1][0]) if not latest_features.empty else 0.5
     beta3_trend_val = df['Beta_3_Trend_5D'].dropna().iloc[-1] if df['Beta_3_Trend_5D'].notna().any() else 0.0
 
-    np.random.seed(abs(hash(symbol)) % 10000)
-    base_probs = [0.15, 0.25, 0.35, 0.15, 0.10]
-    if latest_proba > 0.5:
-        base_probs = [0.10, 0.20, 0.40, 0.20, 0.10]
-    
-    turning_bar_idx = int(np.argmax(base_probs)) + 1
+    # -------------------------------------------------------------------
+    # 優化：特徵驅動動態轉折點預測演算法 (取代原先寫死的陣列)
+    # -------------------------------------------------------------------
+    current_rsi_series = df['RSI_14'].dropna()
+    current_rsi = float(current_rsi_series.iloc[-1]) if not current_rsi_series.empty else 50.0
+
+    current_vol_series = df['Vol_10D'].dropna()
+    current_vol = float(current_vol_series.iloc[-1]) if not current_vol_series.empty else 0.02
+
+    current_gamma_series = df['Gamma_Trend_5D'].dropna()
+    current_gamma_trend = float(current_gamma_series.iloc[-1]) if not current_gamma_series.empty else 0.0
+
+    # 1. 決定方向
+    if latest_proba > 0.55:
+        turning_direction = "向上突破 ↗"
+    elif latest_proba < 0.45:
+        turning_direction = "向下回檔 ↘"
+    else:
+        turning_direction = "震盪整理 ↔"
+
+    # 2. 決定轉折急迫性與對應的 K 棒
+    rsi_extreme_dist = max(0.0, abs(current_rsi - 50.0) - 15.0) / 35.0
+    vol_factor = min(1.0, current_vol * 20.0)
+    urgency = float(np.clip(rsi_extreme_dist * 0.5 + vol_factor * 0.3 + abs(current_gamma_trend) * 10.0, 0, 1))
+
+    if urgency > 0.7:
+        w = np.array([0.4, 0.3, 0.15, 0.1, 0.05])
+    elif urgency > 0.4:
+        w = np.array([0.1, 0.25, 0.4, 0.15, 0.1])
+    else:
+        w = np.array([0.05, 0.15, 0.3, 0.3, 0.2])
+
+    model_conf = abs(latest_proba - 0.5) * 2.0
+    w[0] += model_conf * 0.1
+    w[1] += model_conf * 0.05
+    w = w / np.sum(w)
+
+    turning_bar_idx = int(np.argmax(w)) + 1
     turning_bar_name = f"第 {turning_bar_idx} 根 K"
-    turning_bar_prob = float(base_probs[turning_bar_idx - 1] * 100 + (latest_proba * 20))
-    turning_bar_prob = min(92.5, max(15.0, turning_bar_prob))
-    turning_direction = "向上反彈 ↗" if latest_proba > 0.45 else "向下回檔 ↘"
+
+    # 3. 計算動態轉折發生機率
+    turning_bar_prob = 35.0 + (model_conf * 45.0) + (current_vol * 150.0) + (w[turning_bar_idx-1] * 20.0)
+    turning_bar_prob = float(np.clip(turning_bar_prob, 25.0, 92.5))
+    # -------------------------------------------------------------------
 
     base_rsi_oversold, base_rsi_overbought = 40.0, 70.0
     if latest_proba > 0.6: base_rsi_oversold, base_rsi_overbought = 45.0, 75.0
@@ -1016,7 +1050,7 @@ shap_explain_text_plain = (
     "💡 模型圖表綜合解釋說明：\n"
     "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用，以 Price_Mom_30D 與 Beta_3 影響力最大。\n"
     "• Gamma（紫線）：大於 0 代表資金簇擁追價，小於 0 代表資金退潮。\n"
-    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動新爆發推升期 (Surge)。\n"
+    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動能爆發推升期 (Surge)。\n"
     "• 累積報酬（紅線）：驗證模型在爆發期前後捕捉波段主升段的成效。"
 )
 
@@ -1061,6 +1095,9 @@ with fig_col2:
         plt.tight_layout(); st.pyplot(fig2)
     except Exception as e: st.info(f"SHAP 渲染失敗：{e}")
 
+# ==========================================
+# 8. 確保包含所有參數的 Word 報告打包變數
+# ==========================================
 ctx = {
     "name": company_name, "interval_label": interval_label, "price": price, "change_txt": fmt_pct(change),
     "latest_proba": latest_proba, "rec": rec_title, "blue_price": blue_price, "red_price": red_price,
@@ -1081,6 +1118,4 @@ ctx = {
     "shap_explain_text": shap_explain_text_plain, "f5_high": f5_high, "f5_low": f5_low, "upside": upside,
     "buy_low": buy_low, "buy_high": buy_high, "sell_low": sell_low, "sell_high": sell_high
 }
-
-
 st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
