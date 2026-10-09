@@ -687,7 +687,21 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     df_ai = df.dropna(subset=features)
     X, y = df_ai[features], (fwd_excess.reindex(df_ai.index) > 0.005).astype(int)
 
-    model = lgb.LGBMClassifier(n_estimators=100, learning_rate=0.03, max_depth=4, random_state=42, verbose=-1)
+    # ==========================================
+    # 升級版：精細化超參數配置的 LightGBM 模型
+    # ==========================================
+    model = lgb.LGBMClassifier(
+        n_estimators=300,
+        learning_rate=0.015,
+        max_depth=3,
+        num_leaves=7,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_alpha=0.1,
+        reg_lambda=0.5,
+        random_state=42,
+        verbose=-1
+    )
     
     tscv = TimeSeriesSplit(n_splits=max(2, len(X) // 10 if len(X) < 30 else 5))
     cv_test_acc, cv_test_auc, test_index = [], [], np.array([], dtype=int)
@@ -715,10 +729,6 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
         shap_vals_latest = explainer.shap_values(latest_features)
         s_vals = shap_vals_latest[1][0] if isinstance(shap_vals_latest, list) else (shap_vals_latest[0, :, 1] if getattr(shap_vals_latest, "ndim", 3) == 3 else shap_vals_latest[0])
         feat_shap_map = dict(zip(features, s_vals))
-        
-        # 若動能/RSI帶來的 SHAP 值為正(推升)，代表下檔有強支撐；若為負(壓抑)，代表上方有沈重賣壓
-        mom_30d_val = latest_features['Price_Mom_30D'].values[0] if 'Price_Mom_30D' in latest_features else 0.0
-        rsi_val = latest_features['RSI_14'].values[0] if 'RSI_14' in latest_features else 50.0
         
         support_offset = max(0.01, 0.03 + (feat_shap_map.get('Price_Mom_30D', 0.0) * 0.05))
         resistance_offset = max(0.01, 0.03 - (feat_shap_map.get('RSI_14', 0.0) * 0.05))
@@ -808,7 +818,7 @@ tp_15x, tp_lower = eps_adj * 15.0, eps_adj * max(15.0, pe_target - 0.5 * pe_std)
 tp_upper_1, tp_upper_2 = eps_adj * (pe_target + 1.0 * pe_std), eps_adj * (pe_target + 2.0 * pe_std)
 
 rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else ("保守觀望" if latest_proba < 0.45 else "中性震盪")
-rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_desc else "建議持有")
+rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
 
 f5_ret_std = float(valid_stock.pct_change().tail(20).std() * math.sqrt(5)) if len(valid_stock) >= 20 else 0.02
 f5_high = price * (1 + f5_ret_std * (1.2 if latest_proba > 0.5 else 0.5))
@@ -931,7 +941,7 @@ st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決�
 
 shap_explain_text_plain = (
     f"💡 模型圖表綜合解釋說明：\n"
-    f"• 歷史回測圖解析：紫線 Gamma 代表市場資金簇擁與推擠度，大於 0 表示強勢追價；綠線 Beta_3 代表個股相對於輝達 (NVDA) 的獨立超額衝擊。當兩者轉強並進入黃色標示之「動能爆發推升期 (Surge)」時，紅色的累積報酬曲線呈現明確的主升段噴發。\n"
+    f"• 歷史回測圖解析：紫線 Gamma 代表市場資金簇擁與推擠度，大於 0 表示強勢追價；綠線 Beta_3 代表個股相對於輝達 (NVDA) 的獨立超額衝擊。當兩者轉強並進入黃色標示之「動新爆發推升期 (Surge)」時，紅色的累積報酬曲線呈現明確的主升段噴發。\n"
     f"• SHAP 特徵歸因解析：模型以 Price_Mom_30D（30日動能差）與 Beta_3 具備最高決策影響力。右側紅點代表特徵值偏高時會顯著推升未來正報酬機率。\n"
     f"• 🎯 SHAP 動態反推價位：結合當前特徵對模型的邊際貢獻，機器學習反推之 **AI 支撐價為 ${shap_support:,.2f} 元**，**AI 壓力價為 ${shap_resistance:,.2f} 元**。"
 )
