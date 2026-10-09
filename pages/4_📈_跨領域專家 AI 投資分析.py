@@ -334,7 +334,7 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     hotspot_keywords = ["突破", "爆發", "大漲", "創高", "急單", "跌停", "崩", "震撼", "重訊"]
 
     if not all_titles:
-        return 5.0, 5.0, 4.0, 2, 1, 2, 1, max(3, int(hours / 24) * 2), all_titles, sources_count
+        return 5.0, 5.0, 4.0, 2, 1, 2, 1, max(3, int(hours / 24) * 2), all_titles, sources_count, unique_items
 
     now = datetime.now()
     b_cnt, r_cnt, gp_cnt, gn_cnt = 0, 0, 0, 0
@@ -371,7 +371,7 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     burst_density = weighted_hotspot_sum / math.pow(days_span, 0.65)
     h_score = round(float(np.clip(2.0 + (2.0 / math.pi) * math.atan(burst_density * 0.4) * 6.5, 1.0, 9.5)), 1)
 
-    return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), total_count, all_titles, sources_count
+    return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), total_count, all_titles, sources_count, unique_items
 
 # ==========================================
 # 3. 行情財報擷取與機器學習特徵
@@ -586,11 +586,11 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
-sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
-sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
-sent_1m, g_1m, h_1m, b1m, r1m, gp1m, gn1m, c1m, titles_1m, s_1m = comprehensive_quant_evaluation(symbol, company_name, 720)
-sent_2m, g_2m, h_2m, b2m, r2m, gp2m, gn2m, c2m, titles_2m, s_2m = comprehensive_quant_evaluation(symbol, company_name, 1440)
+sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h, items_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
+sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w, items_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
+sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w, items_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
+sent_1m, g_1m, h_1m, b1m, r1m, gp1m, gn1m, c1m, titles_1m, s_1m, items_1m = comprehensive_quant_evaluation(symbol, company_name, 720)
+sent_2m, g_2m, h_2m, b2m, r2m, gp2m, gn2m, c2m, titles_2m, s_2m, items_2m = comprehensive_quant_evaluation(symbol, company_name, 1440)
 
 with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     fetch_period = "59d" if interval in ["15m", "30m", "5m"] else ("730d" if interval != "1d" else None)
@@ -912,6 +912,14 @@ src_df_data = [
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
+# 補回：近 48H 新聞標題與明細展示
+st.markdown("#### 📰 近 48H 即時新聞標題與明細清單")
+if items_48h:
+    for idx, (t_title, t_dt) in enumerate(items_48h[:10], 1):
+        st.markdown(f"<small><b>{idx}.</b> [{t_dt.strftime('%m-%d %H:%M')}] {t_title}</small>", unsafe_allow_html=True)
+else:
+    st.info("近 48 小時內尚無符合條件的即時新聞。")
+
 st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分 (已啟用時間序列 RSS 過濾)")
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
@@ -1052,7 +1060,7 @@ ctx = {
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob, "turning_direction": turning_direction,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h, "h_48h": h_48h, "sent_48h": sent_48h,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp_48h, "gn_48h": gn_48h, "h_48h": h_48h, "sent_48h": sent_48h,
     "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "h_1w": h_1w, "sent_1w": sent_1w,
     "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "h_2w": h_2w, "sent_2w": sent_2w,
     "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "h_1m": h_1m, "sent_1m": sent_1m,
