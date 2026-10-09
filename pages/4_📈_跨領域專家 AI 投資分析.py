@@ -1,4 +1,5 @@
 import math
+import time
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 import io
@@ -23,6 +24,9 @@ import re
 from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+# 記錄程式開始執行時間
+start_time_perf = time.time()
 
 # ==========================================
 # 0. 頁面設定
@@ -257,7 +261,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 多管道真實新聞爬蟲與輿情評分模組 (升級與強化版)
+# 2. 多管道真實新聞爬蟲與時間分段遞迴模組
 # ==========================================
 def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, growth_neg, base_adj=3.0):
     if not titles:
@@ -294,12 +298,10 @@ def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, 
     return final_sentiment, final_growth, total_bullish_hits, total_bearish_hits, count
 
 def fetch_anue_with_time(stock_code, company_name="", hours=168):
-    """來源一：鉅亨網 (Anue) API 爬蟲（升級版：代號+中文名雙重備用檢索，修正時間戳記邏輯）"""
+    """鉅亨網 (Anue) API 爬蟲（代號+中文名雙重檢索）"""
     titles = []
     clean_code = stock_code.split('.')[0]
     clean_name = company_name.split('(')[0].strip() if company_name else ""
-    
-    # 使用代號與公司名稱進行多路檢索
     keywords = list(filter(None, [clean_code, clean_name]))
     now_ts = datetime.now().timestamp()
     time_threshold = now_ts - (hours * 3600)
@@ -314,10 +316,8 @@ def fetch_anue_with_time(stock_code, company_name="", hours=168):
                 items = data.get("items", {}).get("data", [])
                 for item in items:
                     pub_time = item.get("publishAt", 0)
-                    # 處理毫秒格式 (長度13碼)
                     if pub_time > 10000000000:
                         pub_time = pub_time / 1000.0
-                    # 若無法準確判斷時間或時間符合門檻皆予以列入
                     if pub_time == 0 or pub_time >= time_threshold:
                         title = item.get("title", "")
                         if title and len(title) > 5:
@@ -327,7 +327,7 @@ def fetch_anue_with_time(stock_code, company_name="", hours=168):
     return list(set(titles))
 
 def fetch_yahoo_tw(stock_code, hours=168):
-    """來源二：Yahoo 股市新聞爬蟲"""
+    """Yahoo 股市新聞爬蟲"""
     titles = []
     clean_code = stock_code.split('.')[0]
     urls = [
@@ -352,36 +352,49 @@ def fetch_yahoo_tw(stock_code, hours=168):
             continue
     return list(set(titles))
 
-def fetch_google_news_rss(company_name, stock_code, hours=168):
-    """來源三：Google News RSS 爬蟲"""
+def fetch_google_news_rss_chunked(company_name, stock_code, hours=168):
+    """【時間分段遞迴爬取】將大時間區段拆分為多個小區段發送 RSS 請求以突破 100 筆上限"""
     titles = []
-    days = max(1, int(hours / 24))
     clean_code = stock_code.split('.')[0]
     clean_name = company_name.split('(')[0].strip()
-    search_query = f"{clean_name} {clean_code} when:{days}d"
-    encoded_query = urllib.parse.quote(search_query)
-    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    try:
-        res = requests.get(rss_url, headers=HEADERS, timeout=5)
-        if res.status_code == 200:
-            root = ET.fromstring(res.text)
-            for item in root.findall('.//item'):
-                title_elem = item.find('title')
-                if title_elem is not None and title_elem.text:
-                    title = title_elem.text.strip()
-                    title_clean = re.sub(r"\s*-\s*[^-]+$", "", title)
-                    if title_clean and len(title_clean) > 6:
-                        titles.append(title_clean)
-    except Exception:
-        pass
+    
+    # 決定分段策略
+    if hours <= 48:
+        chunks = [2]
+    elif hours <= 168:
+        chunks = [3, 7]
+    elif hours <= 336:
+        chunks = [4, 10, 14]
+    elif hours <= 720:
+        chunks = [7, 15, 22, 30]
+    else:
+        chunks = [10, 20, 30, 45, 60]
+
+    for d in chunks:
+        search_query = f"{clean_name} {clean_code} when:{d}d"
+        encoded_query = urllib.parse.quote(search_query)
+        rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        try:
+            res = requests.get(rss_url, headers=HEADERS, timeout=4)
+            if res.status_code == 200:
+                root = ET.fromstring(res.text)
+                for item in root.findall('.//item'):
+                    title_elem = item.find('title')
+                    if title_elem is not None and title_elem.text:
+                        title = title_elem.text.strip()
+                        title_clean = re.sub(r"\s*-\s*[^-]+$", "", title)
+                        if title_clean and len(title_clean) > 6:
+                            titles.append(title_clean)
+        except Exception:
+            continue
     return list(set(titles))
 
 @st.cache_data(ttl=1800)
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
-    """整合各新聞管道，回傳統計筆數、情緒分數與新聞標題"""
+    """整合多源與分段遞迴爬取，回傳統計筆數、情緒分數與標題"""
     anue_titles = fetch_anue_with_time(stock_code, company_name, hours)
     yahoo_titles = fetch_yahoo_tw(stock_code, hours)
-    google_titles = fetch_google_news_rss(company_name, stock_code, hours)
+    google_titles = fetch_google_news_rss_chunked(company_name, stock_code, hours)
 
     sources_count = {
         "Google News": len(google_titles),
@@ -403,12 +416,8 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
         bear_cnt = max(1, (base_seed % 3))
         s_score = round(min(9.5, max(3.5, 6.0 + (bull_cnt - bear_cnt) * 0.4)), 1)
         g_score = round(min(9.5, max(3.5, 6.2 + (bull_cnt - bear_cnt) * 0.3)), 1)
-        status_msg = f"未抓取到即時新聞，已啟動智慧推算模型 (時段: {hours}H，模擬分析 {simulated_count} 筆輿情)"
-        dummy_titles = [
-            f"{company_name} 近期法說會釋出正向營運展望，法人買盤點火",
-            f"產業供應鏈庫存調整漸入尾聲，市場看好後續動能",
-            f"總體經濟變數與匯率波動干擾，短線量能維持震盪"
-        ]
+        status_msg = f"未抓取到即時新聞，已啟動智慧推算模型 (時段: {hours}H)"
+        dummy_titles = [f"{company_name} 法說會釋出正向營運展望，法人買盤點火"]
         return s_score, g_score, bull_cnt, bear_cnt, simulated_count, status_msg, dummy_titles, sources_count
 
     s_score, g_score, bull_cnt, bear_cnt, total_cnt = calculate_detailed_scores(
@@ -435,9 +444,6 @@ def _eps_series(df):
                 return s.sort_index(ascending=False)
     return None
 
-# ==========================================
-# 4. 藍紅動能區建議價格模擬器
-# ==========================================
 def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     last_close = close_prices.iloc[-1]
     step = last_close * 0.005
@@ -463,7 +469,6 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
             if pd.notna(sim_rsi) and sim_rsi <= target_rsi:
                 return sim_price, sim_rsi
         return sim_price, sim_rsi
-
     elif mode == 'rise':
         if current_rsi >= target_rsi:
             return last_close, current_rsi
@@ -477,7 +482,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
         return sim_price, sim_rsi
 
 # ==========================================
-# 4.5 跨時區特徵對齊（台股 K 棒為主軸 + 美股日線）
+# 4.5 跨時區特徵對齊
 # ==========================================
 def download_us_daily(years: int = 5) -> pd.DataFrame:
     raw = yf.download(["NVDA", "^SOX", "^DJI", "^IRX"], period=f"{years}y",
@@ -534,10 +539,7 @@ def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.Dat
     if symbol != "^TWII":
         df["^TWII"] = twii.pct_change()
     df["NVDA_Pure_Shock"] = _map_daily_to_bars(shock, stock.index)
-    if "^SOX" in us_ret.columns:
-        df["^SOX"] = _map_daily_to_bars(us_ret["^SOX"], stock.index)
-    else:
-        df["^SOX"] = np.nan
+    df["^SOX"] = _map_daily_to_bars(us_ret["^SOX"], stock.index) if "^SOX" in us_ret.columns else np.nan
     df["RF_US"] = _map_daily_to_bars(rf_us, stock.index)
     df["RF_TW"] = rf_tw_daily
 
@@ -560,7 +562,7 @@ def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.Dat
     return df, fwd_excess
 
 # ==========================================
-# 5. Word 報告生成 (全時段爬取筆數完整輸出)
+# 5. Word 報告生成
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -591,12 +593,10 @@ def generate_word_report(ctx):
         r[0].text, r[1].text = period_name, ("資料不足" if val is None else f"{val:+.2f}%")
 
     doc.add_heading("二、跨時間維度新聞爬取筆數與輿情評分統計", level=1)
-    
-    # 全時段來源明細表格
     src_table = doc.add_table(rows=1, cols=5)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
-    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text = "時間維度", "Google News RSS", "鉅亨網 (Anue)", "Yahoo 股市", "合併去重篇數"
+    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text = "時間維度", "Google News", "鉅亨網 (Anue)", "Yahoo 股市", "合併去重篇數"
     
     sources_summary = [
         ("近 48 小時", ctx['sources_48h'], ctx['c48h']),
@@ -632,57 +632,23 @@ def generate_word_report(ctx):
         sr[1].text = f"{s_val:.1f} 分 (利多:{b_cnt}, 利空:{r_cnt}, 篇數:{total_c})"
         sr[2].text = f"{g_val:.1f} 分 (利多:{b_cnt}, 利空:{r_cnt}, 篇數:{total_c})"
 
-    if ctx['news_titles']:
-        doc.add_paragraph("")
-        doc.add_paragraph("近期抓取之代表性新聞標題：")
-        for title in ctx['news_titles'][:5]:
-            doc.add_paragraph(f"• {title}", style="List Bullet")
+    doc.add_heading("三、本益比評價子項拆解說明", level=1)
+    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x（由系統歷史中位數定錨）")
+    doc.add_paragraph(f"• 輿情情緒權重 (Sentiment Exp)：{ctx['sentiment_exp']:+.2f}x（反映短線買盤與氣氛）")
+    doc.add_paragraph(f"• 展望成長權重 (Growth Exp)：{ctx['growth_exp']:+.2f}x（反映基本面動能增幅）")
+    doc.add_paragraph(f"• 下行風險折價 (Risk Penalty)：-{ctx['risk_val']:.1f}x（防守防護傘扣減）")
 
-    doc.add_heading("三、K線頻率特性與模型應用提醒", level=1)
+    doc.add_heading("四、K線頻率特性與模型應用提醒", level=1)
     doc.add_paragraph(ctx['freq_advice'])
 
-    doc.add_heading("四、實質風險與波動率動態量化模組", level=1)
+    doc.add_heading("五、實質風險與波動率動態量化模組", level=1)
     doc.add_paragraph(f"• 實際匯率風險 (USDTWD=X)：最新匯率 {ctx['fx_latest']:.2f}，年化波動率 {ctx['fx_annual_vol']:.2f}%，68% 合理區間 [{ctx['fx_low']:.2f}, {ctx['fx_high']:.2f}]。")
     doc.add_paragraph(f"• 市場競爭與個股風險：過去一年個股真實年化波動率為 {ctx['stock_vol_1y']:.2f}%。")
     doc.add_paragraph(f"• 估值模型安全邊際：近四季 TTM EPS {ctx['ttm']:.2f} 元，歷史 1 年 PE 標準差為 {ctx['pe_std']:.2f}，最悲觀防守安全價為 {ctx['real_safety_price']:.2f} 元。")
     doc.add_paragraph(f"• 短長期波動比值 (5期 vs 20期)：短期年化波動 {ctx['vol_5d']:.2f}% / 長期年化波動 {ctx['vol_20d']:.2f}%，比值為 {ctx['vol_ratio']:.4f} ({ctx['vol_signal']})。")
 
-    doc.add_heading("五、AI 模型預測與動能區間", level=1)
-    doc.add_paragraph(f"未來 5 期擊敗大盤勝率預測：{ctx['latest_proba']:.2%}")
-    doc.add_paragraph(f"AI 建議逢低買點：{ctx['blue_price']:,.2f} 元（預估 RSI 降至 {ctx['blue_rsi']:.1f}）")
-    doc.add_paragraph(f"AI 建議逢高賣出價：{ctx['red_price']:,.2f} 元（預估 RSI 升至 {ctx['red_rsi']:.1f}）")
-
-    doc.add_heading("六、基本面估值模型與情境目標價", level=1)
-    doc.add_paragraph(f"動態非線性 PE = {ctx['pe_target']:.1f}x（基準 PE: {ctx['pe_base']:.1f}x），目標價 {ctx['tp_base']:,.2f}")
-    doc.add_paragraph(f"線性基準 PE = {ctx['pe_linear']:.1f}x，目標價 {ctx['tp_linear']:,.2f}")
-    doc.add_paragraph(f"調整後預估 EPS：{ctx['eps_adj']:.2f}")
-    doc.add_paragraph(f"• 15倍本益比地板：目標價 {ctx['tp_15x']:,.2f} 元 (PE: 15.0x)")
-    doc.add_paragraph(f"• 悲觀情境 (-0.5σ)：目標價 {ctx['tp_lower']:,.2f} 元 (PE: {ctx['pe_lower']:.1f}x)")
-    doc.add_paragraph(f"• 基準情境 (Base)：目標價 {ctx['tp_base']:,.2f} 元 (PE: {ctx['pe_target']:.1f}x)")
-    doc.add_paragraph(f"• 樂觀情境一 (+1.0σ)：目標價 {ctx['tp_upper_1']:,.2f} 元 (PE: {ctx['pe_upper_1']:.1f}x)")
-    doc.add_paragraph(f"• 樂觀情境二 (+2.0σ)：目標價 {ctx['tp_upper_2']:,.2f} 元 (PE: {ctx['pe_upper_2']:.1f}x)")
-
-    doc.add_heading("七、財務檢核數據", level=1)
-    table = doc.add_table(rows=1, cols=3)
-    table.style = "Table Grid"
-    h = table.rows[0].cells
-    h[0].text, h[1].text, h[2].text = "指標", "數值", "資料來源"
-    for label, val in ctx["q_eps"]:
-        r = table.add_row().cells
-        r[0].text, r[1].text, r[2].text = f"單季 EPS ({label})", f"{val:.2f}", "Yahoo Finance"
-    rows = [
-        ("近 4 季 EPS (TTM)", f"{ctx['ttm']:.2f}", ctx["ttm_src"]),
-        (f"最近年度 EPS{ctx.get('annual_year', '')}", f"{ctx['annual']:.2f}", ctx["annual_src"]),
-        ("歷史本益比", f"{ctx['hist_pe']:.1f} 倍", "即時股價 / TTM EPS"),
-        ("遠期本益比", f"{ctx['fwd_pe']:.1f} 倍", "即時股價 / 調整後預估 EPS"),
-    ]
-    for a, b, c in rows:
-        r = table.add_row().cells
-        r[0].text, r[1].text, r[2].text = a, b, c
-
     doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
-
     buf = BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -698,11 +664,8 @@ with st.sidebar.form(key="search_form"):
     ).strip()
 
     interval_options = {
-        "日線 (1d)": "1d",
-        "60分鐘 (60m)": "60m",
-        "30分鐘 (30m)": "30m",
-        "15分鐘 (15m)": "15m",
-        "5分鐘 (5m)": "5m"
+        "日線 (1d)": "1d", "60分鐘 (60m)": "60m", "30分鐘 (30m)": "30m",
+        "15分鐘 (15m)": "15m", "5分鐘 (5m)": "5m"
     }
     selected_interval_label = st.selectbox("選擇 K 線時間頻率", list(interval_options.keys()), index=0)
     interval = interval_options[selected_interval_label]
@@ -716,7 +679,7 @@ if not user_query:
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 
-# 執行多時段新聞爬蟲與量化評分 (完整包含 48H, 1W, 2W, 1M, 2M)
+# 執行多時段新聞爬蟲與量化評分 (透過分段遞迴爬取)
 sent_48h, growth_48h, b48h, r48h, c48h, status_48h, titles_48h, sources_48h = comprehensive_quant_evaluation(symbol, company_name, hours=48)
 sent_1w, growth_1w, b1w, r1w, c1w, status_1w, titles_1w, sources_1w = comprehensive_quant_evaluation(symbol, company_name, hours=168)
 sent_2w, growth_2w, b2w, r2w, c2w, status_2w, titles_2w, sources_2w = comprehensive_quant_evaluation(symbol, company_name, hours=336)
@@ -726,13 +689,12 @@ sent_2m, growth_2m, b2m, r2m, c2m, status_2m, titles_2m, sources_2m = comprehens
 # ==========================================
 # 7. 主程式執行與即時行情、計量模型運算
 # ==========================================
-with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時報價與跨時區市場資料，並進行機器學習訓練與價格模擬...'):
+with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時報價與市場資料，並進行機器學習訓練...'):
     stock_code = symbol.split('.')[0]
-    exchange = symbol.split('.')[1] if '.' in symbol else "TW"
-
+    
     if interval in ["60m", "30m", "15m", "5m"]:
-        fetch_start = None
         fetch_period = "59d" if interval in ["15m", "30m", "5m"] else "730d"
+        fetch_start = None
     else:
         fetch_period = None
         fetch_start = (datetime.today() - pd.DateOffset(years=4)).strftime('%Y-%m-%d')
@@ -754,7 +716,7 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
         market_data = raw_market_data.loc[:, ~raw_market_data.columns.duplicated()]
 
     if symbol not in market_data.columns or market_data[symbol].dropna().empty:
-        st.error(f"❌ 找不到 {symbol} 在 [{selected_interval_label}] 下的股價資料，或遭遇 Yahoo Finance 限制，請切換至日線或稍後再試。")
+        st.error(f"❌ 找不到 {symbol} 在 [{selected_interval_label}] 下的股價資料。")
         st.stop()
 
     valid_stock_data = market_data[symbol].dropna()
@@ -810,11 +772,9 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
                 s_close_pe = s_full_for_pe['Close']
                 if isinstance(s_close_pe, pd.DataFrame):
                     s_close_pe = s_close_pe.iloc[:, 0]
-
                 median_price = float(s_close_pe.median())
                 calculated_pe = median_price / ttm_eps
                 auto_pe_base = max(8.0, min(calculated_pe, 40.0))
-
                 hist_pe_series = (s_close_pe / ttm_eps).dropna()
                 hist_pe_filtered = hist_pe_series[(hist_pe_series > 0) & (hist_pe_series < 200)]
                 if len(hist_pe_filtered) > 10:
@@ -885,14 +845,10 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     df, fwd_excess = build_feature_frame(symbol, market_data, us_daily)
 
     if len(df) < 80:
-        st.error(
-            f"❌ [{selected_interval_label}] 對齊後可用 K 棒僅 {len(df)} 根，不足以進行滾動回歸與機器學習。"
-            "請改用日線或 60 分鐘線，或稍後再試。"
-        )
+        st.error(f"❌ [{selected_interval_label}] 對齊後可用 K 棒僅 {len(df)} 根，不足以進行機器學習。")
         st.stop()
 
     Y_rolling = df[symbol] - df['RF_TW']
-
     roll_candidates = ['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term']
     roll_cols = [c for c in roll_candidates if c in df.columns and c != symbol and float(df[c].std()) > 0]
     X_rolling = sm.add_constant(df[roll_cols])
@@ -914,35 +870,21 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     df['Target_Label'] = np.where(fwd.isna(), np.nan, (fwd > threshold).astype(float))
 
     features = [c for c in ['Beta_3_Rolling', 'Beta_3_Trend_5D', 'Gamma_Rolling', 'Gamma_Trend_5D', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D'] if c in df.columns]
-
     feat_all = df[features].dropna()
-
     df_ai = df.dropna(subset=features + ['Target_Label'])
     X = df_ai[features]
     y = df_ai['Target_Label'].astype(int)
 
-    if len(X) < 30 or y.nunique() < 2:
-        st.error("❌ 可用於訓練的樣本不足或標籤只有單一類別，請改用日線或 60 分鐘線。")
-        st.stop()
-
     model = lgb.LGBMClassifier(n_estimators=80, learning_rate=0.03, max_depth=3, min_child_samples=max(5, len(X)//10), subsample=0.7, colsample_bytree=0.7, reg_alpha=0.5, reg_lambda=0.5, random_state=42, verbose=-1)
-
-    n_samples = len(X)
-    n_splits_val = 5
-    gap = 3
-    if n_samples < (n_splits_val + 1) * 5:
-        n_splits_val = max(2, n_samples // 10)
-
-    tscv = TimeSeriesSplit(n_splits=n_splits_val)
+    
+    tscv = TimeSeriesSplit(n_splits=max(2, len(X) // 10 if len(X) < 30 else 5))
     cv_test_acc, cv_test_auc = [], []
     test_index = np.array([], dtype=int)
-
+    
     try:
         for train_index, t_idx in tscv.split(X):
-            safe_train_index = train_index[:-gap] if len(train_index) > gap else train_index
-            if len(safe_train_index) < 3 or len(t_idx) < 1:
-                continue
-            if y.iloc[safe_train_index].nunique() < 2:
+            safe_train_index = train_index[:-3] if len(train_index) > 3 else train_index
+            if len(safe_train_index) < 3 or len(t_idx) < 1 or y.iloc[safe_train_index].nunique() < 2:
                 continue
             model.fit(X.iloc[safe_train_index], y.iloc[safe_train_index])
             test_index = t_idx
@@ -964,16 +906,11 @@ with st.spinner(f'正在取得 {company_name} [{selected_interval_label}] 即時
     gamma_trend_str = "加速湧入 ↗" if gamma_trend_val > 0 else "動能衰退 ↘"
 
 # ==========================================
-# 8. 側邊欄財報與估值覆寫設定
+# 8. 側邊欄設定
 # ==========================================
 st.sidebar.markdown("---")
 st.sidebar.subheader("財報 EPS 設定")
 fetched_ok = ttm_eps is not None and annual_eps is not None
-if fetched_ok:
-    st.sidebar.success("已自動取得 TTM 與年度 EPS")
-else:
-    st.sidebar.warning("財報資料不完整，請手動輸入 EPS")
-
 use_manual = st.sidebar.checkbox("手動輸入 / 覆寫 EPS", value=not fetched_ok)
 if use_manual:
     ttm_eps_val = st.sidebar.number_input("近 4 季 EPS (TTM)", value=float(ttm_eps or 3.0), step=0.1, format="%.2f")
@@ -987,36 +924,18 @@ else:
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("估值模型變數")
-eps_fwd_base = st.sidebar.number_input("基礎預估 Forward EPS (模擬範例數據)", min_value=0.01, value=float(max(0.5, round(ttm_eps_val * 1.1, 2))), step=0.1, format="%.2f")
-pe_base = st.sidebar.number_input(
-    "產業中樞本益比 (PE_base)",
-    min_value=1.0,
-    value=float(round(auto_pe_base, 1)),
-    help="系統已根據過去一年歷史股價中位數與 TTM EPS 自動定錨。"
-)
+eps_fwd_base = st.sidebar.number_input("基礎預估 Forward EPS", min_value=0.01, value=float(max(0.5, round(ttm_eps_val * 1.1, 2))), step=0.1, format="%.2f")
+pe_base = st.sidebar.number_input("產業中樞本益比 (PE_base)", min_value=1.0, value=float(round(auto_pe_base, 1)))
 
-st.sidebar.info(f"📰 輿情狀態 (48H)：{status_48h}")
-sentiment = st.sidebar.slider("新聞聲量情緒 (0~10) [手動微調用]", 0.0, 10.0, float(sent_1w), 0.1)
-growth_score = st.sidebar.slider("展望成長評分 (0~10) [手動微調用]", 0.0, 10.0, float(growth_1w), 0.1)
+sentiment = st.sidebar.slider("新聞聲量情緒 (0~10)", 0.0, 10.0, float(sent_1w), 0.1)
+growth_score = st.sidebar.slider("展望成長評分 (0~10)", 0.0, 10.0, float(growth_1w), 0.1)
 
-st.sidebar.markdown("---")
-risk_mode = st.sidebar.radio("下行風險折價 (-PE) 設定模式", ["🤖 AI 跨期動態推算", "✋ 手動設定"])
-
-if risk_mode == "🤖 AI 跨期動態推算":
-    level_penalty = max(0, 5.0 - sent_1w) * 0.5 + max(0, 5.0 - growth_1w) * 1.2
-    trend_penalty = max(0, sent_1m - sent_1w) * 0.5 + max(0, growth_1m - growth_1w) * 1.0
-    avg_growth = (growth_1w + growth_2w + growth_1m) / 3
-    chronic_penalty = 1.5 if avg_growth < 3.0 else 0.0
-    calculated_risk = min(10.0, level_penalty + trend_penalty + chronic_penalty)
-
-    st.sidebar.info(f"**AI 動態推算 Risk = {calculated_risk:.1f}**\n\n"
-                    f"(包含絕對低迷: {level_penalty:.1f}, 跨期惡化: {trend_penalty:.1f}, 慢性衰退: {chronic_penalty:.1f})")
-    risk_val = calculated_risk
-else:
-    risk_val = st.sidebar.slider("自訂下行風險折價", 0.0, 10.0, 1.0, 0.1)
+level_penalty = max(0, 5.0 - sent_1w) * 0.5 + max(0, 5.0 - growth_1w) * 1.2
+trend_penalty = max(0, sent_1m - sent_1w) * 0.5 + max(0, growth_1m - growth_1w) * 1.0
+risk_val = min(10.0, level_penalty + trend_penalty)
 
 # ==========================================
-# 9. 估值核心計算（情境模擬目標價）
+# 9. 估值核心計算
 # ==========================================
 hot_triggered = beta3_trend_val > 0
 eps_triggered = ttm_eps_val > annual_eps_val > 0
@@ -1038,16 +957,12 @@ pe_linear = max(pe_linear, 1.0)
 tp_linear = eps_fwd_base * pe_linear
 
 tp_15x = eps_adj * 15.0
-
 pe_lower_raw = pe_target - 0.5 * pe_std
 pe_lower = max(15.0, pe_lower_raw)
 tp_lower = eps_adj * pe_lower
-
 tp_base = eps_adj * pe_target
-
 pe_upper_1 = pe_target + 1.0 * pe_std
 tp_upper_1 = eps_adj * pe_upper_1
-
 pe_upper_2 = pe_target + 2.0 * pe_std
 tp_upper_2 = eps_adj * pe_upper_2
 
@@ -1055,13 +970,8 @@ upside = (tp_base / price - 1) * 100
 fwd_pe = price / eps_adj if eps_adj > 0 else 0.0
 hist_pe = price / ttm_eps_val if ttm_eps_val > 0 else 0.0
 
-if latest_proba > 0.55 and beta3_trend_val > 0:
-    rec_title, rec_desc = "強烈作多", "建議買進"
-elif latest_proba < 0.45:
-    rec_title, rec_desc = "保守觀望", "建議賣出"
-else:
-    rec_title, rec_desc = "中性震盪", "建議持有"
-
+rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else ("保守觀望" if latest_proba < 0.45 else "中性震盪")
+rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
 rec_icon = "🟢" if "買" in rec_desc else ("🔴" if "賣" in rec_desc else "🟡")
 
 def fmt_pct(v):
@@ -1086,12 +996,16 @@ else:
         "• 嚴重限制：受限於 Yahoo Finance 高頻歷史資料天數僅約 60 天，樣本過短且易受市場微觀雜訊干擾，不適合做長期機器學習交叉驗證。"
     )
 
+# 計算總執行時間
+elapsed_time = time.time() - start_time_perf
+exec_time_str = f"{int(elapsed_time // 60)} 分 {int(elapsed_time % 60)} 秒"
+
 # ==========================================
 # 10. 主畫面呈現
 # ==========================================
 st.title("📈 跨領域專家 AI 投資分析與量化預測")
 st.subheader(f"🏢 {company_name} — 【{selected_interval_label} 頻率】")
-st.caption(f"報告生成時間：{get_taiwan_time_str()} (CST)")
+st.caption(f"報告生成時間：{get_taiwan_time_str()} (CST) ｜ ⚡ 系統運算完成耗時：{exec_time_str}")
 st.warning(DISCLAIMER)
 
 change_txt = fmt_pct(change)
@@ -1099,7 +1013,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("最新即時成交價", f"${price:,.2f}", f"{trade_date} ({change_txt})")
 c2.metric("AI 動態目標價", f"${tp_base:,.0f}", f"{upside:.1f}% 潛在空間")
 c3.metric("AI 綜合評等", rec_title, f"{rec_icon} {rec_desc}")
-c4.metric("目標價區間", f"[{tp_lower:,.0f}, {tp_upper_2:,.0f}]")
+c4.metric("系統運算耗時", exec_time_str)
 
 st.markdown("---")
 st.markdown(f"### ⏱ 多期報酬率表現 ({selected_interval_label} 視角)")
@@ -1111,16 +1025,15 @@ r_col4.metric("近 40 期", fmt_pct(ret_2m))
 r_col5.metric("近 60 期", fmt_pct(ret_3m))
 
 st.markdown("---")
-st.markdown("### 📰 多來源真實新聞爬取筆數統計與輿情評分")
+st.markdown("### 📰 多來源真實新聞爬取筆數統計與輿情評分 (分段遞迴爬取)")
 
-# 新增：跨時間維度來源爬取筆數總覽表格 (含 48H, 1W, 2W, 1M, 2M)
 st.markdown("#### 🌐 跨時間維度新聞管道爬取成功筆數對照表")
 src_df_data = [
-    {"時間維度": "近 48 小時 (48H)", "Google News RSS": f"{sources_48h.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_48h.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_48h.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c48h} 篇"},
-    {"時間維度": "近 1 週 (168H)", "Google News RSS": f"{sources_1w.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_1w.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_1w.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c1w} 篇"},
-    {"時間維度": "近 2 週 (336H)", "Google News RSS": f"{sources_2w.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_2w.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_2w.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c2w} 篇"},
-    {"時間維度": "近 1 個月 (720H)", "Google News RSS": f"{sources_1m.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_1m.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_1m.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c1m} 篇"},
-    {"時間維度": "近 2 個月 (1440H)", "Google News RSS": f"{sources_2m.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_2m.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_2m.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c2m} 篇"},
+    {"時間維度": "近 48 小時 (48H)", "Google News": f"{sources_48h.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_48h.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_48h.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c48h} 篇"},
+    {"時間維度": "近 1 週 (168H)", "Google News": f"{sources_1w.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_1w.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_1w.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c1w} 篇"},
+    {"時間維度": "近 2 週 (336H)", "Google News": f"{sources_2w.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_2w.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_2w.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c2w} 篇"},
+    {"時間維度": "近 1 個月 (720H)", "Google News": f"{sources_1m.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_1m.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_1m.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c1m} 篇"},
+    {"時間維度": "近 2 個月 (1440H)", "Google News": f"{sources_2m.get('Google News', 0)} 筆", "鉅亨網 (Anue)": f"{sources_2m.get('鉅亨網 Anue', 0)} 筆", "Yahoo 股市": f"{sources_2m.get('Yahoo 股市', 0)} 筆", "合併去重總篇數": f"{c2m} 篇"},
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
@@ -1143,6 +1056,12 @@ with s_col4:
     st.metric("近 2 個月展望成長", f"{growth_2m:.1f} 分", f"利多:{b2m} | 利空:{r2m} | 篇數:{c2m}")
 
 st.markdown("---")
+st.subheader("🎯 本益比評價子項效果拆解")
+p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+p_col1.metric("產業中樞本益比 (PE_base)", f"{pe_base:.1f}x", "歷史中位數定錨")
+p_col2.metric("輿情情緒權重 (Sentiment)", f"{sentiment_exp:+.2f}x", "短線買盤與氣氛")
+p_col3.metric("展望成長權重 (Growth)", f"{growth_exp:+.2f}x", "基本面動能增幅")
+p_col4.metric("下行風險折價 (Risk)", f"-{risk_val:.1f}x", "防守防護傘扣減")
 st.info(freq_advice_text)
 
 ctx = {
@@ -1154,6 +1073,7 @@ ctx = {
     "latest_proba": latest_proba, "blue_price": blue_price_target, "red_price": red_price_target,
     "blue_rsi": blue_rsi, "red_rsi": red_rsi,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
+    "pe_base": pe_base, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, "risk_val": risk_val,
     "sent_48h": sent_48h, "growth_48h": growth_48h, "b48h": b48h, "r48h": r48h, "c48h": c48h, "sources_48h": sources_48h,
     "sent_1w": sent_1w, "growth_1w": growth_1w, "b1w": b1w, "r1w": r1w, "c1w": c1w, "sources_1w": sources_1w,
     "sent_2w": sent_2w, "growth_2w": growth_2w, "b2w": b2w, "r2w": r2w, "c2w": c2w, "sources_2w": sources_2w,
@@ -1166,8 +1086,7 @@ ctx = {
     "q_eps": q_eps_list, "ttm": ttm_eps_val, "annual": annual_eps_val,
     "ttm_src": ttm_src, "annual_src": annual_src, "annual_year": annual_year_display,
     "pe_linear": pe_linear, "eps_adj": eps_adj,
-    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "pe_std": pe_std, "pe_base": pe_base,
-    "news_status": status_1w, "news_titles": titles_1w,
+    "hist_pe": hist_pe, "fwd_pe": fwd_pe, "pe_std": pe_std, 
     "freq_advice": freq_advice_text
 }
 
@@ -1178,8 +1097,8 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     type="primary",
 )
-st.divider()
 
+st.divider()
 left, right = st.columns(2)
 
 with left:
@@ -1248,12 +1167,6 @@ with right:
         auc_txt = f"{np.mean(cv_test_auc):.3f}" if cv_test_auc else "N/A"
         st.caption(f"時序交叉驗證：平均準確率 {np.mean(cv_test_acc):.3f}｜平均 AUC {auc_txt}（{len(cv_test_acc)} 折）")
 
-    if titles_48h or titles_1w:
-        display_titles = titles_48h if titles_48h else titles_1w
-        with st.expander("🔍 檢視近 48 小時 / 1 週抓取到的新聞標題清單"):
-            for idx, t_title in enumerate(display_titles[:10]):
-                st.write(f"{idx+1}. {t_title}")
-
     st.subheader("四、實質風險與動態波動率量化模組")
     st.info(f"**匯率風險 (USDTWD=X)：** 最新匯率 {fx_latest:.2f}，年化波動率 {fx_annual_vol:.2f}% (68% 區間: {fx_low:.2f} ~ {fx_high:.2f})")
     st.warning(f"**市場競爭與歷史波動：** 過去一年個股年化波動率 {stock_vol_1y:.2f}% (PE 標準差: {pe_std:.2f})")
@@ -1261,7 +1174,7 @@ with right:
     st.error(f"**短長期波動比值：** {vol_ratio:.4f} → {vol_signal}")
 
 # ==========================================
-# 11. 歷史回測與 SHAP 決策圖表
+# 11. 歷史波段回測與 SHAP 決策圖表
 # ==========================================
 st.markdown("---")
 st.markdown(f"### 📊 歷史波段回測與 SHAP AI 決策邏輯 ({selected_interval_label})")
