@@ -586,11 +586,11 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h, items_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
-sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w, items_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
-sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w, items_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
-sent_1m, g_1m, h_1m, b1m, r1m, gp1m, gn1m, c1m, titles_1m, s_1m, items_1m = comprehensive_quant_evaluation(symbol, company_name, 720)
-sent_2m, g_2m, h_2m, b2m, r2m, gp2m, gn2m, c2m, titles_2m, s_2m, items_2m = comprehensive_quant_evaluation(symbol, company_name, 1440)
+(sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h, items_48h) = comprehensive_quant_evaluation(symbol, company_name, 48)
+(sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w, items_1w) = comprehensive_quant_evaluation(symbol, company_name, 168)
+(sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w, items_2w) = comprehensive_quant_evaluation(symbol, company_name, 336)
+(sent_1m, g_1m, h_1m, b1m, r1m, gp1m, gn1m, c1m, titles_1m, s_1m, items_1m) = comprehensive_quant_evaluation(symbol, company_name, 720)
+(sent_2m, g_2m, h_2m, b2m, r2m, gp2m, gn2m, c2m, titles_2m, s_2m, items_2m) = comprehensive_quant_evaluation(symbol, company_name, 1440)
 
 with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     fetch_period = "59d" if interval in ["15m", "30m", "5m"] else ("730d" if interval != "1d" else None)
@@ -912,7 +912,7 @@ src_df_data = [
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-# 增加 st.expander 摺疊/展開按鈕，用來顯示或隱藏近 48H 即時新聞標題與明細清單
+# 帶有按鈕可顯示/隱藏的近 48H 即時新聞明細區塊
 with st.expander("📰 點擊展開/收合：近 48H 即時新聞標題與明細清單", expanded=False):
     if items_48h:
         for idx, (t_title, t_dt) in enumerate(items_48h[:15], 1):
@@ -1060,7 +1060,7 @@ ctx = {
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob, "turning_direction": turning_direction,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp_48h, "gn_48h": gn_48h, "h_48h": h_48h, "sent_48h": sent_48h,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h, "h_48h": h_48h, "sent_48h": sent_48h,
     "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "h_1w": h_1w, "sent_1w": sent_1w,
     "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "h_2w": h_2w, "sent_2w": sent_2w,
     "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "h_1m": h_1m, "sent_1m": sent_1m,
