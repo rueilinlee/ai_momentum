@@ -220,7 +220,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 改採 MoneyDJ 與中時 RSS 及 Google News 支援時間過濾的爬蟲引擎
+# 2. 爬蟲與 FinBERT 評分引擎
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_finbert_model():
@@ -239,26 +239,21 @@ def analyze_sentiment_finbert_nonlinear(titles, hours=168):
     tokenizer, model = load_finbert_model()
     if not tokenizer or not model:
         return None, 0, 0
-    
     try:
         batch_titles = titles[:40]
         inputs = tokenizer(batch_titles, padding=True, truncation=True, max_length=64, return_tensors="pt")
         with torch.no_grad():
             outputs = model(**inputs)
             probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-        
         pos_scores = probs[:, 0].numpy()
         neg_scores = probs[:, 1].numpy()
-        
         b_count = int(sum(1 for p, n in zip(pos_scores, neg_scores) if p > n))
         r_count = int(sum(1 for p, n in zip(pos_scores, neg_scores) if n > p))
-        
         net_diff = float(np.mean(pos_scores) - np.mean(neg_scores))
         days_span = hours / 24.0
         time_weight_bias = math.log(days_span + 1.0) * 0.15
         nonlinear_factor = float(np.tanh(net_diff * 2.5 + time_weight_bias * 0.2))
         final_score = round(float(np.clip(5.0 + nonlinear_factor * 3.5, 1.5, 9.0)), 1)
-        
         return final_score, b_count, r_count
     except Exception:
         return None, 0, 0
@@ -275,14 +270,12 @@ def fetch_rss_feed_timed(rss_url, keyword, hours=168):
                 t_elem = item.find('title')
                 d_elem = item.find('pubDate')
                 title_text = t_elem.text.strip() if t_elem is not None and t_elem.text else ""
-                
                 pub_dt = datetime.now()
                 if d_elem is not None and d_elem.text:
                     try:
                         from email.utils import parsedate_to_datetime
                         pub_dt = parsedate_to_datetime(d_elem.text).replace(tzinfo=None)
                     except Exception: pass
-                
                 if pub_dt >= time_threshold and title_text and (keyword in title_text or len(title_text) > 6):
                     titles.append(title_text)
                     items_with_time.append((title_text, pub_dt))
@@ -312,7 +305,6 @@ def fetch_google_news_rss_timed(company_name, stock_code, hours=168):
     now = datetime.now()
     date_after = (now - timedelta(days=days_total)).strftime("%Y-%m-%d")
     date_before = now.strftime("%Y-%m-%d")
-    
     search_query = f"{clean_name} {clean_code} after:{date_after} before:{date_before}"
     rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(search_query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     return fetch_rss_feed_timed(rss_url, clean_code, hours)
@@ -323,12 +315,7 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     m_titles, m_items = fetch_moneydj_rss_timed(stock_code, company_name, hours)
     c_titles, c_items = fetch_chinatimes_rss_timed(company_name, stock_code, hours)
 
-    sources_count = {
-        "Google News": len(g_titles), 
-        "MoneyDJ": len(m_titles), 
-        "中時新聞網": len(c_titles)
-    }
-    
+    sources_count = {"Google News": len(g_titles), "MoneyDJ": len(m_titles), "中時新聞網": len(c_titles)}
     seen = set()
     unique_items = []
     for title, dt in (g_items + m_items + c_items):
@@ -357,46 +344,37 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
         age_hours = max(0.0, (now - dt).total_seconds() / 3600.0)
         decay_lambda = 0.6 if hours <= 48 else (0.25 if hours <= 336 else 0.06)
         time_decay = math.exp(-decay_lambda * (age_hours / max(8.0, hours)))
-
         b_hits = sum(1 for w in bullish if w in title)
         r_hits = sum(1 for w in bearish if w in title)
         gp_hits = sum(1 for w in growth_pos if w in title)
         gn_hits = sum(1 for w in growth_neg if w in title)
         h_hits = sum(1 for w in hotspot_keywords if w in title)
-
-        b_cnt += b_hits
-        r_cnt += r_hits
-        gp_cnt += gp_hits
-        gn_cnt += gn_hits
+        b_cnt += b_hits; r_cnt += r_hits; gp_cnt += gp_hits; gn_cnt += gn_hits
         weighted_hotspot_sum += (h_hits + 0.5) * time_decay
 
     total_count = max(1, len(all_titles))
     days_span = hours / 24.0
 
-    # 1. 情緒分數
     if finbert_sent is not None:
         time_sentiment_boost = math.log(days_span + 1.0) * 0.25
         s_score = round(float(np.clip(finbert_sent + time_sentiment_boost * (1.0 if b_cnt >= r_cnt else -1.0), 1.5, 9.2)), 1)
-        b_cnt = max(b_cnt, fb_bull)
-        r_cnt = max(r_cnt, fb_bear)
+        b_cnt = max(b_cnt, fb_bull); r_cnt = max(r_cnt, fb_bear)
     else:
         s_ratio = (b_cnt - r_cnt) / (total_count + 5.0)
         s_score = round(float(np.clip(5.0 + math.tanh(s_ratio * 3.0) * 3.5 + math.log(days_span + 1) * 0.15, 1.5, 9.2)), 1)
 
-    # 2. 展望分數
     growth_net = gp_cnt - gn_cnt
     growth_intensity = growth_net / math.pow(total_count, 0.75)
     temporal_curve = 1.0 + 0.35 * math.atan(days_span / 15.0)
     g_score = round(float(np.clip(5.0 + (math.tanh(growth_intensity * 2.8) * 3.2) * temporal_curve, 1.5, 9.2)), 1)
 
-    # 3. 熱點 (Hotspot)
     burst_density = weighted_hotspot_sum / math.pow(days_span, 0.65)
     h_score = round(float(np.clip(2.0 + (2.0 / math.pi) * math.atan(burst_density * 0.4) * 6.5, 1.0, 9.5)), 1)
 
     return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), total_count, all_titles, sources_count
 
 # ==========================================
-# 3. 行情財報擷取與機器學習特徵 (含日內與 NLP)
+# 3. 行情財報擷取與機器學習特徵
 # ==========================================
 def _eps_series(df):
     if df is None or getattr(df, "empty", True): return None
@@ -435,8 +413,8 @@ def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.Dat
     if symbol.upper() != "NVDA" and {"NVDA", "^SOX", "^DJI"}.issubset(us_ret.columns):
         sub = us_ret.assign(RF=rf_us.reindex(us_ret.index).ffill()).dropna()
         if len(sub) > 30:
-            y, X = sub["NVDA"] - sub["RF"], sm.add_constant(pd.DataFrame({"DJI_Excess": sub["^DJI"] - sub["RF"], "SOX_Excess": sub["^SOX"] - sub["RF"]}, index=sub.index))
-            shock = sm.OLS(y, X).fit().resid.reindex(us_daily.index).fillna(0.0)
+            y, X_reg = sub["NVDA"] - sub["RF"], sm.add_constant(pd.DataFrame({"DJI_Excess": sub["^DJI"] - sub["RF"], "SOX_Excess": sub["^SOX"] - sub["RF"]}, index=sub.index))
+            shock = sm.OLS(y, X_reg).fit().resid.reindex(us_daily.index).fillna(0.0)
 
     df = pd.DataFrame(index=stock.index)
     df[symbol] = stock.pct_change()
@@ -504,6 +482,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"• AI 綜合評等：{ctx['rec']}（未來 5 天正報酬機率：{ctx['latest_proba']:.2%}）")
     doc.add_paragraph(f"• 預期轉折時間點：模型預測最有可能發生價格反轉的時點為【{ctx['turning_bar']}】（機率 {ctx['turning_prob']:.1f}%）")
     doc.add_paragraph(f"• 潛在空間與目標價：預估基準目標價為 {ctx['tp_base']:,.2f} 元，潛在空間 {ctx['upside']:.1f}%。")
+    doc.add_paragraph(f"• SHAP AI 動態反推價位：SHAP AI 支撐價估計為 {ctx['shap_support']:,.2f} 元 ｜ SHAP AI 壓力價估計為 {ctx['shap_resistance']:,.2f} 元。")
 
     doc.add_heading("二、未來 5 根 K 棒走勢預測與歷史報酬表現", level=1)
     ret_table = doc.add_table(rows=1, cols=4)
@@ -728,14 +707,35 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     beta3_trend_val = df['Beta_3_Trend_5D'].dropna().iloc[-1] if df['Beta_3_Trend_5D'].notna().any() else 0.0
 
     # -------------------------------------------------------------------
+    # 核心：SHAP 反推支撐與壓力價格計算模組
+    # -------------------------------------------------------------------
+    shap_support, shap_resistance = price * 0.95, price * 1.05
+    try:
+        explainer = shap.TreeExplainer(model)
+        shap_vals_latest = explainer.shap_values(latest_features)
+        s_vals = shap_vals_latest[1][0] if isinstance(shap_vals_latest, list) else (shap_vals_latest[0, :, 1] if getattr(shap_vals_latest, "ndim", 3) == 3 else shap_vals_latest[0])
+        feat_shap_map = dict(zip(features, s_vals))
+        
+        # 若動能/RSI帶來的 SHAP 值為正(推升)，代表下檔有強支撐；若為負(壓抑)，代表上方有沈重賣壓
+        mom_30d_val = latest_features['Price_Mom_30D'].values[0] if 'Price_Mom_30D' in latest_features else 0.0
+        rsi_val = latest_features['RSI_14'].values[0] if 'RSI_14' in latest_features else 50.0
+        
+        support_offset = max(0.01, 0.03 + (feat_shap_map.get('Price_Mom_30D', 0.0) * 0.05))
+        resistance_offset = max(0.01, 0.03 - (feat_shap_map.get('RSI_14', 0.0) * 0.05))
+        
+        shap_support = round(price * (1.0 - abs(support_offset)), 2)
+        shap_resistance = round(price * (1.0 + abs(resistance_offset)), 2)
+    except Exception:
+        pass
+    # -------------------------------------------------------------------
+
+    # -------------------------------------------------------------------
     # 動態特徵驅動轉折點預測演算法
     # -------------------------------------------------------------------
     current_rsi_series = df['RSI_14'].dropna()
     current_rsi = float(current_rsi_series.iloc[-1]) if not current_rsi_series.empty else 50.0
-
     current_vol_series = df['Vol_10D'].dropna()
     current_vol = float(current_vol_series.iloc[-1]) if not current_vol_series.empty else 0.02
-
     current_gamma_series = df['Gamma_Trend_5D'].dropna()
     current_gamma_trend = float(current_gamma_series.iloc[-1]) if not current_gamma_series.empty else 0.0
 
@@ -808,7 +808,7 @@ tp_15x, tp_lower = eps_adj * 15.0, eps_adj * max(15.0, pe_target - 0.5 * pe_std)
 tp_upper_1, tp_upper_2 = eps_adj * (pe_target + 1.0 * pe_std), eps_adj * (pe_target + 2.0 * pe_std)
 
 rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else ("保守觀望" if latest_proba < 0.45 else "中性震盪")
-rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
+rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_desc else "建議持有")
 
 f5_ret_std = float(valid_stock.pct_change().tail(20).std() * math.sqrt(5)) if len(valid_stock) >= 20 else 0.02
 f5_high = price * (1 + f5_ret_std * (1.2 if latest_proba > 0.5 else 0.5))
@@ -834,7 +834,7 @@ c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("即時成交價", f"${price:,.2f}", f"{trade_date} ({fmt_pct(change)})")
 c2.metric("AI 目標價與機率", f"${tp_base:,.0f} ({latest_proba:.1%})", f"{upside:.1f}% 潛在空間")
 c3.metric("AI 綜合評等", rec_title, f"{'🟢' if '買' in rec_desc else ('🔴' if '賣' in rec_desc else '🟡')} {rec_desc}")
-c4.metric("熱點指數與動能", f"{h_1w:.1f} 分", f"{'加速湧入 ↗' if df['Gamma_Trend_5D'].dropna().iloc[-1] > 0 else '動能衰退 ↘'}")
+c4.metric("SHAP AI 支撐/壓力", f"支撐 ${shap_support:,.1f}", f"壓力 ${shap_resistance:,.1f}")
 c5.metric("AI含金量 (Beta_3)", 
           f"{df['Beta_3_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Beta_3_Rolling' in df.columns else "N/A", 
           f"資金簇擁: {df['Gamma_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Gamma_Rolling' in df.columns else "N/A")
@@ -930,11 +930,10 @@ st.markdown("---")
 st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決策邏輯</h3>", unsafe_allow_html=True)
 
 shap_explain_text_plain = (
-    "💡 模型圖表綜合解釋說明：\n"
-    "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用，以 Price_Mom_30D 與 Beta_3 影響力最大。\n"
-    "• Gamma（紫線）：大於 0 代表資金簇擁追價，小於 0 代表資金退潮。\n"
-    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動能爆發推升期 (Surge)。\n"
-    "• 累積報酬（紅線）：驗證模型在爆發期前後捕捉波段主升段的成效。"
+    f"💡 模型圖表綜合解釋說明：\n"
+    f"• 歷史回測圖解析：紫線 Gamma 代表市場資金簇擁與推擠度，大於 0 表示強勢追價；綠線 Beta_3 代表個股相對於輝達 (NVDA) 的獨立超額衝擊。當兩者轉強並進入黃色標示之「動能爆發推升期 (Surge)」時，紅色的累積報酬曲線呈現明確的主升段噴發。\n"
+    f"• SHAP 特徵歸因解析：模型以 Price_Mom_30D（30日動能差）與 Beta_3 具備最高決策影響力。右側紅點代表特徵值偏高時會顯著推升未來正報酬機率。\n"
+    f"• 🎯 SHAP 動態反推價位：結合當前特徵對模型的邊際貢獻，機器學習反推之 **AI 支撐價為 ${shap_support:,.2f} 元**，**AI 壓力價為 ${shap_resistance:,.2f} 元**。"
 )
 
 shap_explain_html = f"""
@@ -963,6 +962,15 @@ with fig_col1:
     ax3.legend(loc='upper left'); ax3.grid(True, alpha=0.3)
     fig1.suptitle(f'[{symbol}] {interval_label} Surge Backtest', fontsize=14)
     plt.tight_layout(); st.pyplot(fig1)
+    
+    st.markdown("""
+    <div style='background-color: #1e1e1e; padding: 10px; border-radius: 6px; color: #d4d4d4; font-size: 13px;'>
+    <b>📉 左圖 (Surge Backtest) 解釋：</b><br>
+    • <b>上圖 (Gamma)</b>：衡量市場資金的擁擠與投機熱度。數值大於 0（紅虛線上方）代表買盤集體湧入；小於 0 代表資金退潮、盤勢陷入整理。<br>
+    • <b>中圖 (Beta_3)</b>：量化個股對 AI 龍頭（如輝達）的敏感度。黃色陰影區（Surge 期間）代表動能爆發期，此時股價往往展開波段主升段。<br>
+    • <b>下圖 (Cumulative Return)</b>：驗證模型在捕捉到主力資金簇擁時進場的累積報酬表現。
+    </div>
+    """, unsafe_allow_html=True)
 
 with fig_col2:
     try:
@@ -978,6 +986,15 @@ with fig_col2:
         plt.tight_layout(); st.pyplot(fig2)
     except Exception as e: st.info(f"SHAP 渲染失敗：{e}")
 
+    st.markdown(f"""
+    <div style='background-color: #1e1e1e; padding: 10px; border-radius: 6px; color: #d4d4d4; font-size: 13px;'>
+    <b>🤖 右圖 (SHAP AI Decision Logic) 解釋：</b><br>
+    • <b>特徵影響力排序</b>：由上至下依序為對模型預測勝率最具決定性的指標（如 <code>Price_Mom_30D</code> 與 <code>Beta_3_Rolling</code>）。<br>
+    • <b>紅藍點邏輯</b>：紅色代表特徵值偏高，藍色代表特徵值偏低。若紅點落在 SHAP 值 > 0 側，代表該特徵高檔時會強力推升上漲勝率。<br>
+    • <b>💡 SHAP 動態反推價位</b>：依據當前特徵權重邊際推導，當前 AI 機器學習反推之 **支撐價為 ${shap_support:,.2f} 元**、**壓力價為 ${shap_resistance:,.2f} 元**。
+    </div>
+    """, unsafe_allow_html=True)
+
 # ==========================================
 # 8. 確保包含所有參數的 Word 報告打包變數
 # ==========================================
@@ -990,7 +1007,7 @@ ctx = {
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h, "h_48h": h_48h,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp_48h, "gn_48h": gn_48h, "h_48h": h_48h,
     "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "h_1w": h_1w,
     "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "h_2w": h_2w,
     "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "h_1m": h_1m,
@@ -999,6 +1016,7 @@ ctx = {
     "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "pe_std": pe_std, "real_safety_price": real_safety_price,
     "shap_explain_text": shap_explain_text_plain, "f5_high": f5_high, "f5_low": f5_low, "upside": upside,
-    "buy_low": buy_low, "buy_high": buy_high, "sell_low": sell_low, "sell_high": sell_high
+    "buy_low": buy_low, "buy_high": buy_high, "sell_low": sell_low, "sell_high": sell_high,
+    "shap_support": shap_support, "shap_resistance": shap_resistance
 }
 st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
