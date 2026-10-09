@@ -393,7 +393,7 @@ def download_us_daily(years: int = 5) -> pd.DataFrame:
 
 def _map_daily_to_bars(daily: pd.Series, bar_index: pd.DatetimeIndex) -> np.ndarray:
     s = daily.dropna().copy()
-    if s.empty: return np.full(len(bar_index), 0.0) # 修正：若無資料回傳 0.0 防呆
+    if s.empty: return np.full(len(bar_index), 0.0)
     s.index = s.index + pd.Timedelta(days=1)
     s = s[~s.index.duplicated(keep="last")].sort_index()
     idx_naive = pd.DatetimeIndex(bar_index)
@@ -635,7 +635,7 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     except Exception: pass
     vol_signal = "🚨 [減碼/防守] 短期波動放大" if vol_ratio > 1.2 else ("🎯 [加碼/佈局] 短期波動壓縮" if vol_ratio < 0.8 else "⚖️ [觀望/中性] 多空平衡")
 
-    # 機器學習與預測 (修正：強制抓取美股日線以供日內填補)
+    # 機器學習與預測
     current_nlp = {'sent': sent_1w, 'growth': g_1w, 'hotspot': h_1w}
     us_daily = download_us_daily(years=5) 
     df, fwd_excess = build_feature_frame(symbol, market_data, us_daily, current_nlp)
@@ -732,7 +732,7 @@ rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else (
 rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
 
 # ==========================================
-# 7. 最終 UI 呈現 (含 AI 含金量與綠色標題)
+# 7. 最終 UI 呈現 
 # ==========================================
 st.title("📈 跨領域專家 AI 投資分析與量化預測")
 st.subheader(f"🏢 {company_name} — 【{interval_label}】")
@@ -825,13 +825,22 @@ with right:
 
 st.markdown("---")
 st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決策邏輯</h3>", unsafe_allow_html=True)
-shap_explain_text = (
+
+# Word 報告用的純文字
+shap_explain_text_plain = (
     "💡 簡短說明：\n"
     "• AI 含金量 (Beta_3)：衡量個股對輝達 (NVDA) 獨立衝擊的敏感度。數值越高，代表具備實質 AI 供應鏈純度。\n"
     "• 資金簇擁度 (Gamma)：衡量市場資金追價的擁擠程度。當 Gamma 飆高時，通常伴隨波段主升段；反之若反轉跌破零軸，需提防人踩人風險。\n"
     "• SHAP 歸因：圖表右側紅點代表該特徵推升上漲機率，藍點代表壓抑表現；特徵點位置越靠左右兩側，影響力越大。"
 )
-st.info(shap_explain_text)
+
+# Streamlit UI 用的深綠色 HTML 區塊
+shap_explain_html = f"""
+<div style='color: #006400; background-color: #f0fdf4; padding: 15px; border-radius: 8px; border-left: 5px solid #2e8b57; margin-bottom: 15px;'>
+{shap_explain_text_plain.replace(chr(10), '<br>')}
+</div>
+"""
+st.markdown(shap_explain_html, unsafe_allow_html=True)
 
 fig_col1, fig_col2 = st.columns(2)
 
@@ -878,6 +887,6 @@ ctx = {
     "pe_base": pe_base, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, "risk_val": risk_val,
     "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "pe_std": pe_std, "real_safety_price": real_safety_price,
-    "shap_explain_text": shap_explain_text
+    "shap_explain_text": shap_explain_text_plain
 }
 st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
