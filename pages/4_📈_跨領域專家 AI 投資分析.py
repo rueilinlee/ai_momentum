@@ -424,7 +424,7 @@ def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.Dat
     df[symbol] = stock.pct_change()
     if symbol != "^TWII": df["^TWII"] = twii.pct_change()
     
-    # 修正：當無對應資料時給予 0.0，避免 dropna() 清空整張表
+    # 填補空值防護
     df["NVDA_Pure_Shock"] = _map_daily_to_bars(shock, stock.index) if not shock.empty else 0.0
     df["^SOX"] = _map_daily_to_bars(us_ret["^SOX"], stock.index) if "^SOX" in us_ret.columns else 0.0
     
@@ -474,7 +474,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. Word 報告生成 (完整版含全時段熱點)
+# 4. Word 報告生成 (完整版含衍生變數論述)
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -520,6 +520,12 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f}，年化波動 {ctx['fx_annual_vol']:.2f}%")
     doc.add_paragraph(f"• 個股歷史波動率：{ctx['stock_vol_1y']:.2f}%，最悲觀防守安全價：{ctx['real_safety_price']:.2f} 元")
 
+    doc.add_heading("五、NVDA 衍生變數與波段決策邏輯", level=1)
+    doc.add_paragraph(f"• Beta_3 (AI 含金量)：最新數值 {ctx['beta3_latest']:.4f}。衡量個股對輝達 (NVDA) 純粹衝擊的敏感度。數值越高代表 AI 題材純度與連動性越強。")
+    doc.add_paragraph(f"• Gamma (資金簇擁度)：最新數值 {ctx['gamma_latest']:.4f}。衡量動能與 AI 衝擊的交互作用。數值若過高（紫線飆升）通常代表籌碼過度擁擠，暗示波段高點。")
+    doc.add_paragraph("• SHAP 決策歸因：揭示 LightGBM 機器學習模型判斷未來報酬機率時，各項特徵（包含 AI 變數、情緒熱點、技術面）的綜合貢獻權重。")
+
+    doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
     buf = BytesIO()
     doc.save(buf)
@@ -539,7 +545,7 @@ with st.sidebar.form(key="search_form"):
 if not user_query: st.stop()
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
-stock_code = symbol.split('.')[0] # 提前定義 stock_code 避免 NameError
+stock_code = symbol.split('.')[0]
 
 # 執行所有時間維度的新聞爬取與特徵評分
 sent_48h, g_48h, h_48h, b48h, r48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
@@ -658,6 +664,8 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     
     plot_gamma = df['Gamma_Rolling'].dropna()
     plot_beta3 = df['Beta_3_Rolling'].dropna()
+    beta3_latest_val = float(plot_beta3.iloc[-1]) if not plot_beta3.empty else 0.0
+    gamma_latest_val = float(plot_gamma.iloc[-1]) if not plot_gamma.empty else 0.0
 
     features = ['Beta_3_Rolling', 'Gamma_Rolling', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D', 'NLP_Sent', 'NLP_Growth', 'NLP_Hotspot']
     features = [c for c in features if c in df.columns]
@@ -740,7 +748,7 @@ freq_advice_text = (
 )
 
 # ==========================================
-# 7. 最終 UI 呈現 (含全時段熱點輸出)
+# 7. 最終 UI 呈現 
 # ==========================================
 st.title("📈 跨領域專家 AI 投資分析與量化預測")
 st.subheader(f"🏢 {company_name} — 【{interval_label}】")
@@ -829,7 +837,16 @@ with right:
     if cv_test_acc: st.caption(f"時序交叉驗證：平均準確率 {np.mean(cv_test_acc):.3f}｜平均 AUC {np.mean(cv_test_auc):.3f} ({len(cv_test_acc)} 折)")
 
 st.markdown("---")
-st.markdown("### 📊 歷史波段回測與 SHAP AI 決策邏輯")
+
+# 透過 :green[...] 將標題改為綠色
+st.markdown("### :green[📊 歷史波段回測與 SHAP AI 決策邏輯 (NVDA 衍生變數模型)]")
+# 加入關於 AI 含金量與資金簇擁度的說明
+st.caption(
+    "💡 **決策變數說明**：圖表中的 **Beta_3** 代表「**AI 含金量**」(個股對 NVDA 純粹衝擊的敏感度，數值越高題材純度越高)；"
+    "**Gamma** 代表「**資金簇擁度**」(動能與 AI 題材的交互擁擠作用，飆升過高易遇獲利了結賣壓)。"
+    "右圖 **SHAP 歸因**揭示了 LightGBM 機器學習模型判定未來勝率的核心特徵權重。"
+)
+
 fig_col1, fig_col2 = st.columns(2)
 
 with fig_col1:
@@ -875,6 +892,7 @@ ctx = {
     "pe_base": pe_base, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, "risk_val": risk_val,
     "freq_advice": freq_advice_text, "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "pe_std": pe_std, "real_safety_price": real_safety_price,
-    "vol_5d": vol_5d, "vol_20d": vol_20d, "vol_ratio": vol_ratio, "vol_signal": vol_signal
+    "vol_5d": vol_5d, "vol_20d": vol_20d, "vol_ratio": vol_ratio, "vol_signal": vol_signal,
+    "beta3_latest": beta3_latest_val, "gamma_latest": gamma_latest_val
 }
 st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
