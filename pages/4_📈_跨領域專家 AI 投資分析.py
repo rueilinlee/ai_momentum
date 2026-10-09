@@ -395,7 +395,7 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     burst_density = weighted_hotspot_sum / math.pow(days_span, 0.65)
     h_score = round(float(np.clip(2.0 + (2.0 / math.pi) * math.atan(burst_density * 0.4) * 6.5, 1.0, 9.5)), 1)
 
-    return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), total_count, all_titles, sources_count, unique_items
+    return s_score, g_score, h_score, b_cnt, r_cnt, gp_cnt, gn_cnt, total_count, all_titles, sources_count, unique_items
 
 # ==========================================
 # 3. 行情財報擷取與機器學習特徵
@@ -544,11 +544,11 @@ def generate_word_report(ctx):
     for idx, h_text in enumerate(headers_list): sch[idx].text = h_text
 
     for p_label, src_dict, merged_c, b_cnt, r_cnt, gp_cnt, gn_cnt, h_val, sent_val in [
-        ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['b48h'], ctx['r48h'], ctx['gp_48h'], ctx['gn_48h'], ctx['h_48h'], ctx['sent_48h']),
-        ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['b1w'], ctx['r1w'], ctx['gp_1w'], ctx['gn_1w'], ctx['h_1w'], ctx['sent_1w']),
-        ("近 2W", ctx['s_2w'], ctx['c2w'], ctx['b2w'], ctx['r2w'], ctx['gp_2w'], ctx['gn_2w'], ctx['h_2w'], ctx['sent_2w']),
-        ("近 1M", ctx['s_1m'], ctx['c1m'], ctx['b1m'], ctx['r1m'], ctx['gp_1m'], ctx['gn_1m'], ctx['h_1m'], ctx['sent_1m']),
-        ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['b2m'], ctx['r2m'], ctx['gp_2m'], ctx['gn_2m'], ctx['h_2m'], ctx['sent_2m'])
+        ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['b48h'], ctx['r48h'], ctx['gp48h'], ctx['gn48h'], ctx['h_48h'], ctx['sent_48h']),
+        ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['b1w'], ctx['r1w'], ctx['gp1w'], ctx['gn1w'], ctx['h_1w'], ctx['sent_1w']),
+        ("近 2W", ctx['s_2w'], ctx['c2w'], ctx['b2w'], ctx['r2w'], ctx['gp2w'], ctx['gn2w'], ctx['h_2w'], ctx['sent_2w']),
+        ("近 1M", ctx['s_1m'], ctx['c1m'], ctx['b1m'], ctx['r1m'], ctx['gp1m'], ctx['gn1m'], ctx['h_1m'], ctx['sent_1m']),
+        ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['b2m'], ctx['r2m'], ctx['gp2m'], ctx['gn2m'], ctx['h_2m'], ctx['sent_2m'])
     ]:
         r = src_table.add_row().cells
         r[0].text = p_label
@@ -948,19 +948,19 @@ st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作�
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
     st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"FinBERT情緒:{sent_48h:.1f} (多:{b48h}/空:{r48h})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_48h:.1f} (多:{gp48h}/空:{gn48h})</span>", unsafe_allow_html=True)
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{gp48h:.1f} (多:{gp48h}/空:{gn48h})</span>", unsafe_allow_html=True)
 with h_col2:
     st.metric("近 1W 熱點", f"{h_1w:.1f} 分", f"FinBERT情緒:{sent_1w:.1f} (多:{b1w}/空:{r1w})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1w:.1f} (多:{gp1w}/空:{gn1w})</span>", unsafe_allow_html=True)
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{gp1w:.1f} (多:{gp1w}/空:{gn1w})</span>", unsafe_allow_html=True)
 with h_col3:
     st.metric("近 2W 熱點", f"{h_2w:.1f} 分", f"FinBERT情緒:{sent_2w:.1f} (多:{b2w}/空:{r2w})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2w:.1f} (多:{gp2w}/空:{gn2w})</span>", unsafe_allow_html=True)
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{gp2w:.1f} (多:{gp2w}/空:{gn2w})</span>", unsafe_allow_html=True)
 with h_col4:
     st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"FinBERT情緒:{sent_1m:.1f} (多:{b1m}/空:{r1m})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1m:.1f} (多:{gp1m}/空:{gn1m})</span>", unsafe_allow_html=True)
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{gp1m:.1f} (多:{gp1m}/空:{gn1m})</span>", unsafe_allow_html=True)
 with h_col5:
     st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"FinBERT情緒:{sent_2m:.1f} (多:{b2m}/空:{r2m})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gp2m}/空:{gn2m})</span>", unsafe_allow_html=True)
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{gp2m:.1f} (多:{gp2m}/空:{gn2m})</span>", unsafe_allow_html=True)
 
 st.markdown("---")
 st.subheader("🎯 本益比評價子項拆解與情境目標價")
@@ -1007,7 +1007,7 @@ st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決�
 
 shap_explain_text_plain = (
     f"💡 模型圖表綜合解釋說明：\n"
-    f"• 歷史回測圖解析：紫線 Gamma 代表市場資金簇擁與推擠度，大於 0 表示強勢追價；綠線 Beta_3 代表個股相對於輝達 (NVDA) 的獨立超額衝擊。當兩者轉強並進入黃色標示之「動能爆發推升期 (Surge)」時，紅色的累積報酬曲線呈現明確的主升段噴發。\n"
+    f"• 歷史回測圖解析：紫線 Gamma 代表市場資金簇擁與推擠度，大於 0 表示強勢追價；綠線 Beta_3 代表個股相對於輝達 (NVDA) 的獨立超額衝擊。當兩者轉強並進入黃色標示之「動新爆發推升期 (Surge)」時，紅色的累積報酬曲線呈現明確的主升段噴發。\n"
     f"• SHAP 特徵歸因解析：模型以 Price_Mom_30D（30日動能差）與 Beta_3 具備最高決策影響力。右側紅點代表特徵值偏高時會顯著推升未來正報酬機率。\n"
     f"• 🎯 SHAP 動態反推價位：結合當前特徵對模型的邊際貢獻，機器學習反推之 **AI 支撐價為 ${shap_support:,.2f} 元**，**AI 壓力價為 ${shap_resistance:,.2f} 元**。"
 )
@@ -1084,7 +1084,7 @@ ctx = {
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob, "turning_direction": turning_direction,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn_48h, "h_48h": h_48h, "sent_48h": sent_48h,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h, "h_48h": h_48h, "sent_48h": sent_48h,
     "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "h_1w": h_1w, "sent_1w": sent_1w,
     "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "h_2w": h_2w, "sent_2w": sent_2w,
     "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "h_1m": h_1m, "sent_1m": sent_1m,
