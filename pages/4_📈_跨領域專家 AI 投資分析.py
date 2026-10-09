@@ -1007,7 +1007,7 @@ st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決�
 
 shap_explain_text_plain = (
     f"💡 模型圖表綜合解釋說明：\n"
-    f"• 歷史回測圖解析：紫線 Gamma 代表市場資金簇擁與推擠度，大於 0 表示強勢追價；綠線 Beta_3 代表個股相對於輝達 (NVDA) 的獨立超額衝擊。當兩者轉強並進入黃色標示之「動新爆發推升期 (Surge)」時，紅色的累積報酬曲線呈現明確的主升段噴發。\n"
+    f"• 歷史回測圖解析：紫線 Gamma 代表市場資金簇擁與推擠度，大於 0 表示強勢追價；綠線 Beta_3 代表個股相對於輝達 (NVDA) 的獨立超額衝擊。當兩者轉強並進入黃色標示之「動能爆發推升期 (Surge)」時，紅色的累積報酬曲線呈現明確的主升段噴發。\n"
     f"• SHAP 特徵歸因解析：模型以 Price_Mom_30D（30日動能差）與 Beta_3 具備最高決策影響力。右側紅點代表特徵值偏高時會顯著推升未來正報酬機率。\n"
     f"• 🎯 SHAP 動態反推價位：結合當前特徵對模型的邊際貢獻，機器學習反推之 **AI 支撐價為 ${shap_support:,.2f} 元**，**AI 壓力價為 ${shap_resistance:,.2f} 元**。"
 )
@@ -1084,11 +1084,11 @@ ctx = {
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob, "turning_direction": turning_direction,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h, "h_48h": h_48h, "sent_48h": sent_48h,
-    "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "h_1w": h_1w, "sent_1w": sent_1w,
-    "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "h_2w": h_2w, "sent_2w": sent_2w,
-    "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "h_1m": h_1m, "sent_1m": sent_1m,
-    "s_2m": s_2m, "c2m": c2m, "b2m": b2m, "r2m": r2m, "gp_2m": gp2m, "gn_2m": gn2m, "h_2m": h_2m, "sent_2m": sent_2m,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp48h": gp48h, "gn48h": gn48h, "h_48h": h_48h, "sent_48h": sent_48h,
+    "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp1w": gp1w, "gn1w": gn1w, "h_1w": h_1w, "sent_1w": sent_1w,
+    "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp2w": gp2w, "gn2w": gn2w, "h_2w": h_2w, "sent_2w": sent_2w,
+    "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp1m": gp1m, "gn1m": gn1m, "h_1m": h_1m, "sent_1m": sent_1m,
+    "s_2m": s_2m, "c2m": c2m, "b2m": b2m, "r2m": r2m, "gp2m": gp2m, "gn2m": gn2m, "h_2m": h_2m, "sent_2m": sent_2m,
     "pe_base": pe_base, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, "risk_val": risk_val,
     "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "annual_eps_val": annual_eps_val, "pe_std": pe_std, 
