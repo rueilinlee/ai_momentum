@@ -220,7 +220,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 多源爬蟲與 FinBERT 評分引擎 (已修正正規化分佈)
+# 2. 爬蟲與非線性/指數函數動態評分引擎
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_finbert_model():
@@ -234,14 +234,14 @@ def load_finbert_model():
     except Exception:
         return None, None
 
-def analyze_sentiment_finbert(titles):
+def analyze_sentiment_finbert_nonlinear(titles):
     if not titles: return 5.0, 0, 0
     tokenizer, model = load_finbert_model()
     if not tokenizer or not model:
         return None, 0, 0
     
     try:
-        batch_titles = titles[:35]
+        batch_titles = titles[:40]
         inputs = tokenizer(batch_titles, padding=True, truncation=True, max_length=64, return_tensors="pt")
         with torch.no_grad():
             outputs = model(**inputs)
@@ -253,10 +253,10 @@ def analyze_sentiment_finbert(titles):
         b_count = int(sum(1 for p, n in zip(pos_scores, neg_scores) if p > n))
         r_count = int(sum(1 for p, n in zip(pos_scores, neg_scores) if n > p))
         
-        # 修正：採用比例正規化，避免分數直接飽和到 10.0 滿分
-        total = max(1, len(pos_scores))
-        net_ratio = (sum(pos_scores) - sum(neg_scores)) / total
-        final_score = round(float(np.clip(5.0 + net_ratio * 4.0, 1.0, 9.5)), 1)
+        # 非線性邏輯轉換 (使用 tanh 雙曲正切函數確保平滑且具備區辨力)
+        net_diff = float(np.sum(pos_scores) - np.sum(neg_scores))
+        nonlinear_factor = float(np.tanh(net_diff / max(5.0, len(pos_scores) * 0.3)))
+        final_score = round(float(np.clip(5.0 + nonlinear_factor * 4.2, 1.0, 9.5)), 1)
         
         return final_score, b_count, r_count
     except Exception:
@@ -264,6 +264,7 @@ def analyze_sentiment_finbert(titles):
 
 def fetch_rss_feed(url, keyword, hours=168):
     titles = []
+    items_with_time = []
     time_threshold = datetime.now() - timedelta(hours=hours)
     try:
         res = requests.get(url, headers=HEADERS, timeout=5)
@@ -274,38 +275,42 @@ def fetch_rss_feed(url, keyword, hours=168):
                 d_elem = item.find('pubDate')
                 title_text = t_elem.text.strip() if t_elem is not None and t_elem.text else ""
                 
-                is_recent = True
+                pub_dt = datetime.now()
                 if d_elem is not None and d_elem.text:
                     try:
                         from email.utils import parsedate_to_datetime
                         pub_dt = parsedate_to_datetime(d_elem.text).replace(tzinfo=None)
-                        if pub_dt < time_threshold: is_recent = False
                     except Exception: pass
                 
-                if is_recent and title_text and (keyword in title_text or len(title_text) > 6):
+                if pub_dt >= time_threshold and title_text and (keyword in title_text or len(title_text) > 6):
                     titles.append(title_text)
+                    items_with_time.append((title_text, pub_dt))
     except Exception: pass
-    return titles
+    return titles, items_with_time
 
-def fetch_cnyes_rss(stock_code, company_name, hours=168):
+def fetch_cnyes_rss_timed(stock_code, company_name, hours=168):
     clean_name = company_name.split('(')[0].strip()
-    url = f"https://news.cnyes.com/rss/category/tw_stock"
-    titles = fetch_rss_feed(url, clean_name, hours)
+    url = "https://news.cnyes.com/rss/category/tw_stock"
+    titles, items = fetch_rss_feed(url, clean_name, hours)
     if not titles:
-        titles = fetch_anue_with_time(stock_code, company_name, hours)
-    return titles
+        titles, items = fetch_anue_with_time_timed(stock_code, company_name, hours)
+    return titles, items
 
-def fetch_yahoo_rss(stock_code, hours=168):
+def fetch_yahoo_rss_timed(stock_code, hours=168):
     clean_code = stock_code.split('.')[0]
     url = f"https://tw.stock.yahoo.com/rss?s={clean_code}.TW"
-    titles = fetch_rss_feed(url, clean_code, hours)
+    titles, items = fetch_rss_feed(url, clean_code, hours)
     if not titles:
-        titles = fetch_yahoo_tw(stock_code, hours)
-    return titles
+        titles_raw = fetch_yahoo_tw(stock_code, hours)
+        titles = titles_raw
+        items = [(t, datetime.now()) for t in titles_raw]
+    return titles, items
 
-def fetch_edn_cny_rss(company_name, hours=168):
+def fetch_edn_cny_rss_timed(company_name, hours=168):
     clean_name = company_name.split('(')[0].strip()
     titles = []
+    items = []
+    time_threshold = datetime.now() - timedelta(hours=hours)
     rss_sources = [
         f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:money.udn.com&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
         f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:ctee.com.tw&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
@@ -317,14 +322,24 @@ def fetch_edn_cny_rss(company_name, hours=168):
                 root = ET.fromstring(res.text)
                 for item in root.findall('.//item'):
                     t_elem = item.find('title')
+                    d_elem = item.find('pubDate')
                     if t_elem is not None and t_elem.text:
                         t_clean = re.sub(r"\s*-\s*[^-]+$", "", t_elem.text.strip())
-                        if t_clean and len(t_clean) > 6: titles.append(t_clean)
+                        pub_dt = datetime.now()
+                        if d_elem is not None and d_elem.text:
+                            try:
+                                from email.utils import parsedate_to_datetime
+                                pub_dt = parsedate_to_datetime(d_elem.text).replace(tzinfo=None)
+                            except Exception: pass
+                        if pub_dt >= time_threshold and t_clean and len(t_clean) > 6:
+                            titles.append(t_clean)
+                            items.append((t_clean, pub_dt))
         except Exception: continue
-    return list(set(titles))
+    return list(set(titles)), items
 
-def fetch_anue_with_time(stock_code, company_name="", hours=168):
+def fetch_anue_with_time_timed(stock_code, company_name="", hours=168):
     titles = []
+    items = []
     clean_code = stock_code.split('.')[0]
     clean_name = company_name.split('(')[0].strip() if company_name else ""
     keywords = list(filter(None, [clean_code, clean_name]))
@@ -332,39 +347,37 @@ def fetch_anue_with_time(stock_code, company_name="", hours=168):
     
     for kw in keywords:
         page = 1
-        keep_fetching = True
-        while keep_fetching and page <= 5:
+        while page <= 3:
             url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={urllib.parse.quote(kw)}&limit=20&page={page}"
             try:
                 res = requests.get(url, headers={**HEADERS, "Referer": "https://news.cnyes.com/"}, timeout=5)
                 if res.status_code != 200: break
-                items = res.json().get("items", {}).get("data", [])
-                if not items: break
-                
-                for item in items:
+                data_items = res.json().get("items", {}).get("data", [])
+                if not data_items: break
+                for item in data_items:
                     pub_time = item.get("publishAt", 0)
                     if pub_time > 10000000000: pub_time /= 1000.0
-                    if pub_time < time_threshold:
-                        keep_fetching = False
-                        break
-                    title = item.get("title", "")
-                    if title and len(title) > 5: titles.append(title)
+                    if pub_time >= time_threshold:
+                        title = item.get("title", "")
+                        if title and len(title) > 5:
+                            titles.append(title)
+                            items.append((title, datetime.fromtimestamp(pub_time)))
                 page += 1
             except Exception: break
-    return list(set(titles))
+    return titles, items
 
 def fetch_yahoo_tw(stock_code, hours=168):
     titles = []
     clean_code = stock_code.split('.')[0]
     offset = 0
-    while offset <= 40:
+    while offset <= 30:
         url = f"https://tw.stock.yahoo.com/_td/api/resource/StockQuoteNews;limit=20;offset={offset};symbol={clean_code}.TW"
         try:
             res = requests.get(url, headers=HEADERS, timeout=5)
             if res.status_code == 200:
-                items = res.json().get("list", [])
-                if not items: break
-                for item in items:
+                lst = res.json().get("list", [])
+                if not lst: break
+                for item in lst:
                     title = item.get("title", "")
                     if title and len(title) > 8: titles.append(title)
                 offset += 20
@@ -372,8 +385,9 @@ def fetch_yahoo_tw(stock_code, hours=168):
         except Exception: break
     return list(set(titles))
 
-def fetch_google_news_rss_chunked(company_name, stock_code, hours=168):
+def fetch_google_news_rss_timed(company_name, stock_code, hours=168):
     titles = []
+    items = []
     clean_code = stock_code.split('.')[0]
     clean_name = company_name.split('(')[0].strip()
     days_total = max(1, int(hours / 24))
@@ -389,29 +403,47 @@ def fetch_google_news_rss_chunked(company_name, stock_code, hours=168):
         if res.status_code == 200:
             root = ET.fromstring(res.text)
             for item in root.findall('.//item'):
-                title_elem = item.find('title')
-                if title_elem is not None and title_elem.text:
-                    title_clean = re.sub(r"\s*-\s*[^-]+$", "", title_elem.text.strip())
-                    if title_clean and len(title_clean) > 6: titles.append(title_clean)
+                t_elem = item.find('title')
+                d_elem = item.find('pubDate')
+                if t_elem is not None and t_elem.text:
+                    title_clean = re.sub(r"\s*-\s*[^-]+$", "", t_elem.text.strip())
+                    pub_dt = now
+                    if d_elem is not None and d_elem.text:
+                        try:
+                            from email.utils import parsedate_to_datetime
+                            pub_dt = parsedate_to_datetime(d_elem.text).replace(tzinfo=None)
+                        except Exception: pass
+                    if title_clean and len(title_clean) > 6:
+                        titles.append(title_clean)
+                        items.append((title_clean, pub_dt))
     except Exception: pass
-    return list(set(titles))
+    return list(set(titles)), items
 
 @st.cache_data(ttl=1800)
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
-    google_titles = fetch_google_news_rss_chunked(company_name, stock_code, hours)
-    anue_titles = fetch_cnyes_rss(stock_code, company_name, hours)
-    yahoo_titles = fetch_yahoo_rss(stock_code, hours)
-    edn_ctee_titles = fetch_edn_cny_rss(company_name, hours)
+    g_titles, g_items = fetch_google_news_rss_timed(company_name, stock_code, hours)
+    a_titles, a_items = fetch_cnyes_rss_timed(stock_code, company_name, hours)
+    y_titles, y_items = fetch_yahoo_rss_timed(stock_code, hours)
+    e_titles, e_items = fetch_edn_cny_rss_timed(company_name, hours)
 
     sources_count = {
-        "Google News": len(google_titles), 
-        "鉅亨網": len(anue_titles), 
-        "Yahoo 股市": len(yahoo_titles),
-        "經濟/工商": len(edn_ctee_titles)
+        "Google News": len(g_titles), 
+        "鉅亨網": len(a_titles), 
+        "Yahoo 股市": len(y_titles),
+        "經濟/工商": len(e_titles)
     }
-    all_titles = list(set(google_titles + anue_titles + yahoo_titles + edn_ctee_titles))
+    
+    # 合併所有帶時間戳記的新聞並去重
+    seen = set()
+    unique_items = []
+    for title, dt in (g_items + a_items + y_items + e_items):
+        clean_t = re.sub(r"\s+", "", title)
+        if clean_t not in seen:
+            seen.add(clean_t)
+            unique_items.append((title, dt))
 
-    finbert_sent, fb_bull, fb_bear = analyze_sentiment_finbert(all_titles)
+    all_titles = [item[0] for item in unique_items]
+    finbert_sent, fb_bull, fb_bear = analyze_sentiment_finbert_nonlinear(all_titles)
     
     bullish = ["漲", "高", "強", "買超", "創高", "突破", "擴產", "營收揚升", "暢旺", "多方", "利多", "成長", "大賺", "雙增"]
     bearish = ["跌", "殺", "跌停", "衰退", "利空", "縮減", "賣超", "低迷", "修正", "震盪", "壓力"]
@@ -419,41 +451,50 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     growth_neg = ["下修", "衰退", "保守", "庫存", "壓力", "疲弱", "下滑", "淡季"]
     hotspot_keywords = ["突破", "爆發", "大漲", "創高", "急單", "跌停", "崩", "震撼", "重訊"]
 
-    total_count = max(1, len(all_titles))
     if not all_titles:
-        simulated_count = max(3, int(hours / 24) * 2)
-        return 5.0, 5.0, 4.0, 2, 1, 2, 1, simulated_count, all_titles, sources_count
+        return 5.0, 5.0, 4.0, 2, 1, 2, 1, max(3, int(hours / 24) * 2), all_titles, sources_count
 
-    b_cnt, r_cnt, gp_cnt, gn_cnt, h_hits_total = 0, 0, 0, 0, 0
-    for title in all_titles:
+    now = datetime.now()
+    b_cnt, r_cnt, gp_cnt, gn_cnt = 0, 0, 0, 0
+    weighted_hotspot_sum = 0.0
+
+    for title, dt in unique_items:
+        # 指數時間衰減因子 (lambda = 0.15, 越接近當前時間權重越高)
+        age_hours = max(0.0, (now - dt).total_seconds() / 3600.0)
+        time_decay = math.exp(-0.10 * (age_hours / max(24.0, hours)))
+
         b_hits = sum(1 for w in bullish if w in title)
         r_hits = sum(1 for w in bearish if w in title)
         gp_hits = sum(1 for w in growth_pos if w in title)
         gn_hits = sum(1 for w in growth_neg if w in title)
         h_hits = sum(1 for w in hotspot_keywords if w in title)
-        b_cnt += b_hits; r_cnt += r_hits
-        gp_cnt += gp_hits; gn_cnt += gn_hits
-        h_hits_total += h_hits
 
-    # 修正 FinBERT 評分回傳
+        b_cnt += b_hits
+        r_cnt += r_hits
+        gp_cnt += gp_hits
+        gn_cnt += gn_hits
+        weighted_hotspot_sum += (h_hits + 0.2) * time_decay
+
+    total_count = max(1, len(all_titles))
+
+    # 1. 情緒分數 (非線性函數)
     if finbert_sent is not None:
         s_score = finbert_sent
         b_cnt = max(b_cnt, fb_bull)
         r_cnt = max(r_cnt, fb_bear)
     else:
         s_ratio = (b_cnt - r_cnt) / total_count
-        s_score = round(float(np.clip(5.0 + s_ratio * 4.0, 1.0, 9.5)), 1)
+        s_score = round(float(np.clip(5.0 + math.tanh(s_ratio * 2.5) * 4.2, 1.0, 9.5)), 1)
 
-    # 修正展望評分 (以正負向比例合理計算，落在 1.0 ~ 9.5 之間)
+    # 2. 展望分數 (非線性函數，隨時間區段有所差異)
     g_ratio = (gp_cnt - gn_cnt) / total_count
-    g_score = round(float(np.clip(5.0 + g_ratio * 4.0, 1.0, 9.5)), 1)
+    g_score = round(float(np.clip(5.0 + math.tanh(g_ratio * 3.0) * 4.2, 1.0, 9.5)), 1)
 
-    # 修正熱點評分 (結合篇數密度與關鍵字命中率，合理落在 1.0 ~ 9.5 之間)
-    density_factor = min(2.0, total_count / max(1, hours / 24))
-    keyword_density = h_hits_total / total_count
-    h_score = round(float(np.clip(3.0 + density_factor * 2.0 + keyword_density * 4.0, 1.0, 9.5)), 1)
+    # 3. 熱點 (Hotspot) 採用指數成長與非線性對數壓縮，確保短天期與長天期明顯區隔
+    density_score = weighted_hotspot_sum / (hours / 24.0)
+    h_score = round(float(np.clip(2.0 + math.log1p(density_score * 3.0) * 3.2, 1.0, 9.5)), 1)
 
-    return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), len(all_titles), all_titles, sources_count
+    return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), total_count, all_titles, sources_count
 
 # ==========================================
 # 3. 行情財報擷取與機器學習特徵 (含日內與 NLP)
@@ -906,7 +947,7 @@ src_df_data = [
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分")
+st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分 (已套用指數衰減與非線性函數)")
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
     st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"FinBERT情緒:{sent_48h:.1f} (多:{b48h}/空:{r48h})")
@@ -971,7 +1012,7 @@ shap_explain_text_plain = (
     "💡 模型圖表綜合解釋說明：\n"
     "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用，以 Price_Mom_30D 與 Beta_3 影響力最大。\n"
     "• Gamma（紫線）：大於 0 代表資金簇擁追價，小於 0 代表資金退潮。\n"
-    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動新爆發推升期 (Surge)。\n"
+    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動能爆發推升期 (Surge)。\n"
     "• 累積報酬（紅線）：驗證模型在爆發期前後捕捉波段主升段的成效。"
 )
 
@@ -1025,7 +1066,7 @@ ctx = {
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp_48h, "gn_48h": gn_48h,
     "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w,
     "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w,
     "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m,
