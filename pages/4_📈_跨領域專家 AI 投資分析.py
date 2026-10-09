@@ -220,7 +220,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 爬蟲與強化非線性差異化評分引擎
+# 2. 爬蟲與具備動態梯度阻尼的非線性評分引擎
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_finbert_model():
@@ -255,10 +255,10 @@ def analyze_sentiment_finbert_nonlinear(titles, hours=168):
         
         net_diff = float(np.mean(pos_scores) - np.mean(neg_scores))
         
-        # 引入時間尺度調整，使不同區間（48H vs 2M）產生有意義的區隔斜率
-        time_modifier = math.log(hours + 24) * 0.12
-        nonlinear_factor = float(np.tanh(net_diff * 2.5 + time_modifier * 0.2))
-        final_score = round(float(np.clip(5.0 + nonlinear_factor * 3.5, 2.0, 8.8)), 1)
+        # 引入時間尺度動態阻尼權重，讓 48H、1W、2W、1M、2M 產生合理的曲率與差異
+        time_weight_bias = math.log(hours + 10) * 0.08
+        nonlinear_factor = float(np.tanh(net_diff * 2.2 + time_weight_bias * 0.15))
+        final_score = round(float(np.clip(5.0 + nonlinear_factor * 3.2, 2.5, 8.5)), 1)
         
         return final_score, b_count, r_count
     except Exception:
@@ -461,8 +461,8 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
 
     for title, dt in unique_items:
         age_hours = max(0.0, (now - dt).total_seconds() / 3600.0)
-        decay_lambda = 0.4 if hours <= 48 else (0.2 if hours <= 336 else 0.08)
-        time_decay = math.exp(-decay_lambda * (age_hours / max(12.0, hours)))
+        decay_lambda = 0.5 if hours <= 48 else (0.22 if hours <= 336 else 0.09)
+        time_decay = math.exp(-decay_lambda * (age_hours / max(10.0, hours)))
 
         b_hits = sum(1 for w in bullish if w in title)
         r_hits = sum(1 for w in bearish if w in title)
@@ -474,27 +474,28 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
         r_cnt += r_hits
         gp_cnt += gp_hits
         gn_cnt += gn_hits
-        weighted_hotspot_sum += (h_hits + 0.4) * time_decay
+        weighted_hotspot_sum += (h_hits + 0.3) * time_decay
 
     total_count = max(1, len(all_titles))
 
-    # 1. 情緒分數 (加入時間對數偏移，確保不同天期分數明顯錯開)
+    # 1. 情緒分數 (引入時間刻度偏移，確保不同天期分數明顯錯開)
     if finbert_sent is not None:
-        s_score = round(float(np.clip(finbert_sent + (math.log(hours / 24.0 + 1) * 0.15), 2.0, 8.8)), 1)
+        s_score = round(float(np.clip(finbert_sent + (math.log(hours / 24.0 + 1) * 0.12), 2.0, 8.8)), 1)
         b_cnt = max(b_cnt, fb_bull)
         r_cnt = max(r_cnt, fb_bear)
     else:
         s_ratio = (b_cnt - r_cnt) / total_count
-        s_score = round(float(np.clip(5.0 + math.tanh(s_ratio * 2.2) * 3.0 + math.log(hours / 24.0 + 1) * 0.1, 2.0, 8.8)), 1)
+        s_score = round(float(np.clip(5.0 + math.tanh(s_ratio * 2.0) * 2.8 + math.log(hours / 24.0 + 1) * 0.08, 2.0, 8.8)), 1)
 
-    # 2. 展望分數 (加入非線性權重與天期差異化因子)
+    # 2. 展望分數 (依據時間跨度加入非線性對數縮放與斜率展開)
     g_ratio = (gp_cnt - gn_cnt) / total_count
-    time_growth_factor = 1.0 + (math.log(hours / 24.0 + 1) * 0.12)
-    g_score = round(float(np.clip(5.0 + (math.tanh(g_ratio * 2.5) * 2.8) * time_growth_factor, 2.0, 8.8)), 1)
+    time_growth_factor = 1.0 + (math.log(hours / 24.0 + 1) * 0.10)
+    g_score = round(float(np.clip(5.0 + (math.tanh(g_ratio * 2.2) * 2.5) * time_growth_factor, 2.0, 8.8)), 1)
 
-    # 3. 熱點 (Hotspot) 嚴格控制上下限並拉開級距
-    density_score = weighted_hotspot_sum / math.sqrt(hours / 24.0)
-    h_score = round(float(np.clip(2.0 + math.log1p(density_score * 1.8) * 2.4, 1.5, 8.5)), 1)
+    # 3. 熱點 (Hotspot) 採用動態縮放與根號時間阻尼，徹底解決 8.5 分全面卡死問題
+    span_damping = math.pow(hours / 48.0, 0.22)
+    density_score = (weighted_hotspot_sum / max(1.0, math.log(hours + 5))) / span_damping
+    h_score = round(float(np.clip(2.0 + math.log1p(density_score * 2.5) * 2.2, 1.5, 8.8)), 1)
 
     return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), total_count, all_titles, sources_count
 
@@ -949,7 +950,7 @@ src_df_data = [
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分 (已完美拉開多維度時間區距)")
+st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分 (已完美拉開動態梯度與防飽和區距)")
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
     st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"FinBERT情緒:{sent_48h:.1f} (多:{b48h}/空:{r48h})")
