@@ -490,20 +490,20 @@ def generate_word_report(ctx):
         r = ret_table.add_row().cells
         r[0].text, r[1].text = p_name, ("資料不足" if val is None else f"{val:+.2f}%")
 
-    doc.add_heading("二、跨時間維度新聞爬取筆數與 NLP 評分 (含多空與熱點)", level=1)
-    src_table = doc.add_table(rows=1, cols=8)
+    doc.add_heading("二、跨時間維度新聞爬取與 NLP 評分 (含展望與多空)", level=1)
+    src_table = doc.add_table(rows=1, cols=9)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
-    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text, sch[5].text, sch[6].text, sch[7].text = "時間", "Google", "鉅亨網", "Yahoo", "去重篇數", "多方", "空方", "熱點(炒作)"
-    for p_label, src_dict, merged_c, b_cnt, r_cnt, h_val in [
-        ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['b48h'], ctx['r48h'], ctx['h_48h']),
-        ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['b1w'], ctx['r1w'], ctx['h_1w']),
-        ("近 2W", ctx['s_2w'], ctx['c2w'], ctx['b2w'], ctx['r2w'], ctx['h_2w']),
-        ("近 1M", ctx['s_1m'], ctx['c1m'], ctx['b1m'], ctx['r1m'], ctx['h_1m']),
-        ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['b2m'], ctx['r2m'], ctx['h_2m'])
+    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text, sch[5].text, sch[6].text, sch[7].text, sch[8].text = "時間", "Google", "鉅亨網", "Yahoo", "去重篇數", "展望", "多方", "空方", "熱點(炒作)"
+    for p_label, src_dict, merged_c, g_val, b_cnt, r_cnt, h_val in [
+        ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['g_48h'], ctx['b48h'], ctx['r48h'], ctx['h_48h']),
+        ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['g_1w'], ctx['b1w'], ctx['r1w'], ctx['h_1w']),
+        ("近 2W", ctx['s_2w'], ctx['c2w'], ctx['g_2w'], ctx['b2w'], ctx['r2w'], ctx['h_2w']),
+        ("近 1M", ctx['s_1m'], ctx['c1m'], ctx['g_1m'], ctx['b1m'], ctx['r1m'], ctx['h_1m']),
+        ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['g_2m'], ctx['b2m'], ctx['r2m'], ctx['h_2m'])
     ]:
         r = src_table.add_row().cells
-        r[0].text, r[1].text, r[2].text, r[3].text, r[4].text, r[5].text, r[6].text, r[7].text = p_label, str(src_dict.get('Google News',0)), str(src_dict.get('鉅亨網 Anue',0)), str(src_dict.get('Yahoo 股市',0)), str(merged_c), str(b_cnt), str(r_cnt), f"{h_val:.1f}分"
+        r[0].text, r[1].text, r[2].text, r[3].text, r[4].text, r[5].text, r[6].text, r[7].text, r[8].text = p_label, str(src_dict.get('Google News',0)), str(src_dict.get('鉅亨網 Anue',0)), str(src_dict.get('Yahoo 股市',0)), str(merged_c), f"{g_val:.1f}分", str(b_cnt), str(r_cnt), f"{h_val:.1f}分"
 
     doc.add_heading("三、本益比評價子項拆解說明", level=1)
     doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x")
@@ -540,7 +540,7 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-# 執行所有時間維度的新聞爬取與特徵評分 (含多空筆數與熱點)
+# 執行所有時間維度的新聞爬取與特徵評分 (含情緒、展望、熱點與多空)
 sent_48h, g_48h, h_48h, b48h, r48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
 sent_1w, g_1w, h_1w, b1w, r1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
 sent_2w, g_2w, h_2w, b2w, r2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
@@ -775,28 +775,28 @@ r_col4.metric("近 40 期", fmt_pct(ret_2m))
 r_col5.metric("近 60 期", fmt_pct(ret_3m))
 
 st.markdown("---")
-st.markdown("### 📰 多來源真實新聞爬取與 NLP 評分 (含近 48H 與多空筆數)")
+st.markdown("### 📰 多來源真實新聞爬取與 NLP 評分 (含近 48H、展望與多空筆數)")
 src_df_data = [
-    {"時間": "近 48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網 Anue',0), "Yahoo": s_48h.get('Yahoo 股市',0), "去重篇數": c48h, "多方筆數": b48h, "空方筆數": r48h},
-    {"時間": "近 1W (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網 Anue',0), "Yahoo": s_1w.get('Yahoo 股市',0), "去重篇數": c1w, "多方筆數": b1w, "空方筆數": r1w},
-    {"時間": "近 2W (336H)", "Google News": s_2w.get('Google News',0), "鉅亨網": s_2w.get('鉅亨網 Anue',0), "Yahoo": s_2w.get('Yahoo 股市',0), "去重篇數": c2w, "多方筆數": b2w, "空方筆數": r2w},
-    {"時間": "近 1M (720H)", "Google News": s_1m.get('Google News',0), "鉅亨網": s_1m.get('鉅亨網 Anue',0), "Yahoo": s_1m.get('Yahoo 股市',0), "去重篇數": c1m, "多方筆數": b1m, "空方筆數": r1m},
-    {"時間": "近 2M (1440H)", "Google News": s_2m.get('Google News',0), "鉅亨網": s_2m.get('鉅亨網 Anue',0), "Yahoo": s_2m.get('Yahoo 股市',0), "去重篇數": c2m, "多方筆數": b2m, "空方筆數": r2m},
+    {"時間": "近 48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網 Anue',0), "Yahoo": s_48h.get('Yahoo 股市',0), "去重篇數": c48h, "展望": f"{g_48h:.1f}分", "多方筆數": b48h, "空方筆數": r48h},
+    {"時間": "近 1W (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網 Anue',0), "Yahoo": s_1w.get('Yahoo 股市',0), "去重篇數": c1w, "展望": f"{g_1w:.1f}分", "多方筆數": b1w, "空方筆數": r1w},
+    {"時間": "近 2W (336H)", "Google News": s_2w.get('Google News',0), "鉅亨網": s_2w.get('鉅亨網 Anue',0), "Yahoo": s_2w.get('Yahoo 股市',0), "去重篇數": c2w, "展望": f"{g_2w:.1f}分", "多方筆數": b2w, "空方筆數": r2w},
+    {"時間": "近 1M (720H)", "Google News": s_1m.get('Google News',0), "鉅亨網": s_1m.get('鉅亨網 Anue',0), "Yahoo": s_1m.get('Yahoo 股市',0), "去重篇數": c1m, "展望": f"{g_1m:.1f}分", "多方筆數": b1m, "空方筆數": r1m},
+    {"時間": "近 2M (1440H)", "Google News": s_2m.get('Google News',0), "鉅亨網": s_2m.get('鉅亨網 Anue',0), "Yahoo": s_2m.get('Yahoo 股市',0), "去重篇數": c2m, "展望": f"{g_2m:.1f}分", "多方筆數": b2m, "空方筆數": r2m},
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-st.markdown("#### 📊 各時間維度 NLP 情緒、展望與熱點(炒作度)評分 (含多空筆數對照)")
+st.markdown("#### 📊 各時間維度 NLP 情緒、展望與熱點(炒作度)評分 (含展望與多空筆數對照)")
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
-    st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"情緒:{sent_48h:.1f} | 多:{b48h} 空:{r48h}")
+    st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"情緒:{sent_48h:.1f} | 展望:{g_48h:.1f} | 多:{b48h} 空:{r48h}")
 with h_col2:
-    st.metric("近 1W 熱點", f"{h_1w:.1f} 分", f"情緒:{sent_1w:.1f} | 多:{b1w} 空:{r1w}")
+    st.metric("近 1W 熱點", f"{h_1w:.1f} 分", f"情緒:{sent_1w:.1f} | 展望:{g_1w:.1f} | 多:{b1w} 空:{r1w}")
 with h_col3:
-    st.metric("近 2W 熱點", f"{h_2w:.1f} 分", f"情緒:{sent_2w:.1f} | 多:{b2w} 空:{r2w}")
+    st.metric("近 2W 熱點", f"{h_2w:.1f} 分", f"情緒:{sent_2w:.1f} | 展望:{g_2w:.1f} | 多:{b2w} 空:{r2w}")
 with h_col4:
-    st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"情緒:{sent_1m:.1f} | 多:{b1m} 空:{r1m}")
+    st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"情緒:{sent_1m:.1f} | 展望:{g_1m:.1f} | 多:{b1m} 空:{r1m}")
 with h_col5:
-    st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"情緒:{sent_2m:.1f} | 多:{b2m} 空:{r2m}")
+    st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"情緒:{sent_2m:.1f} | 展望:{g_2m:.1f} | 多:{b2m} 空:{r2m}")
 
 # 顯示即時抓取的新聞標題清單
 if titles_1w:
@@ -852,7 +852,7 @@ shap_explain_text_plain = (
     "💡 模型圖表綜合解釋說明：\n"
     "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用，以 Price_Mom_30D 與 Beta_3 影響力最大。\n"
     "• Gamma（紫線）：大於 0 代表資金簇擁追價，小於 0 代表資金退潮。\n"
-    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動新爆發推升期 (Surge)。\n"
+    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動能爆發推升期 (Surge)。\n"
     "• 累積報酬（紅線）：驗證模型在爆發期前後捕捉波段主升段的成效。"
 )
 
