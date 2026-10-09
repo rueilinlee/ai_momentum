@@ -265,10 +265,9 @@ def _is_relevant_news(title: str, clean_name: str, clean_code: str) -> bool:
     # 1. 必須包含標的名稱或代號，或者是大盤指數相關
     has_target = (clean_code in t_lower) or (clean_name in t_lower) or ("台股" in t_lower) or ("大盤" in t_lower)
     if not has_target and clean_code != "^TWII":
-        # 如果標題完全沒提到公司名稱或代號，直接過濾掉
         return False
         
-    # 2. 定義絕對要排除的非財經雜訊關鍵字（如車禍、命案、影劇八卦、社會事件）
+    # 2. 定義絕對要排除的非財經雜訊關鍵字
     noise_keywords = [
         "車禍", "撞擊", "身亡", "死亡", "骨折", "送醫", "命案", "凶殺", "鬼臉", "影星", 
         "抗癌", "剃光頭", "抗癌歷程", "福利政見", "里長", "總統", "立委", "選戰", "連假悲劇"
@@ -299,7 +298,6 @@ def fetch_rss_feed_timed(rss_url, keyword, hours=168, clean_name="", clean_code=
                     except Exception: pass
                 
                 if pub_dt >= time_threshold and title_text:
-                    # 套用過濾器：確保新聞與該標的相關且排除雜訊
                     if clean_name and clean_code:
                         if not _is_relevant_news(title_text, clean_name, clean_code):
                             continue
@@ -1086,7 +1084,7 @@ ctx = {
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob, "turning_direction": turning_direction,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp_48h, "gn_48h": gn_48h, "h_48h": h_48h, "sent_48h": sent_48h,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn_48h, "h_48h": h_48h, "sent_48h": sent_48h,
     "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "h_1w": h_1w, "sent_1w": sent_1w,
     "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "h_2w": h_2w, "sent_2w": sent_2w,
     "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "h_1m": h_1m, "sent_1m": sent_1m,
