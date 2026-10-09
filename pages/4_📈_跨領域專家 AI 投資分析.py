@@ -313,7 +313,7 @@ def fetch_google_news_rss_chunked(company_name, stock_code, hours=168):
         except Exception: continue
     return list(set(titles))
 
-def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, growth_neg, base_adj=3.0):
+def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, growth_neg, base_adj=5.0):
     if not titles: return 5.0, 5.0, 5.0, 0, 0, 0, 0, 0
     s_sum, g_sum, h_sum = 5.0, 5.0, 5.0
     total_bullish, total_bearish = 0, 0
@@ -341,8 +341,8 @@ def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, 
         h_sum += (h_hits * 0.8)
 
     count = len(titles)
-    final_sentiment = max(0.0, min(10.0, round(s_sum / max(1, count) + base_adj, 1)))
-    final_growth = max(0.0, min(10.0, round(g_sum / max(1, count) + 2.0, 1)))
+    final_sentiment = max(0.0, min(10.0, round(s_sum / max(1, count) + (base_adj - 3.0), 1)))
+    final_growth = max(0.0, min(10.0, round(g_sum / max(1, count) + (base_adj - 3.0), 1)))
     final_hotspot = max(0.0, min(10.0, round(h_sum / max(1, count), 1)))
     return final_sentiment, final_growth, final_hotspot, total_bullish, total_bearish, total_growth_pos, total_growth_neg, count
 
@@ -366,12 +366,12 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
         bull_cnt = max(1, (base_seed % 5) + int(hours / 168))
         bear_cnt = max(1, (base_seed % 3))
         gp_cnt, gn_cnt = bull_cnt, bear_cnt
-        s_score = round(min(9.5, max(3.5, 6.0 + (bull_cnt - bear_cnt) * 0.4)), 1)
-        g_score = round(min(9.5, max(3.5, 6.2 + (bull_cnt - bear_cnt) * 0.3)), 1)
+        s_score = round(min(9.5, max(3.5, 5.0 + (bull_cnt - bear_cnt) * 0.4)), 1)
+        g_score = round(min(9.5, max(3.5, 5.0 + (bull_cnt - bear_cnt) * 0.3)), 1)
         h_score = round(min(8.0, max(2.0, 4.0 + (bull_cnt + bear_cnt) * 0.2)), 1)
         return s_score, g_score, h_score, bull_cnt, bear_cnt, gp_cnt, gn_cnt, simulated_count, all_titles, sources_count
 
-    s_score, g_score, h_score, bull_cnt, bear_cnt, gp_cnt, gn_cnt, total_cnt = calculate_detailed_scores(all_titles, bullish, bearish, growth_pos, growth_neg, base_adj=3.0)
+    s_score, g_score, h_score, bull_cnt, bear_cnt, gp_cnt, gn_cnt, total_cnt = calculate_detailed_scores(all_titles, bullish, bearish, growth_pos, growth_neg, base_adj=5.0)
     time_decay = min(1.0, hours / 1440.0)
     s_score = round(max(0.0, min(10.0, s_score * (0.95 + 0.05 * time_decay))), 1)
     g_score = round(max(0.0, min(10.0, g_score * (0.95 + 0.05 * time_decay))), 1)
@@ -473,7 +473,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. Word 報告生成 (已修正 9 欄位匹配)
+# 4. Word 報告生成
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -555,7 +555,7 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-# 執行所有時間維度的新聞爬取與特徵評分
+# 執行所有時間維度的新聞爬取與特徵評分 (情緒與展望基準改為 5.0)
 sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
 sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
 sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
@@ -819,13 +819,13 @@ with h_col5:
     st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gp2m}/空:{gn2m})</span>", unsafe_allow_html=True)
 
 # ------------------------------------------
-# NLP 量化評分基準與計算說明區塊
+# NLP 量化評分基準與計算說明區塊 (基底 5.0 分)
 # ------------------------------------------
 st.markdown("""
 <div style='background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 13px; color: #334155; margin-top: 15px;'>
-<b>📖 NLP 量化評分基準與詞彙定義：</b>
-<br>• <b>情緒分數 (Sentiment)</b>：基礎分 3.0 分，依據標題中「多方詞彙」(漲、高、強、買超、創高、突破、擴產、暢旺等) 與「空方詞彙」(跌、殺、跌停、衰退、利空、修正等) 的淨命中數動態加減分，滿分 10 分。
-<br>• <b>展望分數 (Growth)</b>：基礎分 2.0 分，依據「正向展望詞彙」(展望佳、成長、訂單滿、上修、看好、強勁等) 與「負向展望詞彙」(下修、保守、庫存、疲弱等) 的淨命中數加減分，滿分 10 分。
+<b>📖 NLP 量化評分基準與詞彙定義 (基準分 5.0 分)：</b>
+<br>• <b>情緒分數 (Sentiment)</b>：基礎分 <b>5.0 分</b>，依據標題中「多方詞彙」(漲、高、強、買超、創高、突破、擴產、暢旺等) 與「空方詞彙」(跌、殺、跌停、衰退、利空、修正等) 的淨命中數動態加減分，滿分 10 分。
+<br>• <b>展望分數 (Growth)</b>：基礎分 <b>5.0 分</b>，依據「正向展望詞彙」(展望佳、成長、訂單滿、上修、看好、強勁等) 與「負向展望詞彙」(下修、保守、庫存、疲弱等) 的淨命中數加減分，滿分 10 分。
 <br>• <b>熱點炒作度 (Hotspot)</b>：依據盤面焦點關鍵字（突破、爆發、大漲、急單、震撼、重訊等）出現頻率計算，滿分 10 分。
 </div>
 """, unsafe_allow_html=True)
