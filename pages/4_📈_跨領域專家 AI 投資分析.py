@@ -423,8 +423,11 @@ def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.Dat
     df = pd.DataFrame(index=stock.index)
     df[symbol] = stock.pct_change()
     if symbol != "^TWII": df["^TWII"] = twii.pct_change()
-    df["NVDA_Pure_Shock"] = _map_daily_to_bars(shock, stock.index)
-    df["^SOX"] = _map_daily_to_bars(us_ret["^SOX"], stock.index) if "^SOX" in us_ret.columns else np.nan
+    
+    # 修正：當無對應資料時給予 0.0，避免 dropna() 清空整張表
+    df["NVDA_Pure_Shock"] = _map_daily_to_bars(shock, stock.index) if not shock.empty else 0.0
+    df["^SOX"] = _map_daily_to_bars(us_ret["^SOX"], stock.index) if "^SOX" in us_ret.columns else 0.0
+    
     df["RF_TW"] = rf_tw_daily
     df["Price_Mom_30D"] = (stock.pct_change(30) - twii.pct_change(30)).shift(1)
     df["Price_Mom_5D"] = (stock.pct_change(5) - twii.pct_change(5)).shift(1)
@@ -640,10 +643,16 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
 
     Y_rolling = df[symbol] - df['RF_TW']
     roll_cols = [c for c in ['^TWII', '^SOX', 'NVDA_Pure_Shock', 'Price_Mom_30D', 'Interaction_Term'] if c in df.columns and c != symbol and float(df[c].std()) > 0]
-    rolling_res = RollingOLS(Y_rolling, sm.add_constant(df[roll_cols]), window=min(252, max(30, len(df) // 3))).fit()
     
-    df['Beta_3_Rolling'] = rolling_res.params['NVDA_Pure_Shock'] if 'NVDA_Pure_Shock' in rolling_res.params else 0.0
-    df['Gamma_Rolling'] = rolling_res.params['Interaction_Term'] if 'Interaction_Term' in rolling_res.params else 0.0
+    # 修正：加入長度檢查避免 RollingOLS 陣列過小錯誤
+    if len(df) > 30:
+        rolling_res = RollingOLS(Y_rolling, sm.add_constant(df[roll_cols]), window=min(252, max(30, len(df) // 3))).fit()
+        df['Beta_3_Rolling'] = rolling_res.params['NVDA_Pure_Shock'] if 'NVDA_Pure_Shock' in rolling_res.params else 0.0
+        df['Gamma_Rolling'] = rolling_res.params['Interaction_Term'] if 'Interaction_Term' in rolling_res.params else 0.0
+    else:
+        df['Beta_3_Rolling'] = 0.0
+        df['Gamma_Rolling'] = 0.0
+        
     df['Beta_3_Trend_5D'] = df['Beta_3_Rolling'].diff(5)
     df['Gamma_Trend_5D'] = df['Gamma_Rolling'].diff(5)
     
