@@ -732,7 +732,7 @@ rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else (
 rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
 
 # ==========================================
-# 7. 最終 UI 呈現 
+# 7. 最終 UI 呈現 (含 5 格指標與各時段熱點)
 # ==========================================
 st.title("📈 跨領域專家 AI 投資分析與量化預測")
 st.subheader(f"🏢 {company_name} — 【{interval_label}】")
@@ -826,7 +826,7 @@ with right:
 st.markdown("---")
 st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決策邏輯</h3>", unsafe_allow_html=True)
 
-# Word 報告用的純文字
+# 說明文字定義
 shap_explain_text_plain = (
     "💡 簡短說明：\n"
     "• AI 含金量 (Beta_3)：衡量個股對輝達 (NVDA) 獨立衝擊的敏感度。數值越高，代表具備實質 AI 供應鏈純度。\n"
@@ -834,7 +834,6 @@ shap_explain_text_plain = (
     "• SHAP 歸因：圖表右側紅點代表該特徵推升上漲機率，藍點代表壓抑表現；特徵點位置越靠左右兩側，影響力越大。"
 )
 
-# Streamlit UI 用的深綠色 HTML 區塊
 shap_explain_html = f"""
 <div style='color: #006400; background-color: #f0fdf4; padding: 15px; border-radius: 8px; border-left: 5px solid #2e8b57; margin-bottom: 15px;'>
 {shap_explain_text_plain.replace(chr(10), '<br>')}
@@ -868,44 +867,19 @@ with fig_col2:
         shap_values = shap.TreeExplainer(model).shap_values(X_shap)
         shap_values_to_plot = shap_values[1] if isinstance(shap_values, list) else (shap_values[:, :, 1] if getattr(shap_values, "ndim", 2) == 3 else shap_values)
         fig2 = plt.figure(figsize=(10, 8))
-        
-        # 生成 SHAP 圖表 (保持 show=False 以便後續修改)
         shap.summary_plot(shap_values_to_plot, X_shap, feature_names=features, show=False)
         
-        # 取得當前的坐標軸
+        # 調整圖表文字顏色為白色以適應深色背景
         ax = plt.gca()
-        # 強制將 Y 軸 (特徵名稱) 與 X 軸 (刻度數字) 文字改為白色
         ax.tick_params(axis='y', colors='white')
         ax.tick_params(axis='x', colors='white')
-        # 將底部的 X 軸標籤 (SHAP value...) 改為白色
         ax.xaxis.label.set_color('white')
-        
-        # 將標題改為白色
         plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14, color='white')
         
         plt.tight_layout()
         st.pyplot(fig2)
-    except Exception as e: 
-        st.info(f"SHAP 渲染失敗：{e}")
+    except Exception as e: st.info(f"SHAP 渲染失敗：{e}")
 
-# 1. SHAP 說明區塊
-shap_desc_html = """
-<div style='color: #006400; background-color: #f0fdf4; padding: 12px; border-radius: 8px; border-left: 5px solid #2e8b57; margin-top: 10px; font-size: 14px;'>
-<b>💡 SHAP 圖表解讀：</b> 顯示各特徵對未來5天正報酬的推升（右側）與壓抑（左側）作用。紅點為高特徵值，藍點為低特徵值。
-</div>
-"""
-st.markdown(shap_desc_html, unsafe_allow_html=True)
-
-# 2. 回測圖說明區塊
-backtest_desc_html = """
-<div style='color: #006400; background-color: #f0fdf4; padding: 12px; border-radius: 8px; border-left: 5px solid #2e8b57; margin-top: 10px; font-size: 14px;'>
-<b>💡 回測圖解讀：</b> 
-<br>• <b>Gamma（紫線）</b>：大於0表資金簇擁，小於0表資金退潮。
-<br>• <b>Beta_3（綠線）</b>：衡量 AI 供應鏈純度，黃色區間為動能爆發推升期（Surge）。
-<br>• <b>累積報酬（紅線）</b>：驗證模型在爆發期前後捕捉波段主升段的成效。
-</div>
-"""
-st.markdown(backtest_desc_html, unsafe_allow_html=True)
 ctx = {
     "name": company_name, "interval_label": interval_label, "price": price, "change_txt": fmt_pct(change),
     "latest_proba": latest_proba, "rec": rec_title, "blue_price": blue_price, "red_price": red_price,
