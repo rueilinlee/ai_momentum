@@ -469,7 +469,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. Word 報告生成 (新增波段與熱點說明)
+# 4. Word 報告生成 (新增完整新聞與預測說明)
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -490,7 +490,7 @@ def generate_word_report(ctx):
         r = ret_table.add_row().cells
         r[0].text, r[1].text = p_name, ("資料不足" if val is None else f"{val:+.2f}%")
 
-    doc.add_heading("二、跨時間維度新聞爬取筆數與 NLP 評分 (含熱點)", level=1)
+    doc.add_heading("二、跨時間維度新聞爬取筆數與 NLP 評分 (含近 48H)", level=1)
     src_table = doc.add_table(rows=1, cols=6)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
@@ -540,7 +540,7 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-# 執行所有時間維度的新聞爬取與特徵評分
+# 執行所有時間維度的新聞爬取與特徵評分 (完整包含近48H)
 sent_48h, g_48h, h_48h, b48h, r48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
 sent_1w, g_1w, h_1w, b1w, r1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
 sent_2w, g_2w, h_2w, b2w, r2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
@@ -750,6 +750,21 @@ c5.metric("AI含金量 (Beta_3)",
           f"{df['Beta_3_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Beta_3_Rolling' in df.columns else "N/A", 
           f"資金簇擁: {df['Gamma_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Gamma_Rolling' in df.columns else "N/A")
 
+# ------------------------------------------
+# 新增：未來 5 根 K 棒價格範圍與機率預測區塊
+# ------------------------------------------
+st.markdown("---")
+st.markdown("### 🔮 未來 5 根 K 棒走勢預測與價格區間")
+f5_ret_std = float(valid_stock.pct_change().tail(20).std() * math.sqrt(5)) if len(valid_stock) >= 20 else 0.02
+f5_high = price * (1 + f5_ret_std * (1.2 if latest_proba > 0.5 else 0.5))
+f5_low = price * (1 - f5_ret_std * (0.8 if latest_proba > 0.5 else 1.3))
+
+fc1, fc2, fc3, fc4 = st.columns(4)
+fc1.metric("預測正報酬勝率", f"{latest_proba:.1%}", "基於 LightGBM 模型")
+fc2.metric("預估 5 根 K 預期高價", f"${f5_high:,.2f}", f"+{((f5_high/price)-1)*100:.2f}%")
+fc3.metric("預估 5 根 K 預期低價", f"${f5_low:,.2f}", f"{((f5_low/price)-1)*100:.2f}%")
+fc4.metric("波動區間寬度", f"${f5_high - f5_low:,.2f}", f"區間變異: {f5_ret_std*100:.2f}%")
+
 st.markdown("---")
 st.markdown(f"### ⏱ 多期報酬率表現 ({interval_label} 視角)")
 r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns(5)
@@ -760,7 +775,7 @@ r_col4.metric("近 40 期", fmt_pct(ret_2m))
 r_col5.metric("近 60 期", fmt_pct(ret_3m))
 
 st.markdown("---")
-st.markdown("### 📰 多來源真實新聞爬取與 NLP 評分 (含各時段熱點指數)")
+st.markdown("### 📰 多來源真實新聞爬取與 NLP 評分 (含近 48H 與各時段熱點)")
 src_df_data = [
     {"時間": "近 48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網 Anue',0), "Yahoo": s_48h.get('Yahoo 股市',0), "去重篇數": c48h},
     {"時間": "近 1W (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網 Anue',0), "Yahoo": s_1w.get('Yahoo 股市',0), "去重篇數": c1w},
@@ -782,6 +797,12 @@ with h_col4:
     st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"情緒:{sent_1m:.1f}")
 with h_col5:
     st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"情緒:{sent_2m:.1f}")
+
+# 顯示即時抓取的新聞標題清單
+if titles_1w:
+    with st.expander("📌 點擊檢視近期抓取之財經新聞標題清單 (前 10 則)"):
+        for t_item in titles_1w[:10]:
+            st.markdown(f"- {t_item}")
 
 st.markdown("---")
 st.subheader("🎯 本益比評價子項拆解與情境目標價")
@@ -828,10 +849,11 @@ st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決�
 
 # 說明文字與解讀
 shap_explain_text_plain = (
-    "💡 簡短說明：\n"
-    "• AI 含金量 (Beta_3)：衡量個股對輝達 (NVDA) 獨立衝擊的敏感度。數值越高，代表具備實質 AI 供應鏈純度。\n"
-    "• 資金簇擁度 (Gamma)：衡量市場資金追價的擁擠程度。當 Gamma 飆高時，通常伴隨波段主升段；反之若反轉跌破零軸，需提防人踩人風險。\n"
-    "• SHAP 歸因：圖表右側紅點代表該特徵推升上漲機率，藍點代表壓抑表現；特徵點位置越靠左右兩側，影響力越大。"
+    "💡 模型圖表綜合解釋說明：\n"
+    "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用，以 Price_Mom_30D 與 Beta_3 影響力最大。\n"
+    "• Gamma（紫線）：大於 0 代表資金簇擁追價，小於 0 代表資金退潮。\n"
+    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動能爆發推升期 (Surge)。\n"
+    "• 累積報酬（紅線）：驗證模型在爆發期前後捕捉波段主升段的成效。"
 )
 
 shap_explain_html = f"""
