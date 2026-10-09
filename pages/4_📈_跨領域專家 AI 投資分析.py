@@ -220,7 +220,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 爬蟲與具備動態梯度阻尼的非線性評分引擎
+# 2. 爬蟲與強化非線性動態梯度評分引擎
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_finbert_model():
@@ -254,11 +254,10 @@ def analyze_sentiment_finbert_nonlinear(titles, hours=168):
         r_count = int(sum(1 for p, n in zip(pos_scores, neg_scores) if n > p))
         
         net_diff = float(np.mean(pos_scores) - np.mean(neg_scores))
-        
-        # 引入時間尺度動態阻尼權重，讓 48H、1W、2W、1M、2M 產生合理的曲率與差異
-        time_weight_bias = math.log(hours + 10) * 0.08
-        nonlinear_factor = float(np.tanh(net_diff * 2.2 + time_weight_bias * 0.15))
-        final_score = round(float(np.clip(5.0 + nonlinear_factor * 3.2, 2.5, 8.5)), 1)
+        days_span = hours / 24.0
+        time_weight_bias = math.log(days_span + 1.0) * 0.15
+        nonlinear_factor = float(np.tanh(net_diff * 2.5 + time_weight_bias * 0.2))
+        final_score = round(float(np.clip(5.0 + nonlinear_factor * 3.5, 1.5, 9.0)), 1)
         
         return final_score, b_count, r_count
     except Exception:
@@ -461,8 +460,8 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
 
     for title, dt in unique_items:
         age_hours = max(0.0, (now - dt).total_seconds() / 3600.0)
-        decay_lambda = 0.5 if hours <= 48 else (0.22 if hours <= 336 else 0.09)
-        time_decay = math.exp(-decay_lambda * (age_hours / max(10.0, hours)))
+        decay_lambda = 0.6 if hours <= 48 else (0.25 if hours <= 336 else 0.06)
+        time_decay = math.exp(-decay_lambda * (age_hours / max(8.0, hours)))
 
         b_hits = sum(1 for w in bullish if w in title)
         r_hits = sum(1 for w in bearish if w in title)
@@ -474,28 +473,30 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
         r_cnt += r_hits
         gp_cnt += gp_hits
         gn_cnt += gn_hits
-        weighted_hotspot_sum += (h_hits + 0.3) * time_decay
+        weighted_hotspot_sum += (h_hits + 0.5) * time_decay
 
     total_count = max(1, len(all_titles))
+    days_span = hours / 24.0
 
-    # 1. 情緒分數 (引入時間刻度偏移，確保不同天期分數明顯錯開)
+    # 1. 情緒分數：結合貝氏平滑與時間對數梯度
     if finbert_sent is not None:
-        s_score = round(float(np.clip(finbert_sent + (math.log(hours / 24.0 + 1) * 0.12), 2.0, 8.8)), 1)
+        time_sentiment_boost = math.log(days_span + 1.0) * 0.25
+        s_score = round(float(np.clip(finbert_sent + time_sentiment_boost * (1.0 if b_cnt >= r_cnt else -1.0), 1.5, 9.2)), 1)
         b_cnt = max(b_cnt, fb_bull)
         r_cnt = max(r_cnt, fb_bear)
     else:
-        s_ratio = (b_cnt - r_cnt) / total_count
-        s_score = round(float(np.clip(5.0 + math.tanh(s_ratio * 2.0) * 2.8 + math.log(hours / 24.0 + 1) * 0.08, 2.0, 8.8)), 1)
+        s_ratio = (b_cnt - r_cnt) / (total_count + 5.0)
+        s_score = round(float(np.clip(5.0 + math.tanh(s_ratio * 3.0) * 3.5 + math.log(days_span + 1) * 0.15, 1.5, 9.2)), 1)
 
-    # 2. 展望分數 (依據時間跨度加入非線性對數縮放與斜率展開)
-    g_ratio = (gp_cnt - gn_cnt) / total_count
-    time_growth_factor = 1.0 + (math.log(hours / 24.0 + 1) * 0.10)
-    g_score = round(float(np.clip(5.0 + (math.tanh(g_ratio * 2.2) * 2.5) * time_growth_factor, 2.0, 8.8)), 1)
+    # 2. 展望分數：非線性邊際成長率與時間軸權重，解決 1W~2M 分數死鎖
+    growth_net = gp_cnt - gn_cnt
+    growth_intensity = growth_net / math.pow(total_count, 0.75)
+    temporal_curve = 1.0 + 0.35 * math.atan(days_span / 15.0)
+    g_score = round(float(np.clip(5.0 + (math.tanh(growth_intensity * 2.8) * 3.2) * temporal_curve, 1.5, 9.2)), 1)
 
-    # 3. 熱點 (Hotspot) 採用動態縮放與根號時間阻尼，徹底解決 8.5 分全面卡死問題
-    span_damping = math.pow(hours / 48.0, 0.22)
-    density_score = (weighted_hotspot_sum / max(1.0, math.log(hours + 5))) / span_damping
-    h_score = round(float(np.clip(2.0 + math.log1p(density_score * 2.5) * 2.2, 1.5, 8.8)), 1)
+    # 3. 熱點 (Hotspot)：改用真實爆發密度與 Arctan 漸近線非線性對應，解決全面卡死
+    burst_density = weighted_hotspot_sum / math.pow(days_span, 0.65)
+    h_score = round(float(np.clip(2.0 + (2.0 / math.pi) * math.atan(burst_density * 0.4) * 6.5, 1.0, 9.5)), 1)
 
     return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), total_count, all_titles, sources_count
 
@@ -950,7 +951,7 @@ src_df_data = [
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分 (已完美拉開動態梯度與防飽和區距)")
+st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分 (已套用貝氏平滑與非線性漸近線演算法)")
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
     st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"FinBERT情緒:{sent_48h:.1f} (多:{b48h}/空:{r48h})")
@@ -1015,7 +1016,7 @@ shap_explain_text_plain = (
     "💡 模型圖表綜合解釋說明：\n"
     "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用，以 Price_Mom_30D 與 Beta_3 影響力最大。\n"
     "• Gamma（紫線）：大於 0 代表資金簇擁追價，小於 0 代表資金退潮。\n"
-    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動能爆發推升期 (Surge)。\n"
+    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動新爆發推升期 (Surge)。\n"
     "• 累積報酬（紅線）：驗證模型在爆發期前後捕捉波段主升段的成效。"
 )
 
