@@ -24,6 +24,7 @@ import re
 from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches
 
 # FinBERT 與 Hugging Face 相關套件嘗試載入
 try:
@@ -493,9 +494,9 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. Word 報告生成 (完整收錄主畫面所有量化與分析結果)
+# 4. Word 報告生成 (完整收錄主畫面所有量化與分析結果與圖表)
 # ==========================================
-def generate_word_report(ctx):
+def generate_word_report(ctx, fig1=None, fig2=None):
     doc = Document()
     t = doc.add_heading(f"{ctx['name']} 跨領域 AI 投資與量化分析報告", 0)
     t.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -584,9 +585,23 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"• 歷史本益比：{ctx['hist_pe']:.1f} 倍 ｜ 遠期本益比：{ctx['fwd_pe']:.1f} 倍")
     doc.add_paragraph(f"• 時序交叉驗證表現：平均準確率 {ctx['cv_acc']:.3f} ｜ 平均 AUC {ctx['cv_auc']:.3f}")
 
-    # 九、歷史波段回測與 SHAP AI 決策邏輯解釋
+    # 九、歷史波段回測與 SHAP AI 決策邏輯解釋與圖表輸出
     doc.add_heading("九、歷史波段回測與 SHAP AI 決策邏輯解釋", level=1)
     doc.add_paragraph(ctx['shap_explain_text'])
+
+    if fig1 is not None:
+        doc.add_paragraph("【圖表一：歷史波段回測 (Surge Backtest)】")
+        buf1 = BytesIO()
+        fig1.savefig(buf1, format="png", bbox_inches='tight', dpi=150)
+        buf1.seek(0)
+        doc.add_picture(buf1, width=Inches(6.0))
+
+    if fig2 is not None:
+        doc.add_paragraph("【圖表二：SHAP AI 決策邏輯特徵歸因圖】")
+        buf2 = BytesIO()
+        fig2.savefig(buf2, format="png", bbox_inches='tight', dpi=150)
+        buf2.seek(0)
+        doc.add_picture(buf2, width=Inches(6.0))
 
     doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
@@ -1020,6 +1035,7 @@ shap_explain_html = f"""
 st.markdown(shap_explain_html, unsafe_allow_html=True)
 
 fig_col1, fig_col2 = st.columns(2)
+fig1, fig2 = None, None
 
 with fig_col1:
     min_beta3_date = plot_beta3.idxmin() if not plot_beta3.empty else None
@@ -1101,4 +1117,4 @@ ctx = {
     "hist_pe": hist_pe, "fwd_pe": fwd_pe, "cv_acc": cv_acc_val, "cv_auc": cv_auc_val
 }
 
-st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
+st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx, fig1, fig2), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
