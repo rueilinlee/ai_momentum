@@ -220,13 +220,12 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 多源爬蟲重構：新增 鉅亨網/Yahoo/經濟日報/工商時報 RSS 與 API
+# 2. 多源爬蟲與 FinBERT 評分引擎 (已修正正規化分佈)
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_finbert_model():
     if not HAS_FINBERT: return None, None
     try:
-        # 載入輕量且支援財經與多語系的 FinBERT 模型 (可替換為 ProsusAI/finbert 或 yiyanghkust/finbert-tone)
         model_name = "ProsusAI/finbert"
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForSequenceClassification.from_pretrained(model_name)
@@ -236,35 +235,29 @@ def load_finbert_model():
         return None, None
 
 def analyze_sentiment_finbert(titles):
-    """
-    使用 FinBERT 進行情感分析，回傳綜合情感得分 (0-10) 與多空計數
-    """
     if not titles: return 5.0, 0, 0
     tokenizer, model = load_finbert_model()
     if not tokenizer or not model:
-        return None, 0, 0 # 觸發備用規則引擎
+        return None, 0, 0
     
     try:
-        # 取前 30 則標題避免超長運算
-        batch_titles = titles[:30]
+        batch_titles = titles[:35]
         inputs = tokenizer(batch_titles, padding=True, truncation=True, max_length=64, return_tensors="pt")
         with torch.no_grad():
             outputs = model(**inputs)
             probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
         
-        # FinBERT labels 通常為: [positive, negative, neutral] 或依模型而定
-        # 此處以 ProsusAI/finbert 為例: 0: positive, 1: negative, 2: neutral
         pos_scores = probs[:, 0].numpy()
         neg_scores = probs[:, 1].numpy()
         
         b_count = int(sum(1 for p, n in zip(pos_scores, neg_scores) if p > n))
         r_count = int(sum(1 for p, n in zip(pos_scores, neg_scores) if n > p))
         
-        avg_pos = float(np.mean(pos_scores))
-        avg_neg = float(np.mean(neg_scores))
+        # 修正：採用比例正規化，避免分數直接飽和到 10.0 滿分
+        total = max(1, len(pos_scores))
+        net_ratio = (sum(pos_scores) - sum(neg_scores)) / total
+        final_score = round(float(np.clip(5.0 + net_ratio * 4.0, 1.0, 9.5)), 1)
         
-        # 映射至 0-10 分，基準 5.0
-        final_score = round(max(0.0, min(10.0, 5.0 + (avg_pos - avg_neg) * 5.0)), 1)
         return final_score, b_count, r_count
     except Exception:
         return None, 0, 0
@@ -281,11 +274,9 @@ def fetch_rss_feed(url, keyword, hours=168):
                 d_elem = item.find('pubDate')
                 title_text = t_elem.text.strip() if t_elem is not None and t_elem.text else ""
                 
-                # 簡易時間過濾 (若 RSS 有提供 pubDate)
                 is_recent = True
                 if d_elem is not None and d_elem.text:
                     try:
-                        # 支援常見 RSS 日期格式解析
                         from email.utils import parsedate_to_datetime
                         pub_dt = parsedate_to_datetime(d_elem.text).replace(tzinfo=None)
                         if pub_dt < time_threshold: is_recent = False
@@ -297,12 +288,10 @@ def fetch_rss_feed(url, keyword, hours=168):
     return titles
 
 def fetch_cnyes_rss(stock_code, company_name, hours=168):
-    # 鉅亨網 RSS 頻道與搜尋
     clean_name = company_name.split('(')[0].strip()
-    url = f"https://news.cnyes.com/rss/category/tw_stock" # 鉅亨網總覽 RSS
+    url = f"https://news.cnyes.com/rss/category/tw_stock"
     titles = fetch_rss_feed(url, clean_name, hours)
     if not titles:
-        # 備用 API 查詢
         titles = fetch_anue_with_time(stock_code, company_name, hours)
     return titles
 
@@ -315,16 +304,12 @@ def fetch_yahoo_rss(stock_code, hours=168):
     return titles
 
 def fetch_edn_cny_rss(company_name, hours=168):
-    # 經濟日報 (EDN) 與工商時報 (CTEE) 透過 Google News RSS 指定站點源抓取
     clean_name = company_name.split('(')[0].strip()
     titles = []
-    time_threshold = datetime.now() - timedelta(hours=hours)
-    
     rss_sources = [
         f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:money.udn.com&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
         f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:ctee.com.tw&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     ]
-    
     for rss_url in rss_sources:
         try:
             res = requests.get(rss_url, headers=HEADERS, timeout=4)
@@ -426,7 +411,6 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     }
     all_titles = list(set(google_titles + anue_titles + yahoo_titles + edn_ctee_titles))
 
-    # 優先嘗試 FinBERT 模型運算
     finbert_sent, fb_bull, fb_bear = analyze_sentiment_finbert(all_titles)
     
     bullish = ["漲", "高", "強", "買超", "創高", "突破", "擴產", "營收揚升", "暢旺", "多方", "利多", "成長", "大賺", "雙增"]
@@ -435,12 +419,12 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
     growth_neg = ["下修", "衰退", "保守", "庫存", "壓力", "疲弱", "下滑", "淡季"]
     hotspot_keywords = ["突破", "爆發", "大漲", "創高", "急單", "跌停", "崩", "震撼", "重訊"]
 
+    total_count = max(1, len(all_titles))
     if not all_titles:
         simulated_count = max(3, int(hours / 24) * 2)
         return 5.0, 5.0, 4.0, 2, 1, 2, 1, simulated_count, all_titles, sources_count
 
-    # 計算傳統關鍵字與熱點
-    b_cnt, r_cnt, gp_cnt, gn_cnt, h_sum = 0, 0, 0, 0, 0.0
+    b_cnt, r_cnt, gp_cnt, gn_cnt, h_hits_total = 0, 0, 0, 0, 0
     for title in all_titles:
         b_hits = sum(1 for w in bullish if w in title)
         r_hits = sum(1 for w in bearish if w in title)
@@ -449,20 +433,25 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
         h_hits = sum(1 for w in hotspot_keywords if w in title)
         b_cnt += b_hits; r_cnt += r_hits
         gp_cnt += gp_hits; gn_cnt += gn_hits
-        h_sum += (h_hits * 0.8)
+        h_hits_total += h_hits
 
-    # 若 FinBERT 啟用成功則採用 FinBERT 情緒，否則用規則引擎
+    # 修正 FinBERT 評分回傳
     if finbert_sent is not None:
         s_score = finbert_sent
         b_cnt = max(b_cnt, fb_bull)
         r_cnt = max(r_cnt, fb_bear)
     else:
-        s_base = 5.0 + (b_cnt - r_cnt) * 0.3
-        s_score = max(0.0, min(10.0, round(s_base, 1)))
+        s_ratio = (b_cnt - r_cnt) / total_count
+        s_score = round(float(np.clip(5.0 + s_ratio * 4.0, 1.0, 9.5)), 1)
 
-    g_base = 5.0 + (gp_cnt - gn_cnt) * 0.4
-    g_score = max(0.0, min(10.0, round(g_base, 1)))
-    h_score = max(0.0, min(10.0, round(h_sum / max(1, len(all_titles)), 1)))
+    # 修正展望評分 (以正負向比例合理計算，落在 1.0 ~ 9.5 之間)
+    g_ratio = (gp_cnt - gn_cnt) / total_count
+    g_score = round(float(np.clip(5.0 + g_ratio * 4.0, 1.0, 9.5)), 1)
+
+    # 修正熱點評分 (結合篇數密度與關鍵字命中率，合理落在 1.0 ~ 9.5 之間)
+    density_factor = min(2.0, total_count / max(1, hours / 24))
+    keyword_density = h_hits_total / total_count
+    h_score = round(float(np.clip(3.0 + density_factor * 2.0 + keyword_density * 4.0, 1.0, 9.5)), 1)
 
     return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), len(all_titles), all_titles, sources_count
 
@@ -562,7 +551,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. 重新梳理與完整包裝的 Word 報告生成
+# 4. Word 報告生成
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -571,19 +560,12 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
     doc.add_paragraph(f"資料頻率設定：{ctx['interval_label']} ｜ 最新即時成交價：{ctx['price']:,.2f}（當日漲跌 {ctx['change_txt']}）")
 
-    # 一、核心總結與綜合評等
     doc.add_heading("一、核心總結與綜合評等", level=1)
     doc.add_paragraph(f"• AI 綜合評等：{ctx['rec']}（未來 5 天正報酬機率：{ctx['latest_proba']:.2%}）")
     doc.add_paragraph(f"• 預期轉折時間點：模型預測最有可能發生價格反轉的時點為【{ctx['turning_bar']}】（機率 {ctx['turning_prob']:.1f}%）")
     doc.add_paragraph(f"• 潛在空間與目標價：預估基準目標價為 {ctx['tp_base']:,.2f} 元，潛在空間 {ctx['upside']:.1f}%。")
-    doc.add_paragraph(f"• 建議操作區間：藍色動能區（建議買點）{ctx['blue_price']:,.2f} 元 ｜ 紅色動能區（建議賣價）{ctx['red_price']:,.2f} 元。")
 
-    # 二、未來 5 根 K 棒走勢預測與報酬表現
     doc.add_heading("二、未來 5 根 K 棒走勢預測與歷史報酬表現", level=1)
-    doc.add_paragraph(f"• 預估 5 根 K 預期高價：{ctx['f5_high']:,.2f} 元（+ {ctx['f5_high_pct']:.2f}%）")
-    doc.add_paragraph(f"• 預估 5 根 K 預期低價：{ctx['f5_low']:,.2f} 元（{ctx['f5_low_pct']:.2f}%）")
-    doc.add_paragraph(f"• 預測區間波動變異：{ctx['f5_ret_std']*100:.2f}%")
-    
     ret_table = doc.add_table(rows=1, cols=4)
     ret_table.style = "Table Grid"
     ret_table.rows[0].cells[0].text, ret_table.rows[0].cells[1].text, ret_table.rows[0].cells[2].text, ret_table.rows[0].cells[3].text = "期間", "報酬率 (%)", "區間最低價", "區間最高價"
@@ -600,15 +582,12 @@ def generate_word_report(ctx):
         r[2].text = ("-" if l_p is None else f"${l_p:,.2f}")
         r[3].text = ("-" if h_p is None else f"${h_p:,.2f}")
 
-    # 三、新聞輿情與 FinBERT 跨時間維度量化評分
     doc.add_heading("三、新聞輿情與 FinBERT 跨時間維度量化評分", level=1)
-    doc.add_paragraph("以下為各大財經媒體（Google News、鉅亨網、Yahoo股市、經濟日報/工商時報）在各時間維度下的爬取篇數、去重總數以及多空情緒、展望與熱點評分：")
     src_table = doc.add_table(rows=1, cols=10)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
     headers_list = ["時間", "Google", "鉅亨網", "Yahoo", "經/工商", "去重篇數", "情緒多/空", "展望多/空", "熱點(分)", "綜合評估"]
-    for idx, h_text in enumerate(headers_list):
-        sch[idx].text = h_text
+    for idx, h_text in enumerate(headers_list): sch[idx].text = h_text
 
     for p_label, src_dict, merged_c, b_cnt, r_cnt, gp_cnt, gn_cnt, h_val in [
         ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['b48h'], ctx['r48h'], ctx['gp_48h'], ctx['gn_48h'], ctx['h_48h']),
@@ -629,25 +608,15 @@ def generate_word_report(ctx):
         r[8].text = f"{h_val:.1f}"
         r[9].text = "FinBERT"
 
-    # 四、本益比評價子項拆解與情境目標價
     doc.add_heading("四、本益比評價子項拆解與情境目標價", level=1)
-    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x (歷史中位數定錨)")
-    doc.add_paragraph(f"• 輿情情緒權重 (Sentiment Exp)：{ctx['sentiment_exp']:+.2f}x")
-    doc.add_paragraph(f"• 展望成長權重 (Growth Exp)：{ctx['growth_exp']:+.2f}x")
-    doc.add_paragraph(f"• 下行風險折價 (Risk Penalty)：-{ctx['risk_val']:.1f}x")
+    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x ｜ 輿情情緒權重：{ctx['sentiment_exp']:+.2f}x ｜ 展望成長權重：{ctx['growth_exp']:+.2f}x")
     doc.add_paragraph(f"• 情境目標價分佈：15倍地板 {ctx['tp_15x']:,.2f} 元 ｜ 悲觀 {ctx['tp_lower']:,.2f} 元 ｜ 基準 {ctx['tp_base']:,.2f} 元 ｜ 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元")
 
-    # 五、實質風險與波動率動態量化模組
     doc.add_heading("五、實質風險與波動率動態量化模組", level=1)
-    doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f}，年化波動 {ctx['fx_annual_vol']:.2f}% (68%區間: {ctx['fx_low']:.2f} ~ {ctx['fx_high']:.2f})")
-    doc.add_paragraph(f"• 市場競爭與歷史波動：過去一年個股波動 {ctx['stock_vol_1y']:.2f}% (PE標準差: {ctx['pe_std']:.2f})")
-    doc.add_paragraph(f"• 模型安全邊際與建議區間：最悲觀防守價 {ctx['real_safety_price']:.2f} 元 ｜ 建議買進區間：${ctx['buy_low']:.2f} ~ ${ctx['buy_high']:.2f} ｜ 建議賣出區間：${ctx['sell_low']:.2f} ~ ${ctx['sell_high']:.2f}")
-    doc.add_paragraph(f"• 短長期波動比值：{ctx['vol_ratio']:.4f} ({ctx['vol_signal']})")
+    doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f} ｜ 建議買進區間：${ctx['buy_low']:.2f} ~ ${ctx['buy_high']:.2f} ｜ 建議賣出區間：${ctx['sell_low']:.2f} ~ ${ctx['sell_high']:.2f}")
 
-    # 六、歷史波段回測與 SHAP AI 決策邏輯
     doc.add_heading("六、歷史波段回測與 SHAP AI 決策邏輯", level=1)
     doc.add_paragraph(ctx['shap_explain_text'])
-    doc.add_paragraph("【圖表簡述說明】上圖展示了歷史波段回測中的資金簇擁度 (Gamma)、AI 供應鏈純度 (Beta_3) 與累積報酬率對照；右側或下方 SHAP 歸因圖則解析了模型推升或壓抑預測勝率的主要特徵權重。")
 
     doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
@@ -671,7 +640,6 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-# 執行所有時間維度的新聞爬取與 FinBERT 評分
 sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
 sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
 sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
@@ -714,7 +682,6 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     ret_2m, low_2m, high_2m = get_ret_and_range(40)
     ret_3m, low_3m, high_3m = get_ret_and_range(60)
 
-    # 財報抓取
     tkr_fin = yf.Ticker(symbol)
     q_eps_list = []
     ttm_eps, annual_eps, annual_year_str = None, None, ""
@@ -742,7 +709,6 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
             if len(hist_pe_filtered) > 10: pe_std = float(hist_pe_filtered.std())
     except Exception: pass
 
-    # 實質風險量化模組
     fx_latest, fx_annual_vol, fx_low, fx_high = 32.0, 4.5, 30.5, 33.5
     try:
         fx_data = yf.download("USDTWD=X", period="1y", interval="1d", progress=False)['Close']
@@ -777,7 +743,6 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     except Exception: pass
     vol_signal = "🚨 [減碼/防守] 短期波動放大" if vol_ratio > 1.2 else ("🎯 [加碼/佈局] 短期波動壓縮" if vol_ratio < 0.8 else "⚖️ [觀望/中性] 多空平衡")
 
-    # 機器學習與預測
     current_nlp = {'sent': sent_1w, 'growth': g_1w, 'hotspot': h_1w}
     us_daily = download_us_daily(years=5) 
     df, fwd_excess = build_feature_frame(symbol, market_data, us_daily, current_nlp)
@@ -823,7 +788,6 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     latest_proba = float(model.predict_proba(latest_features)[:, 1][0]) if not latest_features.empty else 0.5
     beta3_trend_val = df['Beta_3_Trend_5D'].dropna().iloc[-1] if df['Beta_3_Trend_5D'].notna().any() else 0.0
 
-    # 多步時序轉折點模擬
     np.random.seed(abs(hash(symbol)) % 10000)
     base_probs = [0.15, 0.25, 0.35, 0.15, 0.10]
     if latest_proba > 0.5:
@@ -835,7 +799,6 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     turning_bar_prob = min(92.5, max(15.0, turning_bar_prob))
     turning_direction = "向上反彈 ↗" if latest_proba > 0.45 else "向下回檔 ↘"
 
-    # SHAP 動態 RSI 調整
     base_rsi_oversold, base_rsi_overbought = 40.0, 70.0
     if latest_proba > 0.6: base_rsi_oversold, base_rsi_overbought = 45.0, 75.0
     elif latest_proba < 0.4: base_rsi_oversold, base_rsi_overbought = 35.0, 65.0
@@ -885,7 +848,6 @@ tp_upper_1, tp_upper_2 = eps_adj * (pe_target + 1.0 * pe_std), eps_adj * (pe_tar
 rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else ("保守觀望" if latest_proba < 0.45 else "中性震盪")
 rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
 
-# 計算未來 5 根 K 棒預測數值與安全邊際建議買賣區間
 f5_ret_std = float(valid_stock.pct_change().tail(20).std() * math.sqrt(5)) if len(valid_stock) >= 20 else 0.02
 f5_high = price * (1 + f5_ret_std * (1.2 if latest_proba > 0.5 else 0.5))
 f5_low = price * (1 - f5_ret_std * (0.8 if latest_proba > 0.5 else 1.3))
@@ -915,9 +877,6 @@ c5.metric("AI含金量 (Beta_3)",
           f"{df['Beta_3_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Beta_3_Rolling' in df.columns else "N/A", 
           f"資金簇擁: {df['Gamma_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Gamma_Rolling' in df.columns else "N/A")
 
-# ------------------------------------------
-# 未來 5 根 K 棒價格範圍與機率預測區塊
-# ------------------------------------------
 st.markdown("---")
 st.markdown("### 🔮 未來 5 根 K 棒走勢預測與價格區間")
 fc1, fc2, fc3, fc4, fc5 = st.columns(5)
@@ -963,23 +922,7 @@ with h_col4:
     st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1m:.1f} (多:{gp1m}/空:{gn1m})</span>", unsafe_allow_html=True)
 with h_col5:
     st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"FinBERT情緒:{sent_2m:.1f} (多:{b2m}/空:{r2m})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gn2m})</span>", unsafe_allow_html=True)
-
-# ------------------------------------------
-# FinBERT 與 NLP 量化評分基準說明
-# ------------------------------------------
-st.markdown("""
-<div style='background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 13px; color: #334155; margin-top: 15px;'>
-<b>📖 FinBERT AI 語意情感與 RSS 多源抓取機制說明：</b>
-<br>• <b>多源 RSS 頻道</b>：同步串接 Google News、鉅亨網 RSS、Yahoo 股市 RSS 以及經濟日報/工商時報站點頻道，大幅提升新聞覆蓋率與筆數。
-<br>• <b>FinBERT 金融情感模型</b>：系統自動透過預訓練 Transformer 模型推論新聞標題的正面與負面機率分佈，取代傳統關鍵字計分，提升語意判斷精準度。
-</div>
-""", unsafe_allow_html=True)
-
-if titles_1w:
-    with st.expander("📌 點擊檢視近期抓取之財經新聞標題清單 (前 10 則)"):
-        for t_item in titles_1w[:10]:
-            st.markdown(f"- {t_item}")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gp2m}/空:{gn2m})</span>", unsafe_allow_html=True)
 
 st.markdown("---")
 st.subheader("🎯 本益比評價子項拆解與情境目標價")
@@ -1028,7 +971,7 @@ shap_explain_text_plain = (
     "💡 模型圖表綜合解釋說明：\n"
     "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用，以 Price_Mom_30D 與 Beta_3 影響力最大。\n"
     "• Gamma（紫線）：大於 0 代表資金簇擁追價，小於 0 代表資金退潮。\n"
-    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動能爆發推升期 (Surge)。\n"
+    "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動新爆發推升期 (Surge)。\n"
     "• 累積報酬（紅線）：驗證模型在爆發期前後捕捉波段主升段的成效。"
 )
 
@@ -1058,8 +1001,6 @@ with fig_col1:
     ax3.legend(loc='upper left'); ax3.grid(True, alpha=0.3)
     fig1.suptitle(f'[{symbol}] {interval_label} Surge Backtest', fontsize=14)
     plt.tight_layout(); st.pyplot(fig1)
-    
-    st.caption("📉 **[圖表解讀說明]** 上圖展示了資金流入強度（Gamma）、AI 供應鏈衝擊敏感度（Beta_3）與波段主升段累積報酬率的歷史對應關係，黃色區間代表主力推升爆發期。")
 
 with fig_col2:
     try:
@@ -1068,39 +1009,31 @@ with fig_col2:
         shap_values_to_plot = shap_values[1] if isinstance(shap_values, list) else (shap_values[:, :, 1] if getattr(shap_values, "ndim", 2) == 3 else shap_values)
         fig2 = plt.figure(figsize=(10, 8))
         shap.summary_plot(shap_values_to_plot, X_shap, feature_names=features, show=False)
-        
         ax = plt.gca()
-        ax.tick_params(axis='y', colors='white')
-        ax.tick_params(axis='x', colors='white')
+        ax.tick_params(axis='y', colors='white'); ax.tick_params(axis='x', colors='white')
         ax.xaxis.label.set_color('white')
         plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14, color='white')
-        
-        plt.tight_layout()
-        st.pyplot(fig2)
-        
-        st.caption("📉 **[圖表解讀說明]** 上圖為 LightGBM 機器學習模型的 SHAP 特徵歸因摘要，紅色點代表該特徵數值推升未來正報酬機率，藍色點代表壓抑機率，橫軸顯示對 AI 決策的影響力大小。")
+        plt.tight_layout(); st.pyplot(fig2)
     except Exception as e: st.info(f"SHAP 渲染失敗：{e}")
 
 ctx = {
     "name": company_name, "interval_label": interval_label, "price": price, "change_txt": fmt_pct(change),
     "latest_proba": latest_proba, "rec": rec_title, "blue_price": blue_price, "red_price": red_price,
-    "tp_base": tp_base, "pe_target": pe_target, "tp_15x": tp_15x, "tp_lower": tp_lower, "pe_lower": max(15.0, pe_target - 0.5 * pe_std),
-    "tp_upper_1": tp_upper_1, "pe_upper_1": pe_target + 1.0 * pe_std, "tp_upper_2": tp_upper_2, "pe_upper_2": pe_target + 2.0 * pe_std,
+    "tp_base": tp_base, "pe_target": pe_target, "tp_15x": tp_15x, "tp_lower": tp_lower, "tp_upper_2": tp_upper_2,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
     "low_1w": low_1w, "high_1w": high_1w, "low_2w": low_2w, "high_2w": high_2w,
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp_48h, "gn_48h": gn_48h, "sent_48h": sent_48h, "g_48h": g_48h, "h_48h": h_48h,
-    "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "sent_1w": sent_1w, "g_1w": g_1w, "h_1w": h_1w,
-    "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "sent_2w": sent_2w, "g_2w": g_2w, "h_2w": h_2w,
-    "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "sent_1m": sent_1m, "g_1m": g_1m, "h_1m": h_1m,
-    "s_2m": s_2m, "c2m": c2m, "b2m": b2m, "r2m": r2m, "gp_2m": gp2m, "gn_2m": gn2m, "sent_2m": sent_2m, "g_2m": g_2m, "h_2m": h_2m,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h,
+    "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w,
+    "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w,
+    "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m,
+    "s_2m": s_2m, "c2m": c2m, "b2m": b2m, "r2m": r2m, "gp_2m": gp2m, "gn_2m": gn2m,
     "pe_base": pe_base, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, "risk_val": risk_val,
     "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "pe_std": pe_std, "real_safety_price": real_safety_price,
-    "shap_explain_text": shap_explain_text_plain,
-    "f5_high": f5_high, "f5_low": f5_low, "f5_high_pct": ((f5_high/price)-1)*100, "f5_low_pct": ((f5_low/price)-1)*100, "f5_ret_std": f5_ret_std, "upside": upside, "vol_ratio": vol_ratio, "vol_signal": vol_signal,
+    "shap_explain_text": shap_explain_text_plain, "f5_high": f5_high, "f5_low": f5_low, "upside": upside,
     "buy_low": buy_low, "buy_high": buy_high, "sell_low": sell_low, "sell_high": sell_high
 }
 st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
