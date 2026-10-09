@@ -473,28 +473,37 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. Word 報告生成
+# 4. 重新梳理與完整包裝的 Word 報告生成
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
     t = doc.add_heading(f"{ctx['name']} 跨領域 AI 投資與量化分析報告", 0)
     t.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
-    doc.add_paragraph(f"資料頻率設定：{ctx['interval_label']}")
-    doc.add_paragraph(f"最新即時成交價：{ctx['price']:,.2f}（當日漲跌 {ctx['change_txt']}）")
-    doc.add_paragraph(f"AI 預測未來 5 天正報酬機率：{ctx['latest_proba']:.2%} ({ctx['rec']})")
-    doc.add_paragraph(f"藍色動能區（建議買點）：{ctx['blue_price']:,.2f} 元 | 紅色動能區（建議賣價）：{ctx['red_price']:,.2f} 元")
-    doc.add_paragraph(f"情境目標價：15倍PE地板 {ctx['tp_15x']:,.2f} 元 | 基準 {ctx['tp_base']:,.2f} 元 ({ctx['pe_target']:.1f}x) | 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元")
+    doc.add_paragraph(f"資料頻率設定：{ctx['interval_label']} ｜ 最新即時成交價：{ctx['price']:,.2f}（當日漲跌 {ctx['change_txt']}）")
 
-    doc.add_heading("一、多期報酬率表現", level=1)
+    # 一、核心總結與綜合評等
+    doc.add_heading("一、核心總結與綜合評等", level=1)
+    doc.add_paragraph(f"• AI 綜合評等：{ctx['rec']}（未來 5 天正報酬機率：{ctx['latest_proba']:.2%}）")
+    doc.add_paragraph(f"• 潛在空間與目標價：預估基準目標價為 {ctx['tp_base']:,.2f} 元，潛在空間 {ctx['upside']:.1f}%。")
+    doc.add_paragraph(f"• 建議操作區間：藍色動能區（建議買點）{ctx['blue_price']:,.2f} 元 ｜ 紅色動能區（建議賣價）{ctx['red_price']:,.2f} 元。")
+
+    # 二、未來 5 根 K 棒走勢預測與報酬表現
+    doc.add_heading("二、未來 5 根 K 棒走勢預測與歷史報酬表現", level=1)
+    doc.add_paragraph(f"• 預估 5 根 K 預期高價：{ctx['f5_high']:,.2f} 元（+ {ctx['f5_high_pct']:.2f}%）")
+    doc.add_paragraph(f"• 預估 5 根 K 預期低價：{ctx['f5_low']:,.2f} 元（{ctx['f5_low_pct']:.2f}%）")
+    doc.add_paragraph(f"• 預測區間波動變異：{ctx['f5_ret_std']*100:.2f}%")
+    
     ret_table = doc.add_table(rows=1, cols=2)
     ret_table.style = "Table Grid"
-    ret_table.rows[0].cells[0].text, ret_table.rows[0].cells[1].text = "期間", "報酬率 (%)"
+    ret_table.rows[0].cells[0].text, ret_table.rows[0].cells[1].text = "多期報酬期間", "報酬率 (%)"
     for p_name, val in [("近 1 期", ctx['ret_1w']), ("近 5 期", ctx['ret_2w']), ("近 20 期", ctx['ret_1m']), ("近 40 期", ctx['ret_2m']), ("近 60 期", ctx['ret_3m'])]:
         r = ret_table.add_row().cells
         r[0].text, r[1].text = p_name, ("資料不足" if val is None else f"{val:+.2f}%")
 
-    doc.add_heading("二、跨時間維度新聞爬取筆數與 NLP 評分", level=1)
+    # 三、新聞輿情與跨時間維度 NLP 量化評分
+    doc.add_heading("三、新聞輿情與跨時間維度 NLP 量化評分", level=1)
+    doc.add_paragraph("以下為各大財經媒體（Google News、鉅亨網、Yahoo股市）在各時間維度下的爬取篇數、去重總數以及多空情緒、展望與熱點評分：")
     src_table = doc.add_table(rows=1, cols=9)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
@@ -520,18 +529,24 @@ def generate_word_report(ctx):
         r[7].text = f"{h_val:.1f}"
         r[8].text = "正常"
 
-    doc.add_heading("三、本益比評價子項拆解說明", level=1)
-    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x")
+    # 四、本益比評價子項拆解與情境目標價
+    doc.add_heading("四、本益比評價子項拆解與情境目標價", level=1)
+    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x (歷史中位數定錨)")
     doc.add_paragraph(f"• 輿情情緒權重 (Sentiment Exp)：{ctx['sentiment_exp']:+.2f}x")
     doc.add_paragraph(f"• 展望成長權重 (Growth Exp)：{ctx['growth_exp']:+.2f}x")
     doc.add_paragraph(f"• 下行風險折價 (Risk Penalty)：-{ctx['risk_val']:.1f}x")
+    doc.add_paragraph(f"• 情境目標價分佈：15倍地板 {ctx['tp_15x']:,.2f} 元 ｜ 悲觀 {ctx['tp_lower']:,.2f} 元 ｜ 基準 {ctx['tp_base']:,.2f} 元 ｜ 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元")
 
-    doc.add_heading("四、實質風險與波動率動態量化模組", level=1)
-    doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f}，年化波動 {ctx['fx_annual_vol']:.2f}%")
-    doc.add_paragraph(f"• 個股歷史波動率：{ctx['stock_vol_1y']:.2f}%，最悲觀防守安全價：{ctx['real_safety_price']:.2f} 元")
+    # 五、實質風險與波動率動態量化模組
+    doc.add_heading("五、實質風險與波動率動態量化模組", level=1)
+    doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f}，年化波動 {ctx['fx_annual_vol']:.2f}% (68%區間: {ctx['fx_low']:.2f} ~ {ctx['fx_high']:.2f})")
+    doc.add_paragraph(f"• 市場競爭與歷史波動：過去一年個股波動 {ctx['stock_vol_1y']:.2f}% (PE標準差: {ctx['pe_std']:.2f})")
+    doc.add_paragraph(f"• 模型安全邊際：最悲觀防守價 {ctx['real_safety_price']:.2f} 元 ｜ 短長期波動比值：{ctx['vol_ratio']:.4f} ({ctx['vol_signal']})")
 
-    doc.add_heading("五、歷史波段回測與 SHAP AI 決策邏輯", level=1)
+    # 六、歷史波段回測與 SHAP AI 決策邏輯
+    doc.add_heading("六、歷史波段回測與 SHAP AI 決策邏輯", level=1)
     doc.add_paragraph(ctx['shap_explain_text'])
+    doc.add_paragraph("【圖表簡述說明】上圖展示了歷史波段回測中的資金簇擁度 (Gamma)、AI 供應鏈純度 (Beta_3) 與累積報酬率對照；右側或下方 SHAP 歸因圖則解析了模型推升或壓抑預測勝率的主要特徵權重。")
 
     doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
@@ -555,7 +570,7 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-# 執行所有時間維度的新聞爬取與特徵評分 (情緒與展望基準改為 5.0)
+# 執行所有時間維度的新聞爬取與特徵評分
 sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
 sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
 sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
@@ -746,6 +761,11 @@ tp_upper_1, tp_upper_2 = eps_adj * (pe_target + 1.0 * pe_std), eps_adj * (pe_tar
 rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else ("保守觀望" if latest_proba < 0.45 else "中性震盪")
 rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
 
+# 計算未來 5 根 K 棒預測數值供報告調用
+f5_ret_std = float(valid_stock.pct_change().tail(20).std() * math.sqrt(5)) if len(valid_stock) >= 20 else 0.02
+f5_high = price * (1 + f5_ret_std * (1.2 if latest_proba > 0.5 else 0.5))
+f5_low = price * (1 - f5_ret_std * (0.8 if latest_proba > 0.5 else 1.3))
+
 # ==========================================
 # 7. 最終 UI 呈現 
 # ==========================================
@@ -770,10 +790,6 @@ c5.metric("AI含金量 (Beta_3)",
 # ------------------------------------------
 st.markdown("---")
 st.markdown("### 🔮 未來 5 根 K 棒走勢預測與價格區間")
-f5_ret_std = float(valid_stock.pct_change().tail(20).std() * math.sqrt(5)) if len(valid_stock) >= 20 else 0.02
-f5_high = price * (1 + f5_ret_std * (1.2 if latest_proba > 0.5 else 0.5))
-f5_low = price * (1 - f5_ret_std * (0.8 if latest_proba > 0.5 else 1.3))
-
 fc1, fc2, fc3, fc4 = st.columns(4)
 fc1.metric("預測正報酬勝率", f"{latest_proba:.1%}", "基於 LightGBM 模型")
 fc2.metric("預估 5 根 K 預期高價", f"${f5_high:,.2f}", f"+{((f5_high/price)-1)*100:.2f}%")
@@ -819,14 +835,14 @@ with h_col5:
     st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gp2m}/空:{gn2m})</span>", unsafe_allow_html=True)
 
 # ------------------------------------------
-# NLP 量化評分基準與計算說明區塊 (基底 5.0 分)
+# NLP 量化評分基準與計算說明區塊
 # ------------------------------------------
 st.markdown("""
 <div style='background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 13px; color: #334155; margin-top: 15px;'>
 <b>📖 NLP 量化評分基準與詞彙定義 (基準分 5.0 分)：</b>
-<br>• <b>情緒分數 (Sentiment)</b>：基礎分 <b>5.0 分</b>，依據標題中「多方詞彙」(漲、高、強、買超、創高、突破、擴產、暢旺等) 與「空方詞彙」(跌、殺、跌停、衰退、利空、修正等) 的淨命中數動態加減分，滿分 10 分。
-<br>• <b>展望分數 (Growth)</b>：基礎分 <b>5.0 分</b>，依據「正向展望詞彙」(展望佳、成長、訂單滿、上修、看好、強勁等) 與「負向展望詞彙」(下修、保守、庫存、疲弱等) 的淨命中數加減分，滿分 10 分。
-<br>• <b>熱點炒作度 (Hotspot)</b>：依據盤面焦點關鍵字（突破、爆發、大漲、急單、震撼、重訊等）出現頻率計算，滿分 10 分。
+<br>• <b>情緒分數 (Sentiment)</b>：基礎分 <b>5.0 分</b>，依據標題中「多方詞彙」(漲, 高, 強, 買超, 創高, 突破等) 與「空方詞彙」(跌, 殺, 跌停, 衰退等) 淨命中數動態加減分，滿分 10 分。
+<br>• <b>展望分數 (Growth)</b>：基礎分 <b>5.0 分</b>，依據「正向展望詞彙」(展望佳, 成長, 訂單滿, 上修等) 與「負向展望詞彙」(下修, 保守, 庫存等) 淨命中數加減分，滿分 10 分。
+<br>• <b>熱點炒作度 (Hotspot)</b>：依據盤面焦點關鍵字（突破, 爆發, 大漲, 急單等）出現頻率計算，滿分 10 分。
 </div>
 """, unsafe_allow_html=True)
 
@@ -914,6 +930,9 @@ with fig_col1:
     ax3.legend(loc='upper left'); ax3.grid(True, alpha=0.3)
     fig1.suptitle(f'[{symbol}] {interval_label} Surge Backtest', fontsize=14)
     plt.tight_layout(); st.pyplot(fig1)
+    
+    # 📝 圖表下方簡述說明 (Surge 回測圖)
+    st.caption("📉 **[圖表解讀說明]** 上圖展示了資金流入強度（Gamma）、AI 供應鏈衝擊敏感度（Beta_3）與波段主升段累積報酬率的歷史對應關係，黃色區間代表主力推升爆發期。")
 
 with fig_col2:
     try:
@@ -923,7 +942,6 @@ with fig_col2:
         fig2 = plt.figure(figsize=(10, 8))
         shap.summary_plot(shap_values_to_plot, X_shap, feature_names=features, show=False)
         
-        # 座標軸與標題改為白色以適應深色佈景
         ax = plt.gca()
         ax.tick_params(axis='y', colors='white')
         ax.tick_params(axis='x', colors='white')
@@ -932,6 +950,9 @@ with fig_col2:
         
         plt.tight_layout()
         st.pyplot(fig2)
+        
+        # 📝 圖表下方簡述說明 (SHAP 歸因圖)
+        st.caption("📉 **[圖表解讀說明]** 上圖為 LightGBM 機器學習模型的 SHAP 特徵歸因摘要，紅色點代表該特徵數值推升未來正報酬機率，藍色點代表壓抑機率，橫軸顯示對 AI 決策的影響力大小。")
     except Exception as e: st.info(f"SHAP 渲染失敗：{e}")
 
 ctx = {
@@ -948,6 +969,7 @@ ctx = {
     "pe_base": pe_base, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, "risk_val": risk_val,
     "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "pe_std": pe_std, "real_safety_price": real_safety_price,
-    "shap_explain_text": shap_explain_text_plain
+    "shap_explain_text": shap_explain_text_plain,
+    "f5_high": f5_high, "f5_low": f5_low, "f5_high_pct": ((f5_high/price)-1)*100, "f5_low_pct": ((f5_low/price)-1)*100, "f5_ret_std": f5_ret_std, "upside": upside, "vol_ratio": vol_ratio, "vol_signal": vol_signal
 }
 st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
