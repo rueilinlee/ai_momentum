@@ -732,7 +732,7 @@ rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else (
 rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
 
 # ==========================================
-# 7. 最終 UI 呈現 (含 5 格指標與各時段熱點)
+# 7. 最終 UI 呈現 
 # ==========================================
 st.title("📈 跨領域專家 AI 投資分析與量化預測")
 st.subheader(f"🏢 {company_name} — 【{interval_label}】")
@@ -762,11 +762,11 @@ r_col5.metric("近 60 期", fmt_pct(ret_3m))
 st.markdown("---")
 st.markdown("### 📰 多來源真實新聞爬取與 NLP 評分 (含各時段熱點指數)")
 src_df_data = [
-    {"時間": "48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網 Anue',0), "Yahoo": s_48h.get('Yahoo 股市',0), "去重篇數": c48h},
-    {"時間": "1週 (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網 Anue',0), "Yahoo": s_1w.get('Yahoo 股市',0), "去重篇數": c1w},
-    {"時間": "2週 (336H)", "Google News": s_2w.get('Google News',0), "鉅亨網": s_2w.get('鉅亨網 Anue',0), "Yahoo": s_2w.get('Yahoo 股市',0), "去重篇數": c2w},
-    {"時間": "1個月 (720H)", "Google News": s_1m.get('Google News',0), "鉅亨網": s_1m.get('鉅亨網 Anue',0), "Yahoo": s_1m.get('Yahoo 股市',0), "去重篇數": c1m},
-    {"時間": "2個月 (1440H)", "Google News": s_2m.get('Google News',0), "鉅亨網": s_2m.get('鉅亨網 Anue',0), "Yahoo": s_2m.get('Yahoo 股市',0), "去重篇數": c2m},
+    {"時間": "近 48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網 Anue',0), "Yahoo": s_48h.get('Yahoo 股市',0), "去重篇數": c48h},
+    {"時間": "近 1W (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網 Anue',0), "Yahoo": s_1w.get('Yahoo 股市',0), "去重篇數": c1w},
+    {"時間": "近 2W (336H)", "Google News": s_2w.get('Google News',0), "鉅亨網": s_2w.get('鉅亨網 Anue',0), "Yahoo": s_2w.get('Yahoo 股市',0), "去重篇數": c2w},
+    {"時間": "近 1M (720H)", "Google News": s_1m.get('Google News',0), "鉅亨網": s_1m.get('鉅亨網 Anue',0), "Yahoo": s_1m.get('Yahoo 股市',0), "去重篇數": c1m},
+    {"時間": "近 2M (1440H)", "Google News": s_2m.get('Google News',0), "鉅亨網": s_2m.get('鉅亨網 Anue',0), "Yahoo": s_2m.get('Yahoo 股市',0), "去重篇數": c2m},
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
@@ -826,7 +826,7 @@ with right:
 st.markdown("---")
 st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決策邏輯</h3>", unsafe_allow_html=True)
 
-# 說明文字定義
+# 說明文字與解讀
 shap_explain_text_plain = (
     "💡 簡短說明：\n"
     "• AI 含金量 (Beta_3)：衡量個股對輝達 (NVDA) 獨立衝擊的敏感度。數值越高，代表具備實質 AI 供應鏈純度。\n"
@@ -869,7 +869,7 @@ with fig_col2:
         fig2 = plt.figure(figsize=(10, 8))
         shap.summary_plot(shap_values_to_plot, X_shap, feature_names=features, show=False)
         
-        # 調整圖表文字顏色為白色以適應深色背景
+        # 座標軸與標題改為白色以適應深色佈景
         ax = plt.gca()
         ax.tick_params(axis='y', colors='white')
         ax.tick_params(axis='x', colors='white')
