@@ -314,9 +314,10 @@ def fetch_google_news_rss_chunked(company_name, stock_code, hours=168):
     return list(set(titles))
 
 def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, growth_neg, base_adj=3.0):
-    if not titles: return 5.0, 5.0, 5.0, 0, 0, 0
+    if not titles: return 5.0, 5.0, 5.0, 0, 0, 0, 0, 0
     s_sum, g_sum, h_sum = 5.0, 5.0, 5.0
     total_bullish, total_bearish = 0, 0
+    total_growth_pos, total_growth_neg = 0, 0
     hotspot_keywords = ["突破", "爆發", "大漲", "創高", "急單", "跌停", "崩", "震撼", "重訊"]
 
     for title in titles:
@@ -326,8 +327,10 @@ def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, 
         gn_hits = sum(1 for w in growth_neg if w in title)
         h_hits = sum(1 for w in hotspot_keywords if w in title)
 
-        total_bullish += (b_hits + gp_hits)
-        total_bearish += (r_hits + gn_hits)
+        total_bullish += b_hits
+        total_bearish += r_hits
+        total_growth_pos += gp_hits
+        total_growth_neg += gn_hits
 
         if b_hits > r_hits: s_sum += 1.5 * b_hits
         elif r_hits > b_hits: s_sum -= 1.5 * r_hits
@@ -341,7 +344,7 @@ def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, 
     final_sentiment = max(0.0, min(10.0, round(s_sum / max(1, count) + base_adj, 1)))
     final_growth = max(0.0, min(10.0, round(g_sum / max(1, count) + 2.0, 1)))
     final_hotspot = max(0.0, min(10.0, round(h_sum / max(1, count), 1)))
-    return final_sentiment, final_growth, final_hotspot, total_bullish, total_bearish, count
+    return final_sentiment, final_growth, final_hotspot, total_bullish, total_bearish, total_growth_pos, total_growth_neg, count
 
 @st.cache_data(ttl=1800)
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
@@ -362,16 +365,17 @@ def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
         simulated_count = max(3, int(hours / 24) * 2)
         bull_cnt = max(1, (base_seed % 5) + int(hours / 168))
         bear_cnt = max(1, (base_seed % 3))
+        gp_cnt, gn_cnt = bull_cnt, bear_cnt
         s_score = round(min(9.5, max(3.5, 6.0 + (bull_cnt - bear_cnt) * 0.4)), 1)
         g_score = round(min(9.5, max(3.5, 6.2 + (bull_cnt - bear_cnt) * 0.3)), 1)
         h_score = round(min(8.0, max(2.0, 4.0 + (bull_cnt + bear_cnt) * 0.2)), 1)
-        return s_score, g_score, h_score, bull_cnt, bear_cnt, simulated_count, all_titles, sources_count
+        return s_score, g_score, h_score, bull_cnt, bear_cnt, gp_cnt, gn_cnt, simulated_count, all_titles, sources_count
 
-    s_score, g_score, h_score, bull_cnt, bear_cnt, total_cnt = calculate_detailed_scores(all_titles, bullish, bearish, growth_pos, growth_neg, base_adj=3.0)
+    s_score, g_score, h_score, bull_cnt, bear_cnt, gp_cnt, gn_cnt, total_cnt = calculate_detailed_scores(all_titles, bullish, bearish, growth_pos, growth_neg, base_adj=3.0)
     time_decay = min(1.0, hours / 1440.0)
     s_score = round(max(0.0, min(10.0, s_score * (0.95 + 0.05 * time_decay))), 1)
     g_score = round(max(0.0, min(10.0, g_score * (0.95 + 0.05 * time_decay))), 1)
-    return s_score, g_score, h_score, max(1, bull_cnt), max(0, bear_cnt), len(all_titles), all_titles, sources_count
+    return s_score, g_score, h_score, max(1, bull_cnt), max(0, bear_cnt), max(1, gp_cnt), max(0, gn_cnt), len(all_titles), all_titles, sources_count
 
 # ==========================================
 # 3. 行情財報擷取與機器學習特徵 (含日內與 NLP)
@@ -490,20 +494,20 @@ def generate_word_report(ctx):
         r = ret_table.add_row().cells
         r[0].text, r[1].text = p_name, ("資料不足" if val is None else f"{val:+.2f}%")
 
-    doc.add_heading("二、跨時間維度新聞爬取與 NLP 評分 (含展望與多空)", level=1)
+    doc.add_heading("二、跨時間維度新聞爬取筆數與 NLP 評分", level=1)
     src_table = doc.add_table(rows=1, cols=9)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
-    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text, sch[5].text, sch[6].text, sch[7].text, sch[8].text = "時間", "Google", "鉅亨網", "Yahoo", "去重篇數", "展望", "多方", "空方", "熱點(炒作)"
-    for p_label, src_dict, merged_c, g_val, b_cnt, r_cnt, h_val in [
-        ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['g_48h'], ctx['b48h'], ctx['r48h'], ctx['h_48h']),
-        ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['g_1w'], ctx['b1w'], ctx['r1w'], ctx['h_1w']),
-        ("近 2W", ctx['s_2w'], ctx['c2w'], ctx['g_2w'], ctx['b2w'], ctx['r2w'], ctx['h_2w']),
-        ("近 1M", ctx['s_1m'], ctx['c1m'], ctx['g_1m'], ctx['b1m'], ctx['r1m'], ctx['h_1m']),
-        ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['g_2m'], ctx['b2m'], ctx['r2m'], ctx['h_2m'])
+    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text, sch[5].text, sch[6].text, sch[7].text, sch[8].text = "時間", "Google", "鉅亨網", "Yahoo", "去重篇數", "情緒多/空", "展望多/空", "熱點(分)"
+    for p_label, src_dict, merged_c, b_cnt, r_cnt, gp_cnt, gn_cnt, h_val in [
+        ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['b48h'], ctx['r48h'], ctx['gp_48h'], ctx['gn_48h'], ctx['h_48h']),
+        ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['b1w'], ctx['r1w'], ctx['gp_1w'], ctx['gn_1w'], ctx['h_1w']),
+        ("近 2W", ctx['s_2w'], ctx['c2w'], ctx['b2w'], ctx['r2w'], ctx['gp_2w'], ctx['gn_2w'], ctx['h_2w']),
+        ("近 1M", ctx['s_1m'], ctx['c1m'], ctx['b1m'], ctx['r1m'], ctx['gp_1m'], ctx['gn_1m'], ctx['h_1m']),
+        ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['b2m'], ctx['r2m'], ctx['gp_2m'], ctx['gn_2m'], ctx['h_2m'])
     ]:
         r = src_table.add_row().cells
-        r[0].text, r[1].text, r[2].text, r[3].text, r[4].text, r[5].text, r[6].text, r[7].text, r[8].text = p_label, str(src_dict.get('Google News',0)), str(src_dict.get('鉅亨網 Anue',0)), str(src_dict.get('Yahoo 股市',0)), str(merged_c), f"{g_val:.1f}分", str(b_cnt), str(r_cnt), f"{h_val:.1f}分"
+        r[0].text, r[1].text, r[2].text, r[3].text, r[4].text, r[5].text, r[6].text, r[7].text, r[8].text = p_label, str(src_dict.get('Google News',0)), str(src_dict.get('鉅亨網 Anue',0)), str(src_dict.get('Yahoo 股市',0)), str(merged_c), f"{b_cnt}/{r_cnt}", f"{gp_cnt}/{gn_cnt}", f"{h_val:.1f}"
 
     doc.add_heading("三、本益比評價子項拆解說明", level=1)
     doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x")
@@ -540,12 +544,12 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-# 執行所有時間維度的新聞爬取與特徵評分 (含情緒、展望、熱點與多空)
-sent_48h, g_48h, h_48h, b48h, r48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
-sent_1w, g_1w, h_1w, b1w, r1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
-sent_2w, g_2w, h_2w, b2w, r2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
-sent_1m, g_1m, h_1m, b1m, r1m, c1m, titles_1m, s_1m = comprehensive_quant_evaluation(symbol, company_name, 720)
-sent_2m, g_2m, h_2m, b2m, r2m, c2m, titles_2m, s_2m = comprehensive_quant_evaluation(symbol, company_name, 1440)
+# 執行所有時間維度的新聞爬取與特徵評分 (含情感、展望與多空筆數)
+sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
+sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
+sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
+sent_1m, g_1m, h_1m, b1m, r1m, gp1m, gn1m, c1m, titles_1m, s_1m = comprehensive_quant_evaluation(symbol, company_name, 720)
+sent_2m, g_2m, h_2m, b2m, r2m, gp2m, gn2m, c2m, titles_2m, s_2m = comprehensive_quant_evaluation(symbol, company_name, 1440)
 
 with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     fetch_period = "59d" if interval in ["15m", "30m", "5m"] else ("730d" if interval != "1d" else None)
@@ -745,7 +749,7 @@ c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("即時成交價", f"${price:,.2f}", f"{trade_date} ({fmt_pct(change)})")
 c2.metric("AI 目標價與機率", f"${tp_base:,.0f} ({latest_proba:.1%})", f"{upside:.1f}% 潛在空間")
 c3.metric("AI 綜合評等", rec_title, f"{'🟢' if '買' in rec_desc else ('🔴' if '賣' in rec_desc else '🟡')} {rec_desc}")
-c4.metric("熱點指數與動能", f"{h_1w:.1f} 分", f"{'加速湧入 ↗' if df['Gamma_Trend_5D'].dropna().iloc[-1] > 0 else '動能衰退 ↘'}")
+c4.metric("熱點指數與動能", f"{h_1w:.1f} 分", f"{'加速湧入 ↗' if df['Gamma_Trend_5D'].dropna().iloc[-1] > 0 else '動新衰退 ↘'}")
 c5.metric("AI含金量 (Beta_3)", 
           f"{df['Beta_3_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Beta_3_Rolling' in df.columns else "N/A", 
           f"資金簇擁: {df['Gamma_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Gamma_Rolling' in df.columns else "N/A")
@@ -775,28 +779,45 @@ r_col4.metric("近 40 期", fmt_pct(ret_2m))
 r_col5.metric("近 60 期", fmt_pct(ret_3m))
 
 st.markdown("---")
-st.markdown("### 📰 多來源真實新聞爬取與 NLP 評分 (含近 48H、展望與多空筆數)")
+st.markdown("### 📰 多來源真實新聞爬取與 NLP 評分 (含近 48H 與多空筆數)")
 src_df_data = [
-    {"時間": "近 48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網 Anue',0), "Yahoo": s_48h.get('Yahoo 股市',0), "去重篇數": c48h, "展望": f"{g_48h:.1f}分", "多方筆數": b48h, "空方筆數": r48h},
-    {"時間": "近 1W (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網 Anue',0), "Yahoo": s_1w.get('Yahoo 股市',0), "去重篇數": c1w, "展望": f"{g_1w:.1f}分", "多方筆數": b1w, "空方筆數": r1w},
-    {"時間": "近 2W (336H)", "Google News": s_2w.get('Google News',0), "鉅亨網": s_2w.get('鉅亨網 Anue',0), "Yahoo": s_2w.get('Yahoo 股市',0), "去重篇數": c2w, "展望": f"{g_2w:.1f}分", "多方筆數": b2w, "空方筆數": r2w},
-    {"時間": "近 1M (720H)", "Google News": s_1m.get('Google News',0), "鉅亨網": s_1m.get('鉅亨網 Anue',0), "Yahoo": s_1m.get('Yahoo 股市',0), "去重篇數": c1m, "展望": f"{g_1m:.1f}分", "多方筆數": b1m, "空方筆數": r1m},
-    {"時間": "近 2M (1440H)", "Google News": s_2m.get('Google News',0), "鉅亨網": s_2m.get('鉅亨網 Anue',0), "Yahoo": s_2m.get('Yahoo 股市',0), "去重篇數": c2m, "展望": f"{g_2m:.1f}分", "多方筆數": b2m, "空方筆數": r2m},
+    {"時間": "近 48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網 Anue',0), "Yahoo": s_48h.get('Yahoo 股市',0), "去重篇數": c48h, "情緒多/空": f"{b48h}/{r48h}", "展望多/空": f"{gp48h}/{gn48h}"},
+    {"時間": "近 1W (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網 Anue',0), "Yahoo": s_1w.get('Yahoo 股市',0), "去重篇數": c1w, "情緒多/空": f"{b1w}/{r1w}", "展望多/空": f"{gp1w}/{gn1w}"},
+    {"時間": "近 2W (336H)", "Google News": s_2w.get('Google News',0), "鉅亨網": s_2w.get('鉅亨網 Anue',0), "Yahoo": s_2w.get('Yahoo 股市',0), "去重篇數": c2w, "情緒多/空": f"{b2w}/{r2w}", "展望多/空": f"{gp2w}/{gn2w}"},
+    {"時間": "近 1M (720H)", "Google News": s_1m.get('Google News',0), "鉅亨網": s_1m.get('鉅亨網 Anue',0), "Yahoo": s_1m.get('Yahoo 股市',0), "去重篇數": c1m, "情緒多/空": f"{b1m}/{r1m}", "展望多/空": f"{gp1m}/{gn1m}"},
+    {"時間": "近 2M (1440H)", "Google News": s_2m.get('Google News',0), "鉅亨網": s_2m.get('鉅亨網 Anue',0), "Yahoo": s_2m.get('Yahoo 股市',0), "去重篇數": c2m, "情緒多/空": f"{b2m}/{r2m}", "展望多/空": f"{gp2m}/{gn2m}"},
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-st.markdown("#### 📊 各時間維度 NLP 情緒、展望與熱點(炒作度)評分 (含展望與多空筆數對照)")
+st.markdown("#### 📊 各時間維度 NLP 情緒、展望與熱點(炒作度)評分")
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
-    st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"情緒:{sent_48h:.1f} | 展望:{g_48h:.1f} | 多:{b48h} 空:{r48h}")
+    st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"情緒:{sent_48h:.1f} (多:{b48h}/空:{r48h})")
+    st.caption(f"展望分數: {g_48h:.1f} 分 (多:{gp48h}/空:{gn48h})")
 with h_col2:
-    st.metric("近 1W 熱點", f"{h_1w:.1f} 分", f"情緒:{sent_1w:.1f} | 展望:{g_1w:.1f} | 多:{b1w} 空:{r1w}")
+    st.metric("近 1W 熱點", f"{h_1w:.1f} 分", f"情緒:{sent_1w:.1f} (多:{b1w}/空:{r1w})")
+    st.caption(f"展望分數: {g_1w:.1f} 分 (多:{gp1w}/空:{gn1w})")
 with h_col3:
-    st.metric("近 2W 熱點", f"{h_2w:.1f} 分", f"情緒:{sent_2w:.1f} | 展望:{g_2w:.1f} | 多:{b2w} 空:{r2w}")
+    st.metric("近 2W 熱點", f"{h_2w:.1f} 分", f"情緒:{sent_2w:.1f} (多:{b2w}/空:{r2w})")
+    st.caption(f"展望分數: {g_2w:.1f} 分 (多:{gp2w}/空:{gn2w})")
 with h_col4:
-    st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"情緒:{sent_1m:.1f} | 展望:{g_1m:.1f} | 多:{b1m} 空:{r1m}")
+    st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"情緒:{sent_1m:.1f} (多:{b1m}/空:{r1m})")
+    st.caption(f"展望分數: {g_1m:.1f} 分 (多:{gp1m}/空:{gn1m})")
 with h_col5:
-    st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"情緒:{sent_2m:.1f} | 展望:{g_2m:.1f} | 多:{b2m} 空:{r2m}")
+    st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"情緒:{sent_2m:.1f} (多:{b2m}/空:{r2m})")
+    st.caption(f"展望分數: {g_2m:.1f} 分 (多:{gp2m}/空:{gn2m})")
+
+# ------------------------------------------
+# 新增：NLP 量化評分基準與計算說明區塊
+# ------------------------------------------
+st.markdown("""
+<div style='background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 13px; color: #334155; margin-top: 10px;'>
+<b>📖 NLP 量化評分基準與詞彙定義：</b>
+<br>• <b>情緒分數 (Sentiment)</b>：基礎分 3.0 分，依據標題中「多方詞彙」(漲、高、強、買超、創高、突破、擴產、暢旺等) 與「空方詞彙」(跌、殺、跌停、衰退、利空、修正等) 的淨命中數動態加減分，滿分 10 分。
+<br>• <b>展望分數 (Growth)</b>：基礎分 2.0 分，依據「正向展望詞彙」(展望佳、成長、訂單滿、上修、看好、強勁等) 與「負向展望詞彙」(下修、保守、庫存、疲弱等) 的淨命中數加減分，滿分 10 分。
+<br>• <b>熱點炒作度 (Hotspot)</b>：依據盤面焦點關鍵字（突破、爆發、大漲、急單、震撼、重訊等）出現頻率計算，滿分 10 分。
+</div>
+""", unsafe_allow_html=True)
 
 # 顯示即時抓取的新聞標題清單
 if titles_1w:
@@ -908,11 +929,11 @@ ctx = {
     "tp_base": tp_base, "pe_target": pe_target, "tp_15x": tp_15x, "tp_lower": tp_lower, "pe_lower": max(15.0, pe_target - 0.5 * pe_std),
     "tp_upper_1": tp_upper_1, "pe_upper_1": pe_target + 1.0 * pe_std, "tp_upper_2": tp_upper_2, "pe_upper_2": pe_target + 2.0 * pe_std,
     "ret_1w": ret_1w, "ret_2w": ret_2w, "ret_1m": ret_1m, "ret_2m": ret_2m, "ret_3m": ret_3m,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "sent_48h": sent_48h, "g_48h": g_48h, "h_48h": h_48h,
-    "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "sent_1w": sent_1w, "g_1w": g_1w, "h_1w": h_1w,
-    "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "sent_2w": sent_2w, "g_2w": g_2w, "h_2w": h_2w,
-    "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "sent_1m": sent_1m, "g_1m": g_1m, "h_1m": h_1m,
-    "s_2m": s_2m, "c2m": c2m, "b2m": b2m, "r2m": r2m, "sent_2m": sent_2m, "g_2m": g_2m, "h_2m": h_2m,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h, "sent_48h": sent_48h, "g_48h": g_48h, "h_48h": h_48h,
+    "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "sent_1w": sent_1w, "g_1w": g_1w, "h_1w": h_1w,
+    "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "sent_2w": sent_2w, "g_2w": g_2w, "h_2w": h_2w,
+    "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "sent_1m": sent_1m, "g_1m": g_1m, "h_1m": h_1m,
+    "s_2m": s_2m, "c2m": c2m, "b2m": b2m, "r2m": r2m, "gp_2m": gp2m, "gn_2m": gn2m, "sent_2m": sent_2m, "g_2m": g_2m, "h_2m": h_2m,
     "pe_base": pe_base, "sentiment_exp": sentiment_exp, "growth_exp": growth_exp, "risk_val": risk_val,
     "fx_latest": fx_latest, "fx_annual_vol": fx_annual_vol, "fx_low": fx_low, "fx_high": fx_high,
     "stock_vol_1y": stock_vol_1y, "ttm": ttm_eps_val, "pe_std": pe_std, "real_safety_price": real_safety_price,
