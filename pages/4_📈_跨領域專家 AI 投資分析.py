@@ -295,7 +295,6 @@ def fetch_moneydj_rss_timed(stock_code, company_name, hours=168):
     rss_url = f"https://www.moneydj.com/KMDJ/rss/rss.aspx?svc=NW&a={clean_code}"
     titles, items = fetch_rss_feed_timed(rss_url, clean_code, hours)
     if not titles:
-        # 備用 Google News 搜尋 MoneyDJ
         g_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:moneydj.com&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
         titles, items = fetch_rss_feed_timed(g_url, clean_name, hours)
     return titles, items
@@ -885,7 +884,7 @@ with h_col4:
     st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1m:.1f} (多:{gp1m}/空:{gn1m})</span>", unsafe_allow_html=True)
 with h_col5:
     st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"FinBERT情緒:{sent_2m:.1f} (多:{b2m}/空:{r2m})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gp41}/空:{gn4})</span>", unsafe_allow_html=True)
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gp2m}/空:{gn2m})</span>", unsafe_allow_html=True)
 
 st.markdown("---")
 st.subheader("🎯 本益比評價子項拆解與情境目標價")
