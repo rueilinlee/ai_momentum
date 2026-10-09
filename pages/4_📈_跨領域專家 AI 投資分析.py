@@ -473,7 +473,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. Word 報告生成
+# 4. Word 報告生成 (已修正 9 欄位匹配)
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -498,7 +498,10 @@ def generate_word_report(ctx):
     src_table = doc.add_table(rows=1, cols=9)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
-    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text, sch[5].text, sch[6].text, sch[7].text, sch[8].text = "時間", "Google", "鉅亨網", "Yahoo", "去重篇數", "情緒多/空", "展望多/空", "熱點(分)"
+    headers_list = ["時間", "Google", "鉅亨網", "Yahoo", "去重篇數", "情緒多/空", "展望多/空", "熱點(分)", "綜合評估"]
+    for idx, h_text in enumerate(headers_list):
+        sch[idx].text = h_text
+
     for p_label, src_dict, merged_c, b_cnt, r_cnt, gp_cnt, gn_cnt, h_val in [
         ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['b48h'], ctx['r48h'], ctx['gp_48h'], ctx['gn_48h'], ctx['h_48h']),
         ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['b1w'], ctx['r1w'], ctx['gp_1w'], ctx['gn_1w'], ctx['h_1w']),
@@ -507,7 +510,15 @@ def generate_word_report(ctx):
         ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['b2m'], ctx['r2m'], ctx['gp_2m'], ctx['gn_2m'], ctx['h_2m'])
     ]:
         r = src_table.add_row().cells
-        r[0].text, r[1].text, r[2].text, r[3].text, r[4].text, r[5].text, r[6].text, r[7].text, r[8].text = p_label, str(src_dict.get('Google News',0)), str(src_dict.get('鉅亨網 Anue',0)), str(src_dict.get('Yahoo 股市',0)), str(merged_c), f"{b_cnt}/{r_cnt}", f"{gp_cnt}/{gn_cnt}", f"{h_val:.1f}"
+        r[0].text = p_label
+        r[1].text = str(src_dict.get('Google News', 0))
+        r[2].text = str(src_dict.get('鉅亨網 Anue', 0))
+        r[3].text = str(src_dict.get('Yahoo 股市', 0))
+        r[4].text = str(merged_c)
+        r[5].text = f"{b_cnt}/{r_cnt}"
+        r[6].text = f"{gp_cnt}/{gn_cnt}"
+        r[7].text = f"{h_val:.1f}"
+        r[8].text = "正常"
 
     doc.add_heading("三、本益比評價子項拆解說明", level=1)
     doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x")
@@ -544,7 +555,7 @@ symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
 stock_code = symbol.split('.')[0]
 
-# 執行所有時間維度的新聞爬取與特徵評分 (含情感、展望與多空筆數)
+# 執行所有時間維度的新聞爬取與特徵評分
 sent_48h, g_48h, h_48h, b48h, r48h, gp48h, gn48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
 sent_1w, g_1w, h_1w, b1w, r1w, gp1w, gn1w, c1w, titles_1w, s_1w = comprehensive_quant_evaluation(symbol, company_name, 168)
 sent_2w, g_2w, h_2w, b2w, r2w, gp2w, gn2w, c2w, titles_2w, s_2w = comprehensive_quant_evaluation(symbol, company_name, 336)
@@ -749,7 +760,7 @@ c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("即時成交價", f"${price:,.2f}", f"{trade_date} ({fmt_pct(change)})")
 c2.metric("AI 目標價與機率", f"${tp_base:,.0f} ({latest_proba:.1%})", f"{upside:.1f}% 潛在空間")
 c3.metric("AI 綜合評等", rec_title, f"{'🟢' if '買' in rec_desc else ('🔴' if '賣' in rec_desc else '🟡')} {rec_desc}")
-c4.metric("熱點指數與動能", f"{h_1w:.1f} 分", f"{'加速湧入 ↗' if df['Gamma_Trend_5D'].dropna().iloc[-1] > 0 else '動新衰退 ↘'}")
+c4.metric("熱點指數與動能", f"{h_1w:.1f} 分", f"{'加速湧入 ↗' if df['Gamma_Trend_5D'].dropna().iloc[-1] > 0 else '動能衰退 ↘'}")
 c5.metric("AI含金量 (Beta_3)", 
           f"{df['Beta_3_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Beta_3_Rolling' in df.columns else "N/A", 
           f"資金簇擁: {df['Gamma_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Gamma_Rolling' in df.columns else "N/A")
@@ -793,25 +804,25 @@ st.markdown("#### 📊 各時間維度 NLP 情緒、展望與熱點(炒作度)�
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
     st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"情緒:{sent_48h:.1f} (多:{b48h}/空:{r48h})")
-    st.caption(f"展望分數: {g_48h:.1f} 分 (多:{gp48h}/空:{gn48h})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_48h:.1f} (多:{gp48h}/空:{gn48h})</span>", unsafe_allow_html=True)
 with h_col2:
     st.metric("近 1W 熱點", f"{h_1w:.1f} 分", f"情緒:{sent_1w:.1f} (多:{b1w}/空:{r1w})")
-    st.caption(f"展望分數: {g_1w:.1f} 分 (多:{gp1w}/空:{gn1w})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1w:.1f} (多:{gp1w}/空:{gn1w})</span>", unsafe_allow_html=True)
 with h_col3:
     st.metric("近 2W 熱點", f"{h_2w:.1f} 分", f"情緒:{sent_2w:.1f} (多:{b2w}/空:{r2w})")
-    st.caption(f"展望分數: {g_2w:.1f} 分 (多:{gp2w}/空:{gn2w})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2w:.1f} (多:{gp2w}/空:{gn2w})</span>", unsafe_allow_html=True)
 with h_col4:
     st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"情緒:{sent_1m:.1f} (多:{b1m}/空:{r1m})")
-    st.caption(f"展望分數: {g_1m:.1f} 分 (多:{gp1m}/空:{gn1m})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1m:.1f} (多:{gp1m}/空:{gn1m})</span>", unsafe_allow_html=True)
 with h_col5:
     st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"情緒:{sent_2m:.1f} (多:{b2m}/空:{r2m})")
-    st.caption(f"展望分數: {g_2m:.1f} 分 (多:{gp2m}/空:{gn2m})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gp2m}/空:{gn2m})</span>", unsafe_allow_html=True)
 
 # ------------------------------------------
-# 新增：NLP 量化評分基準與計算說明區塊
+# NLP 量化評分基準與計算說明區塊
 # ------------------------------------------
 st.markdown("""
-<div style='background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 13px; color: #334155; margin-top: 10px;'>
+<div style='background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 13px; color: #334155; margin-top: 15px;'>
 <b>📖 NLP 量化評分基準與詞彙定義：</b>
 <br>• <b>情緒分數 (Sentiment)</b>：基礎分 3.0 分，依據標題中「多方詞彙」(漲、高、強、買超、創高、突破、擴產、暢旺等) 與「空方詞彙」(跌、殺、跌停、衰退、利空、修正等) 的淨命中數動態加減分，滿分 10 分。
 <br>• <b>展望分數 (Growth)</b>：基礎分 2.0 分，依據「正向展望詞彙」(展望佳、成長、訂單滿、上修、看好、強勁等) 與「負向展望詞彙」(下修、保守、庫存、疲弱等) 的淨命中數加減分，滿分 10 分。
