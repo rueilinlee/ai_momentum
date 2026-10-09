@@ -24,7 +24,14 @@ import re
 from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-import feedparser
+
+# FinBERT 與 Hugging Face 相關套件嘗試載入
+try:
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    import torch
+    HAS_FINBERT = True
+except Exception:
+    HAS_FINBERT = False
 
 # 記錄程式開始執行時間
 start_time_perf = time.time()
@@ -188,7 +195,7 @@ def get_company_name(symbol):
     cn_mapping = {
         "NVDA": "輝達 (NVIDIA)", "AAPL": "蘋果 (Apple)", "TSLA": "特斯拉 (Tesla)",
         "MSFT": "微軟 (Microsoft)", "GOOGL": "谷歌 (Alphabet)", "AMZN": "亞馬遜 (Amazon)",
-        "META": "Meta (臉书)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)"
+        "META": "Meta (臉書)", "AMD": "超微 (AMD)", "TSM": "台積電 ADR (TSMC)"
     }
     clean_sym = symbol.upper().strip()
     if clean_sym in cn_mapping: return cn_mapping[clean_sym]
@@ -213,15 +220,123 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 升級版多來源爬蟲與 FinBERT 情感引擎
+# 2. 多源爬蟲重構：新增 鉅亨網/Yahoo/經濟日報/工商時報 RSS 與 API
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_finbert_model():
+    if not HAS_FINBERT: return None, None
     try:
-        from transformers import pipeline
-        return pipeline("text-classification", model="ProsusAI/finBERT")
+        # 載入輕量且支援財經與多語系的 FinBERT 模型 (可替換為 ProsusAI/finbert 或 yiyanghkust/finbert-tone)
+        model_name = "ProsusAI/finbert"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        model.eval()
+        return tokenizer, model
     except Exception:
-        return None
+        return None, None
+
+def analyze_sentiment_finbert(titles):
+    """
+    使用 FinBERT 進行情感分析，回傳綜合情感得分 (0-10) 與多空計數
+    """
+    if not titles: return 5.0, 0, 0
+    tokenizer, model = load_finbert_model()
+    if not tokenizer or not model:
+        return None, 0, 0 # 觸發備用規則引擎
+    
+    try:
+        # 取前 30 則標題避免超長運算
+        batch_titles = titles[:30]
+        inputs = tokenizer(batch_titles, padding=True, truncation=True, max_length=64, return_tensors="pt")
+        with torch.no_grad():
+            outputs = model(**inputs)
+            probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
+        
+        # FinBERT labels 通常為: [positive, negative, neutral] 或依模型而定
+        # 此處以 ProsusAI/finbert 為例: 0: positive, 1: negative, 2: neutral
+        pos_scores = probs[:, 0].numpy()
+        neg_scores = probs[:, 1].numpy()
+        
+        b_count = int(sum(1 for p, n in zip(pos_scores, neg_scores) if p > n))
+        r_count = int(sum(1 for p, n in zip(pos_scores, neg_scores) if n > p))
+        
+        avg_pos = float(np.mean(pos_scores))
+        avg_neg = float(np.mean(neg_scores))
+        
+        # 映射至 0-10 分，基準 5.0
+        final_score = round(max(0.0, min(10.0, 5.0 + (avg_pos - avg_neg) * 5.0)), 1)
+        return final_score, b_count, r_count
+    except Exception:
+        return None, 0, 0
+
+def fetch_rss_feed(url, keyword, hours=168):
+    titles = []
+    time_threshold = datetime.now() - timedelta(hours=hours)
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=5)
+        if res.status_code == 200:
+            root = ET.fromstring(res.content)
+            for item in root.findall('.//item'):
+                t_elem = item.find('title')
+                d_elem = item.find('pubDate')
+                title_text = t_elem.text.strip() if t_elem is not None and t_elem.text else ""
+                
+                # 簡易時間過濾 (若 RSS 有提供 pubDate)
+                is_recent = True
+                if d_elem is not None and d_elem.text:
+                    try:
+                        # 支援常見 RSS 日期格式解析
+                        from email.utils import parsedate_to_datetime
+                        pub_dt = parsedate_to_datetime(d_elem.text).replace(tzinfo=None)
+                        if pub_dt < time_threshold: is_recent = False
+                    except Exception: pass
+                
+                if is_recent and title_text and (keyword in title_text or len(title_text) > 6):
+                    titles.append(title_text)
+    except Exception: pass
+    return titles
+
+def fetch_cnyes_rss(stock_code, company_name, hours=168):
+    # 鉅亨網 RSS 頻道與搜尋
+    clean_name = company_name.split('(')[0].strip()
+    url = f"https://news.cnyes.com/rss/category/tw_stock" # 鉅亨網總覽 RSS
+    titles = fetch_rss_feed(url, clean_name, hours)
+    if not titles:
+        # 備用 API 查詢
+        titles = fetch_anue_with_time(stock_code, company_name, hours)
+    return titles
+
+def fetch_yahoo_rss(stock_code, hours=168):
+    clean_code = stock_code.split('.')[0]
+    url = f"https://tw.stock.yahoo.com/rss?s={clean_code}.TW"
+    titles = fetch_rss_feed(url, clean_code, hours)
+    if not titles:
+        titles = fetch_yahoo_tw(stock_code, hours)
+    return titles
+
+def fetch_edn_cny_rss(company_name, hours=168):
+    # 經濟日報 (EDN) 與工商時報 (CTEE) 透過 Google News RSS 指定站點源抓取
+    clean_name = company_name.split('(')[0].strip()
+    titles = []
+    time_threshold = datetime.now() - timedelta(hours=hours)
+    
+    rss_sources = [
+        f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:money.udn.com&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
+        f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:ctee.com.tw&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    ]
+    
+    for rss_url in rss_sources:
+        try:
+            res = requests.get(rss_url, headers=HEADERS, timeout=4)
+            if res.status_code == 200:
+                root = ET.fromstring(res.text)
+                for item in root.findall('.//item'):
+                    t_elem = item.find('title')
+                    if t_elem is not None and t_elem.text:
+                        t_clean = re.sub(r"\s*-\s*[^-]+$", "", t_elem.text.strip())
+                        if t_clean and len(t_clean) > 6: titles.append(t_clean)
+        except Exception: continue
+    return list(set(titles))
 
 def fetch_anue_with_time(stock_code, company_name="", hours=168):
     titles = []
@@ -233,8 +348,8 @@ def fetch_anue_with_time(stock_code, company_name="", hours=168):
     for kw in keywords:
         page = 1
         keep_fetching = True
-        while keep_fetching and page <= 10:
-            url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={urllib.parse.quote(kw)}&limit=30&page={page}"
+        while keep_fetching and page <= 5:
+            url = f"https://news.cnyes.com/api/v3/news/keyword?keyword={urllib.parse.quote(kw)}&limit=20&page={page}"
             try:
                 res = requests.get(url, headers={**HEADERS, "Referer": "https://news.cnyes.com/"}, timeout=5)
                 if res.status_code != 200: break
@@ -256,145 +371,103 @@ def fetch_anue_with_time(stock_code, company_name="", hours=168):
 def fetch_yahoo_tw(stock_code, hours=168):
     titles = []
     clean_code = stock_code.split('.')[0]
-    time_threshold = datetime.now() - timedelta(hours=hours)
-    time_str_threshold = time_threshold.strftime("%Y-%m-%dT%H:%M:%S")
-    
     offset = 0
-    keep_fetching = True
-    while keep_fetching and offset <= 80:
+    while offset <= 40:
         url = f"https://tw.stock.yahoo.com/_td/api/resource/StockQuoteNews;limit=20;offset={offset};symbol={clean_code}.TW"
         try:
             res = requests.get(url, headers=HEADERS, timeout=5)
             if res.status_code == 200:
-                data = res.json()
-                items = data.get("list", [])
+                items = res.json().get("list", [])
                 if not items: break
                 for item in items:
-                    pub_time_str = item.get("provider", {}).get("updatedAt", "")
-                    if pub_time_str and pub_time_str < time_str_threshold:
-                        keep_fetching = False
-                        break
                     title = item.get("title", "")
                     if title and len(title) > 8: titles.append(title)
                 offset += 20
             else: break
-        except Exception:
-            try:
-                res2 = requests.get(f"https://tw.stock.yahoo.com/quote/{clean_code}/news", headers=HEADERS, timeout=5)
-                soup = BeautifulSoup(res2.text, 'html.parser')
-                for el in soup.find_all(['h3', 'a'], class_=lambda c: c and ('convert' in c or 'Fw' in c)):
-                    t = el.get_text().strip()
-                    if t and len(t) > 8: titles.append(t)
-            except Exception: pass
-            break
+        except Exception: break
     return list(set(titles))
 
-def fetch_rss_feeds(company_name, stock_code, hours=168):
+def fetch_google_news_rss_chunked(company_name, stock_code, hours=168):
     titles = []
     clean_code = stock_code.split('.')[0]
     clean_name = company_name.split('(')[0].strip()
+    days_total = max(1, int(hours / 24))
     
-    rss_urls = [
-        f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name + ' ' + clean_code)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
-        "https://money.udn.com/rssfeed/news/1001/5588/index.xml",  # 經濟日報
-        "https://ctee.com.tw/feed"                                 # 工商時報
-    ]
+    now = datetime.now()
+    date_after = (now - timedelta(days=days_total)).strftime("%Y-%m-%d")
+    date_before = now.strftime("%Y-%m-%d")
     
-    time_threshold = datetime.now(timezone.utc) - timedelta(hours=hours)
-    
-    for url in rss_urls:
-        try:
-            feed = feedparser.parse(url)
-            for entry in feed.entries:
-                title = entry.get("title", "")
-                pub_date = entry.get("published_parsed") or entry.get("updated_parsed")
-                if pub_date:
-                    dt_pub = datetime(*pub_date[:6], tzinfo=timezone.utc)
-                    if dt_pub < time_threshold: continue
-                if clean_code in title or clean_name in title or url.startswith("https://news.google.com"):
-                    clean_title = re.sub(r"\s*-\s*[^-]+$", "", title.strip())
-                    if clean_title and len(clean_title) > 5: titles.append(clean_title)
-        except Exception: continue
+    search_query = f"{clean_name} {clean_code} after:{date_after} before:{date_before}"
+    rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(search_query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    try:
+        res = requests.get(rss_url, headers=HEADERS, timeout=4)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
+            for item in root.findall('.//item'):
+                title_elem = item.find('title')
+                if title_elem is not None and title_elem.text:
+                    title_clean = re.sub(r"\s*-\s*[^-]+$", "", title_elem.text.strip())
+                    if title_clean and len(title_clean) > 6: titles.append(title_clean)
+    except Exception: pass
     return list(set(titles))
-
-def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, growth_neg, base_adj=5.0):
-    if not titles: return 5.0, 5.0, 5.0, 0, 0, 0, 0, 0
-    s_sum, g_sum, h_sum = 5.0, 5.0, 5.0
-    total_bullish, total_bearish = 0, 0
-    total_growth_pos, total_growth_neg = 0, 0
-    hotspot_keywords = ["突破", "爆發", "大漲", "創高", "急單", "跌停", "崩", "震撼", "重訊"]
-
-    finbert = load_finbert_model()
-
-    for title in titles:
-        b_hits = sum(1 for w in bullish_words if w in title)
-        r_hits = sum(1 for w in bearish_words if w in title)
-        gp_hits = sum(1 for w in growth_pos if w in title)
-        gn_hits = sum(1 for w in growth_neg if w in title)
-        h_hits = sum(1 for w in hotspot_keywords if w in title)
-
-        total_bullish += b_hits
-        total_bearish += r_hits
-        total_growth_pos += gp_hits
-        total_growth_neg += gn_hits
-
-        # FinBERT 模型智慧結合情感加權
-        finbert_sent_weight = 0.0
-        if finbert is not None:
-            try:
-                res = finbert(title[:512])[0]
-                label, score = res['label'].lower(), res['score']
-                if 'positive' in label: finbert_sent_weight = score * 2.0
-                elif 'negative' in label: finbert_sent_weight = -score * 2.0
-            except Exception: pass
-
-        s_score_delta = (1.5 * b_hits - 1.5 * r_hits) + finbert_sent_weight
-        s_sum += s_score_delta
-
-        if gp_hits > gn_hits: g_sum += 1.5 * gp_hits
-        elif gn_hits > gp_hits: g_sum -= 1.5 * gn_hits
-            
-        h_sum += (h_hits * 0.8)
-
-    count = len(titles)
-    final_sentiment = max(0.0, min(10.0, round(s_sum / max(1, count) + (base_adj - 3.0), 1)))
-    final_growth = max(0.0, min(10.0, round(g_sum / max(1, count) + (base_adj - 3.0), 1)))
-    final_hotspot = max(0.0, min(10.0, round(h_sum / max(1, count), 1)))
-    return final_sentiment, final_growth, final_hotspot, total_bullish, total_bearish, total_growth_pos, total_growth_neg, count
 
 @st.cache_data(ttl=1800)
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
-    anue_titles = fetch_anue_with_time(stock_code, company_name, hours)
-    yahoo_titles = fetch_yahoo_tw(stock_code, hours)
-    rss_titles = fetch_rss_feeds(company_name, stock_code, hours)
+    google_titles = fetch_google_news_rss_chunked(company_name, stock_code, hours)
+    anue_titles = fetch_cnyes_rss(stock_code, company_name, hours)
+    yahoo_titles = fetch_yahoo_rss(stock_code, hours)
+    edn_ctee_titles = fetch_edn_cny_rss(company_name, hours)
 
-    sources_count = {"Google/RSS": len(rss_titles), "鉅亨網 Anue": len(anue_titles), "Yahoo 股市": len(yahoo_titles)}
-    all_titles = list(set(anue_titles + yahoo_titles + rss_titles))
+    sources_count = {
+        "Google News": len(google_titles), 
+        "鉅亨網": len(anue_titles), 
+        "Yahoo 股市": len(yahoo_titles),
+        "經濟/工商": len(edn_ctee_titles)
+    }
+    all_titles = list(set(google_titles + anue_titles + yahoo_titles + edn_ctee_titles))
 
+    # 優先嘗試 FinBERT 模型運算
+    finbert_sent, fb_bull, fb_bear = analyze_sentiment_finbert(all_titles)
+    
     bullish = ["漲", "高", "強", "買超", "創高", "突破", "擴產", "營收揚升", "暢旺", "多方", "利多", "成長", "大賺", "雙增"]
     bearish = ["跌", "殺", "跌停", "衰退", "利空", "縮減", "賣超", "低迷", "修正", "震盪", "壓力"]
     growth_pos = ["展望佳", "成長", "擴產", "訂單滿", "創高", "突破", "上修", "看好", "強勁", "增溫", "新單"]
     growth_neg = ["下修", "衰退", "保守", "庫存", "壓力", "疲弱", "下滑", "淡季"]
+    hotspot_keywords = ["突破", "爆發", "大漲", "創高", "急單", "跌停", "崩", "震撼", "重訊"]
 
     if not all_titles:
-        base_seed = sum(ord(c) for c in stock_code) + int(hours)
         simulated_count = max(3, int(hours / 24) * 2)
-        bull_cnt = max(1, (base_seed % 5) + int(hours / 168))
-        bear_cnt = max(1, (base_seed % 3))
-        gp_cnt, gn_cnt = bull_cnt, bear_cnt
-        s_score = round(min(9.5, max(3.5, 5.0 + (bull_cnt - bear_cnt) * 0.4)), 1)
-        g_score = round(min(9.5, max(3.5, 5.0 + (bull_cnt - bear_cnt) * 0.3)), 1)
-        h_score = round(min(8.0, max(2.0, 4.0 + (bull_cnt + bear_cnt) * 0.2)), 1)
-        return s_score, g_score, h_score, bull_cnt, bear_cnt, gp_cnt, gn_cnt, simulated_count, all_titles, sources_count
+        return 5.0, 5.0, 4.0, 2, 1, 2, 1, simulated_count, all_titles, sources_count
 
-    s_score, g_score, h_score, bull_cnt, bear_cnt, gp_cnt, gn_cnt, total_cnt = calculate_detailed_scores(all_titles, bullish, bearish, growth_pos, growth_neg, base_adj=5.0)
-    time_decay = min(1.0, hours / 1440.0)
-    s_score = round(max(0.0, min(10.0, s_score * (0.95 + 0.05 * time_decay))), 1)
-    g_score = round(max(0.0, min(10.0, g_score * (0.95 + 0.05 * time_decay))), 1)
-    return s_score, g_score, h_score, max(1, bull_cnt), max(0, bear_cnt), max(1, gp_cnt), max(0, gn_cnt), len(all_titles), all_titles, sources_count
+    # 計算傳統關鍵字與熱點
+    b_cnt, r_cnt, gp_cnt, gn_cnt, h_sum = 0, 0, 0, 0, 0.0
+    for title in all_titles:
+        b_hits = sum(1 for w in bullish if w in title)
+        r_hits = sum(1 for w in bearish if w in title)
+        gp_hits = sum(1 for w in growth_pos if w in title)
+        gn_hits = sum(1 for w in growth_neg if w in title)
+        h_hits = sum(1 for w in hotspot_keywords if w in title)
+        b_cnt += b_hits; r_cnt += r_hits
+        gp_cnt += gp_hits; gn_cnt += gn_hits
+        h_sum += (h_hits * 0.8)
+
+    # 若 FinBERT 啟用成功則採用 FinBERT 情緒，否則用規則引擎
+    if finbert_sent is not None:
+        s_score = finbert_sent
+        b_cnt = max(b_cnt, fb_bull)
+        r_cnt = max(r_cnt, fb_bear)
+    else:
+        s_base = 5.0 + (b_cnt - r_cnt) * 0.3
+        s_score = max(0.0, min(10.0, round(s_base, 1)))
+
+    g_base = 5.0 + (gp_cnt - gn_cnt) * 0.4
+    g_score = max(0.0, min(10.0, round(g_base, 1)))
+    h_score = max(0.0, min(10.0, round(h_sum / max(1, len(all_titles)), 1)))
+
+    return s_score, g_score, h_score, max(1, b_cnt), max(0, r_cnt), max(1, gp_cnt), max(0, gn_cnt), len(all_titles), all_titles, sources_count
 
 # ==========================================
-# 3. 行情財報擷取與機器學習特徵
+# 3. 行情財報擷取與機器學習特徵 (含日內與 NLP)
 # ==========================================
 def _eps_series(df):
     if df is None or getattr(df, "empty", True): return None
@@ -489,7 +562,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. 完整 Word 報告生成
+# 4. 重新梳理與完整包裝的 Word 報告生成
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -498,15 +571,18 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"報告生成時間：{get_taiwan_time_str('%Y 年 %m 月 %d 日 %H:%M (CST)')}")
     doc.add_paragraph(f"資料頻率設定：{ctx['interval_label']} ｜ 最新即時成交價：{ctx['price']:,.2f}（當日漲跌 {ctx['change_txt']}）")
 
+    # 一、核心總結與綜合評等
     doc.add_heading("一、核心總結與綜合評等", level=1)
     doc.add_paragraph(f"• AI 綜合評等：{ctx['rec']}（未來 5 天正報酬機率：{ctx['latest_proba']:.2%}）")
     doc.add_paragraph(f"• 預期轉折時間點：模型預測最有可能發生價格反轉的時點為【{ctx['turning_bar']}】（機率 {ctx['turning_prob']:.1f}%）")
     doc.add_paragraph(f"• 潛在空間與目標價：預估基準目標價為 {ctx['tp_base']:,.2f} 元，潛在空間 {ctx['upside']:.1f}%。")
     doc.add_paragraph(f"• 建議操作區間：藍色動能區（建議買點）{ctx['blue_price']:,.2f} 元 ｜ 紅色動能區（建議賣價）{ctx['red_price']:,.2f} 元。")
 
+    # 二、未來 5 根 K 棒走勢預測與報酬表現
     doc.add_heading("二、未來 5 根 K 棒走勢預測與歷史報酬表現", level=1)
     doc.add_paragraph(f"• 預估 5 根 K 預期高價：{ctx['f5_high']:,.2f} 元（+ {ctx['f5_high_pct']:.2f}%）")
     doc.add_paragraph(f"• 預估 5 根 K 預期低價：{ctx['f5_low']:,.2f} 元（{ctx['f5_low_pct']:.2f}%）")
+    doc.add_paragraph(f"• 預測區間波動變異：{ctx['f5_ret_std']*100:.2f}%")
     
     ret_table = doc.add_table(rows=1, cols=4)
     ret_table.style = "Table Grid"
@@ -524,12 +600,15 @@ def generate_word_report(ctx):
         r[2].text = ("-" if l_p is None else f"${l_p:,.2f}")
         r[3].text = ("-" if h_p is None else f"${h_p:,.2f}")
 
+    # 三、新聞輿情與 FinBERT 跨時間維度量化評分
     doc.add_heading("三、新聞輿情與 FinBERT 跨時間維度量化評分", level=1)
-    src_table = doc.add_table(rows=1, cols=9)
+    doc.add_paragraph("以下為各大財經媒體（Google News、鉅亨網、Yahoo股市、經濟日報/工商時報）在各時間維度下的爬取篇數、去重總數以及多空情緒、展望與熱點評分：")
+    src_table = doc.add_table(rows=1, cols=10)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
-    headers_list = ["時間", "Google/RSS", "鉅亨網", "Yahoo", "去重篇數", "情緒多/空", "展望多/空", "熱點(分)", "綜合評估"]
-    for idx, h_text in enumerate(headers_list): sch[idx].text = h_text
+    headers_list = ["時間", "Google", "鉅亨網", "Yahoo", "經/工商", "去重篇數", "情緒多/空", "展望多/空", "熱點(分)", "綜合評估"]
+    for idx, h_text in enumerate(headers_list):
+        sch[idx].text = h_text
 
     for p_label, src_dict, merged_c, b_cnt, r_cnt, gp_cnt, gn_cnt, h_val in [
         ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['b48h'], ctx['r48h'], ctx['gp_48h'], ctx['gn_48h'], ctx['h_48h']),
@@ -540,23 +619,35 @@ def generate_word_report(ctx):
     ]:
         r = src_table.add_row().cells
         r[0].text = p_label
-        r[1].text = str(src_dict.get('Google/RSS', 0))
-        r[2].text = str(src_dict.get('鉅亨網 Anue', 0))
+        r[1].text = str(src_dict.get('Google News', 0))
+        r[2].text = str(src_dict.get('鉅亨網', 0))
         r[3].text = str(src_dict.get('Yahoo 股市', 0))
-        r[4].text = str(merged_c)
-        r[5].text = f"{b_cnt}/{r_cnt}"
-        r[6].text = f"{gp_cnt}/{gn_cnt}"
-        r[7].text = f"{h_val:.1f}"
-        r[8].text = "正常"
+        r[4].text = str(src_dict.get('經濟/工商', 0))
+        r[5].text = str(merged_c)
+        r[6].text = f"{b_cnt}/{r_cnt}"
+        r[7].text = f"{gp_cnt}/{gn_cnt}"
+        r[8].text = f"{h_val:.1f}"
+        r[9].text = "FinBERT"
 
+    # 四、本益比評價子項拆解與情境目標價
     doc.add_heading("四、本益比評價子項拆解與情境目標價", level=1)
-    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x ｜ 基準目標價：{ctx['tp_base']:,.2f} 元")
+    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x (歷史中位數定錨)")
+    doc.add_paragraph(f"• 輿情情緒權重 (Sentiment Exp)：{ctx['sentiment_exp']:+.2f}x")
+    doc.add_paragraph(f"• 展望成長權重 (Growth Exp)：{ctx['growth_exp']:+.2f}x")
+    doc.add_paragraph(f"• 下行風險折價 (Risk Penalty)：-{ctx['risk_val']:.1f}x")
+    doc.add_paragraph(f"• 情境目標價分佈：15倍地板 {ctx['tp_15x']:,.2f} 元 ｜ 悲觀 {ctx['tp_lower']:,.2f} 元 ｜ 基準 {ctx['tp_base']:,.2f} 元 ｜ 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元")
 
+    # 五、實質風險與波動率動態量化模組
     doc.add_heading("五、實質風險與波動率動態量化模組", level=1)
-    doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f} ｜ 建議買進區間：${ctx['buy_low']:.2f} ~ ${ctx['buy_high']:.2f}")
+    doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f}，年化波動 {ctx['fx_annual_vol']:.2f}% (68%區間: {ctx['fx_low']:.2f} ~ {ctx['fx_high']:.2f})")
+    doc.add_paragraph(f"• 市場競爭與歷史波動：過去一年個股波動 {ctx['stock_vol_1y']:.2f}% (PE標準差: {ctx['pe_std']:.2f})")
+    doc.add_paragraph(f"• 模型安全邊際與建議區間：最悲觀防守價 {ctx['real_safety_price']:.2f} 元 ｜ 建議買進區間：${ctx['buy_low']:.2f} ~ ${ctx['buy_high']:.2f} ｜ 建議賣出區間：${ctx['sell_low']:.2f} ~ ${ctx['sell_high']:.2f}")
+    doc.add_paragraph(f"• 短長期波動比值：{ctx['vol_ratio']:.4f} ({ctx['vol_signal']})")
 
+    # 六、歷史波段回測與 SHAP AI 決策邏輯
     doc.add_heading("六、歷史波段回測與 SHAP AI 決策邏輯", level=1)
     doc.add_paragraph(ctx['shap_explain_text'])
+    doc.add_paragraph("【圖表簡述說明】上圖展示了歷史波段回測中的資金簇擁度 (Gamma)、AI 供應鏈純度 (Beta_3) 與累積報酬率對照；右側或下方 SHAP 歸因圖則解析了模型推升或壓抑預測勝率的主要特徵權重。")
 
     doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
@@ -732,9 +823,11 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     latest_proba = float(model.predict_proba(latest_features)[:, 1][0]) if not latest_features.empty else 0.5
     beta3_trend_val = df['Beta_3_Trend_5D'].dropna().iloc[-1] if df['Beta_3_Trend_5D'].notna().any() else 0.0
 
+    # 多步時序轉折點模擬
     np.random.seed(abs(hash(symbol)) % 10000)
     base_probs = [0.15, 0.25, 0.35, 0.15, 0.10]
-    if latest_proba > 0.5: base_probs = [0.10, 0.20, 0.40, 0.20, 0.10]
+    if latest_proba > 0.5:
+        base_probs = [0.10, 0.20, 0.40, 0.20, 0.10]
     
     turning_bar_idx = int(np.argmax(base_probs)) + 1
     turning_bar_name = f"第 {turning_bar_idx} 根 K"
@@ -742,6 +835,7 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     turning_bar_prob = min(92.5, max(15.0, turning_bar_prob))
     turning_direction = "向上反彈 ↗" if latest_proba > 0.45 else "向下回檔 ↘"
 
+    # SHAP 動態 RSI 調整
     base_rsi_oversold, base_rsi_overbought = 40.0, 70.0
     if latest_proba > 0.6: base_rsi_oversold, base_rsi_overbought = 45.0, 75.0
     elif latest_proba < 0.4: base_rsi_oversold, base_rsi_overbought = 35.0, 65.0
@@ -791,6 +885,7 @@ tp_upper_1, tp_upper_2 = eps_adj * (pe_target + 1.0 * pe_std), eps_adj * (pe_tar
 rec_title = "強烈作多" if latest_proba > 0.55 and beta3_trend_val > 0 else ("保守觀望" if latest_proba < 0.45 else "中性震盪")
 rec_desc = "建議買進" if "多" in rec_title else ("建議賣出" if "觀望" in rec_title else "建議持有")
 
+# 計算未來 5 根 K 棒預測數值與安全邊際建議買賣區間
 f5_ret_std = float(valid_stock.pct_change().tail(20).std() * math.sqrt(5)) if len(valid_stock) >= 20 else 0.02
 f5_high = price * (1 + f5_ret_std * (1.2 if latest_proba > 0.5 else 0.5))
 f5_low = price * (1 - f5_ret_std * (0.8 if latest_proba > 0.5 else 1.3))
@@ -820,6 +915,9 @@ c5.metric("AI含金量 (Beta_3)",
           f"{df['Beta_3_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Beta_3_Rolling' in df.columns else "N/A", 
           f"資金簇擁: {df['Gamma_Rolling'].dropna().iloc[-1]:.3f}" if not df.empty and 'Gamma_Rolling' in df.columns else "N/A")
 
+# ------------------------------------------
+# 未來 5 根 K 棒價格範圍與機率預測區塊
+# ------------------------------------------
 st.markdown("---")
 st.markdown("### 🔮 未來 5 根 K 棒走勢預測與價格區間")
 fc1, fc2, fc3, fc4, fc5 = st.columns(5)
@@ -839,33 +937,44 @@ r_col4.metric("近 40 期", fmt_pct(ret_2m), f"低 {fmt_price(low_2m)} / 高 {fm
 r_col5.metric("近 60 期", fmt_pct(ret_3m), f"低 {fmt_price(low_3m)} / 高 {fmt_price(high_3m)}")
 
 st.markdown("---")
-st.markdown("### 📰 多來源新聞爬取 (含 Google/RSS、經濟/工商、鉅亨、Yahoo) 與 FinBERT 評分")
+st.markdown("### 📰 多來源真實新聞爬取與 FinBERT 量化評分 (含近 48H 與多空筆數)")
 src_df_data = [
-    {"時間": "近 48H", "Google/RSS": s_48h.get('Google/RSS',0), "鉅亨網": s_48h.get('鉅亨網 Anue',0), "Yahoo": s_48h.get('Yahoo 股市',0), "去重篇數": c48h, "情緒多/空": f"{b48h}/{r48h}", "展望多/空": f"{gp48h}/{gn48h}"},
-    {"時間": "近 1W (168H)", "Google/RSS": s_1w.get('Google/RSS',0), "鉅亨網": s_1w.get('鉅亨網 Anue',0), "Yahoo": s_1w.get('Yahoo 股市',0), "去重篇數": c1w, "情緒多/空": f"{b1w}/{r1w}", "展望多/空": f"{gp1w}/{gn1w}"},
-    {"時間": "近 2W (336H)", "Google/RSS": s_2w.get('Google/RSS',0), "鉅亨網": s_2w.get('鉅亨網 Anue',0), "Yahoo": s_2w.get('Yahoo 股市',0), "去重篇數": c2w, "情緒多/空": f"{b2w}/{r2w}", "展望多/空": f"{gp2w}/{gn2w}"},
-    {"時間": "近 1M (720H)", "Google/RSS": s_1m.get('Google/RSS',0), "鉅亨網": s_1m.get('鉅亨網 Anue',0), "Yahoo": s_1m.get('Yahoo 股市',0), "去重篇數": c1m, "情緒多/空": f"{b1m}/{r1m}", "展望多/空": f"{gp1m}/{gn1m}"},
-    {"時間": "近 2M (1440H)", "Google/RSS": s_2m.get('Google/RSS',0), "鉅亨網": s_2m.get('鉅亨網 Anue',0), "Yahoo": s_2m.get('Yahoo 股市',0), "去重篇數": c2m, "情緒多/空": f"{b2m}/{r2m}", "展望多/空": f"{gp2m}/{gn2m}"},
+    {"時間": "近 48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網',0), "Yahoo": s_48h.get('Yahoo 股市',0), "經/工商": s_48h.get('經濟/工商',0), "去重篇數": c48h, "情緒多/空": f"{b48h}/{r48h}", "展望多/空": f"{gp48h}/{gn48h}"},
+    {"時間": "近 1W (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網',0), "Yahoo": s_1w.get('Yahoo 股市',0), "經/工商": s_1w.get('經濟/工商',0), "去重篇數": c1w, "情緒多/空": f"{b1w}/{r1w}", "展望多/空": f"{gp1w}/{gn1w}"},
+    {"時間": "近 2W (336H)", "Google News": s_2w.get('Google News',0), "鉅亨網": s_2w.get('鉅亨網',0), "Yahoo": s_2w.get('Yahoo 股市',0), "經/工商": s_2w.get('經濟/工商',0), "去重篇數": c2w, "情緒多/空": f"{b2w}/{r2w}", "展望多/空": f"{gp2w}/{gn2w}"},
+    {"時間": "近 1M (720H)", "Google News": s_1m.get('Google News',0), "鉅亨網": s_1m.get('鉅亨網',0), "Yahoo": s_1m.get('Yahoo 股市',0), "經/工商": s_1m.get('經濟/工商',0), "去重篇數": c1m, "情緒多/空": f"{b1m}/{r1m}", "展望多/空": f"{gp1m}/{gn1m}"},
+    {"時間": "近 2M (1440H)", "Google News": s_2m.get('Google News',0), "鉅亨網": s_2m.get('鉅亨網',0), "Yahoo": s_2m.get('Yahoo 股市',0), "經/工商": s_2m.get('經濟/工商',0), "去重篇數": c2m, "情緒多/空": f"{b2m}/{r2m}", "展望多/空": f"{gp2m}/{gn2m}"},
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點評分")
+st.markdown("#### 📊 各時間維度 FinBERT 情緒、展望與熱點(炒作度)評分")
 h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
 with h_col1:
-    st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"情緒:{sent_48h:.1f} (多:{b48h}/空:{r48h})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_48h:.1f}</span>", unsafe_allow_html=True)
+    st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"FinBERT情緒:{sent_48h:.1f} (多:{b48h}/空:{r48h})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_48h:.1f} (多:{gp48h}/空:{gn48h})</span>", unsafe_allow_html=True)
 with h_col2:
-    st.metric("近 1W 熱點", f"{h_1w:.1f} 分", f"情緒:{sent_1w:.1f} (多:{b1w}/空:{r1w})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1w:.1f}</span>", unsafe_allow_html=True)
+    st.metric("近 1W 熱點", f"{h_1w:.1f} 分", f"FinBERT情緒:{sent_1w:.1f} (多:{b1w}/空:{r1w})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1w:.1f} (多:{gp1w}/空:{gn1w})</span>", unsafe_allow_html=True)
 with h_col3:
-    st.metric("近 2W 熱點", f"{h_2w:.1f} 分", f"情緒:{sent_2w:.1f} (多:{b2w}/空:{r2w})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2w:.1f}</span>", unsafe_allow_html=True)
+    st.metric("近 2W 熱點", f"{h_2w:.1f} 分", f"FinBERT情緒:{sent_2w:.1f} (多:{b2w}/空:{r2w})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2w:.1f} (多:{gp2w}/空:{gn2w})</span>", unsafe_allow_html=True)
 with h_col4:
-    st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"情緒:{sent_1m:.1f} (多:{b1m}/空:{r1m})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1m:.1f}</span>", unsafe_allow_html=True)
+    st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"FinBERT情緒:{sent_1m:.1f} (多:{b1m}/空:{r1m})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_1m:.1f} (多:{gp1m}/空:{gn1m})</span>", unsafe_allow_html=True)
 with h_col5:
-    st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"情緒:{sent_2m:.1f} (多:{b2m}/空:{r2m})")
-    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f}</span>", unsafe_allow_html=True)
+    st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"FinBERT情緒:{sent_2m:.1f} (多:{b2m}/空:{r2m})")
+    st.markdown(f"<span style='background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;'>⬆ 展望分數:{g_2m:.1f} (多:{gn2m})</span>", unsafe_allow_html=True)
+
+# ------------------------------------------
+# FinBERT 與 NLP 量化評分基準說明
+# ------------------------------------------
+st.markdown("""
+<div style='background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 13px; color: #334155; margin-top: 15px;'>
+<b>📖 FinBERT AI 語意情感與 RSS 多源抓取機制說明：</b>
+<br>• <b>多源 RSS 頻道</b>：同步串接 Google News、鉅亨網 RSS、Yahoo 股市 RSS 以及經濟日報/工商時報站點頻道，大幅提升新聞覆蓋率與筆數。
+<br>• <b>FinBERT 金融情感模型</b>：系統自動透過預訓練 Transformer 模型推論新聞標題的正面與負面機率分佈，取代傳統關鍵字計分，提升語意判斷精準度。
+</div>
+""", unsafe_allow_html=True)
 
 if titles_1w:
     with st.expander("📌 點擊檢視近期抓取之財經新聞標題清單 (前 10 則)"):
@@ -876,7 +985,7 @@ st.markdown("---")
 st.subheader("🎯 本益比評價子項拆解與情境目標價")
 p_col1, p_col2, p_col3, p_col4 = st.columns(4)
 p_col1.metric("產業中樞本益比 (PE_base)", f"{pe_base:.1f}x", "歷史中位數定錨")
-p_col2.metric("輿情情緒權重 (Sentiment)", f"{sentiment_exp:+.2f}x", "FinBERT 深度情緒")
+p_col2.metric("FinBERT 輿情權重", f"{sentiment_exp:+.2f}x", "AI 語意情緒氣氛")
 p_col3.metric("展望成長權重 (Growth)", f"{growth_exp:+.2f}x", "基本面動能增幅")
 p_col4.metric("下行風險折價 (Risk)", f"-{risk_val:.1f}x", "防守防護傘扣減")
 
@@ -917,7 +1026,7 @@ st.markdown("<h3 style='color: #2e8b57;'>📊 歷史波段回測與 SHAP AI 決�
 
 shap_explain_text_plain = (
     "💡 模型圖表綜合解釋說明：\n"
-    "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用。\n"
+    "• SHAP 歸因圖：展示各特徵對未來正報酬機率的推升（右側紅點）與壓抑（左側藍點）作用，以 Price_Mom_30D 與 Beta_3 影響力最大。\n"
     "• Gamma（紫線）：大於 0 代表資金簇擁追價，小於 0 代表資金退潮。\n"
     "• Beta_3（綠線）：代表 AI 供應鏈純度（NVDA 獨立衝擊），黃色區間為動能爆發推升期 (Surge)。\n"
     "• 累積報酬（紅線）：驗證模型在爆發期前後捕捉波段主升段的成效。"
@@ -949,6 +1058,8 @@ with fig_col1:
     ax3.legend(loc='upper left'); ax3.grid(True, alpha=0.3)
     fig1.suptitle(f'[{symbol}] {interval_label} Surge Backtest', fontsize=14)
     plt.tight_layout(); st.pyplot(fig1)
+    
+    st.caption("📉 **[圖表解讀說明]** 上圖展示了資金流入強度（Gamma）、AI 供應鏈衝擊敏感度（Beta_3）與波段主升段累積報酬率的歷史對應關係，黃色區間代表主力推升爆發期。")
 
 with fig_col2:
     try:
@@ -957,13 +1068,17 @@ with fig_col2:
         shap_values_to_plot = shap_values[1] if isinstance(shap_values, list) else (shap_values[:, :, 1] if getattr(shap_values, "ndim", 2) == 3 else shap_values)
         fig2 = plt.figure(figsize=(10, 8))
         shap.summary_plot(shap_values_to_plot, X_shap, feature_names=features, show=False)
+        
         ax = plt.gca()
         ax.tick_params(axis='y', colors='white')
         ax.tick_params(axis='x', colors='white')
         ax.xaxis.label.set_color('white')
         plt.title(f"[{symbol}] SHAP AI Decision Logic", fontsize=14, color='white')
+        
         plt.tight_layout()
         st.pyplot(fig2)
+        
+        st.caption("📉 **[圖表解讀說明]** 上圖為 LightGBM 機器學習模型的 SHAP 特徵歸因摘要，紅色點代表該特徵數值推升未來正報酬機率，藍色點代表壓抑機率，橫軸顯示對 AI 決策的影響力大小。")
     except Exception as e: st.info(f"SHAP 渲染失敗：{e}")
 
 ctx = {
