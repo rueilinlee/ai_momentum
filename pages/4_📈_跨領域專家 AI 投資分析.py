@@ -82,8 +82,7 @@ def _fetch_company_list(suffix, candidates):
         try:
             r = requests.get(url, headers=HEADERS, timeout=6)
             r.raise_for_status()
-            if kind == "json":
-                rows = r.json()
+            if kind == "json": rows = r.json()
             else:
                 df = pd.read_csv(io.StringIO(r.content.decode("utf-8-sig")), dtype=str)
                 rows = df.to_dict("records")
@@ -95,10 +94,8 @@ def _fetch_company_list(suffix, candidates):
                 full = _norm(row.get("公司名稱"))
                 if code and (short or full):
                     out.append({"code": code, "short": short, "full": full, "suffix": suffix})
-            if out:
-                return out
-        except Exception:
-            continue
+            if out: return out
+        except Exception: continue
     return []
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -138,8 +135,7 @@ def _isin_lookup(clean_query: str) -> Optional[str]:
                 parts = tds[0].get_text().strip().split()
                 if len(parts) >= 2 and parts[0].isdigit() and len(parts[0]) in (4, 5):
                     if _norm("".join(parts[1:])) == clean_query: return parts[0]
-        except Exception:
-            continue
+        except Exception: continue
     return None
 
 @st.cache_data(ttl=3600)
@@ -176,8 +172,7 @@ def resolve_symbol(user_input):
                 m = re.match(r"^(\d{4,5})(TW|TWO)$", sym.upper())
                 if m: return f"{m.group(1)}.{m.group(2)}"
                 return sym
-    except Exception:
-        pass
+    except Exception: pass
 
     code = _isin_lookup(clean_query)
     if code:
@@ -213,8 +208,7 @@ def get_company_name(symbol):
         stock = yf.Ticker(symbol)
         name = stock.info.get("longName") or stock.info.get("shortName")
         if name: return f"{name} ({symbol})"
-    except Exception:
-        pass
+    except Exception: pass
     return symbol
 
 # ==========================================
@@ -247,8 +241,7 @@ def fetch_anue_with_time(stock_code, company_name="", hours=168):
                     title = item.get("title", "")
                     if title and len(title) > 5: titles.append(title)
                 page += 1
-            except Exception:
-                break
+            except Exception: break
     return list(set(titles))
 
 def fetch_yahoo_tw(stock_code, hours=168):
@@ -275,10 +268,8 @@ def fetch_yahoo_tw(stock_code, hours=168):
                     title = item.get("title", "")
                     if title and len(title) > 8: titles.append(title)
                 offset += 20
-            else:
-                break
+            else: break
         except Exception:
-            # Fallback
             try:
                 res2 = requests.get(f"https://tw.stock.yahoo.com/quote/{clean_code}/news", headers=HEADERS, timeout=5)
                 soup = BeautifulSoup(res2.text, 'html.parser')
@@ -319,8 +310,7 @@ def fetch_google_news_rss_chunked(company_name, stock_code, hours=168):
                     if title_elem is not None and title_elem.text:
                         title_clean = re.sub(r"\s*-\s*[^-]+$", "", title_elem.text.strip())
                         if title_clean and len(title_clean) > 6: titles.append(title_clean)
-        except Exception:
-            continue
+        except Exception: continue
     return list(set(titles))
 
 def calculate_detailed_scores(titles, bullish_words, bearish_words, growth_pos, growth_neg, base_adj=3.0):
@@ -446,7 +436,6 @@ def build_feature_frame(symbol: str, market_data: pd.DataFrame, us_daily: pd.Dat
     df["RSI_14"] = (100 - 100 / (1 + gain / loss)).shift(1)
     df["Interaction_Term"] = df["NVDA_Pure_Shock"] * df["Price_Mom_30D"]
 
-    # 結合 NLP 特徵
     df['NLP_Sent'] = (df["Price_Mom_5D"] * 20 + 5.0).clip(0, 10)
     df['NLP_Growth'] = (df["Price_Mom_30D"] * 10 + 5.0).clip(0, 10)
     df['NLP_Hotspot'] = (df["Vol_10D"] * 100 + 3.0).clip(0, 10)
@@ -482,7 +471,7 @@ def calculate_target_price_for_rsi(close_prices, target_rsi, mode='drop'):
     return sim_price, current_rsi
 
 # ==========================================
-# 4. Word 報告生成 (完整版)
+# 4. Word 報告生成 (完整版含全時段熱點)
 # ==========================================
 def generate_word_report(ctx):
     doc = Document()
@@ -493,7 +482,7 @@ def generate_word_report(ctx):
     doc.add_paragraph(f"最新即時成交價：{ctx['price']:,.2f}（當日漲跌 {ctx['change_txt']}）")
     doc.add_paragraph(f"AI 預測未來 5 天正報酬機率：{ctx['latest_proba']:.2%} ({ctx['rec']})")
     doc.add_paragraph(f"藍色動能區（建議買點）：{ctx['blue_price']:,.2f} 元 | 紅色動能區（建議賣價）：{ctx['red_price']:,.2f} 元")
-    doc.add_paragraph(f"情境目標價：15倍PE地板 {ctx['tp_15x']:,.2f} 元 (15.0x) | 悲觀(-0.5σ) {ctx['tp_lower']:,.2f} 元 ({ctx['pe_lower']:.1f}x) | 基準 {ctx['tp_base']:,.2f} 元 ({ctx['pe_target']:.1f}x) | 樂觀(+1σ) {ctx['tp_upper_1']:,.2f} 元 ({ctx['pe_upper_1']:.1f}x) | 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元 ({ctx['pe_upper_2']:.1f}x)")
+    doc.add_paragraph(f"情境目標價：15倍PE地板 {ctx['tp_15x']:,.2f} 元 | 基準 {ctx['tp_base']:,.2f} 元 ({ctx['pe_target']:.1f}x) | 樂觀(+2σ) {ctx['tp_upper_2']:,.2f} 元")
 
     doc.add_heading("一、多期報酬率表現", level=1)
     ret_table = doc.add_table(rows=1, cols=2)
@@ -503,40 +492,31 @@ def generate_word_report(ctx):
         r = ret_table.add_row().cells
         r[0].text, r[1].text = p_name, ("資料不足" if val is None else f"{val:+.2f}%")
 
-    doc.add_heading("二、跨時間維度新聞爬取筆數統計", level=1)
-    src_table = doc.add_table(rows=1, cols=5)
+    doc.add_heading("二、跨時間維度新聞爬取筆數與 NLP 評分 (含熱點)", level=1)
+    src_table = doc.add_table(rows=1, cols=6)
     src_table.style = "Table Grid"
     sch = src_table.rows[0].cells
-    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text = "時間", "Google", "鉅亨網", "Yahoo", "去重篇數"
-    for p_label, src_dict, merged_c in [("近 48H", ctx['s_48h'], ctx['c48h']), ("近 1W", ctx['s_1w'], ctx['c1w']), ("近 2W", ctx['s_2w'], ctx['c2w']), ("近 1M", ctx['s_1m'], ctx['c1m']), ("近 2M", ctx['s_2m'], ctx['c2m'])]:
+    sch[0].text, sch[1].text, sch[2].text, sch[3].text, sch[4].text, sch[5].text = "時間", "Google", "鉅亨網", "Yahoo", "去重篇數", "熱點(炒作)"
+    for p_label, src_dict, merged_c, h_val in [
+        ("近 48H", ctx['s_48h'], ctx['c48h'], ctx['h_48h']),
+        ("近 1W", ctx['s_1w'], ctx['c1w'], ctx['h_1w']),
+        ("近 2W", ctx['s_2w'], ctx['c2w'], ctx['h_2w']),
+        ("近 1M", ctx['s_1m'], ctx['c1m'], ctx['h_1m']),
+        ("近 2M", ctx['s_2m'], ctx['c2m'], ctx['h_2m'])
+    ]:
         r = src_table.add_row().cells
-        r[0].text, r[1].text, r[2].text, r[3].text, r[4].text = p_label, str(src_dict.get('Google News',0)), str(src_dict.get('鉅亨網 Anue',0)), str(src_dict.get('Yahoo 股市',0)), str(merged_c)
-
-    doc.add_paragraph("")
-    sent_table = doc.add_table(rows=1, cols=4)
-    sent_table.style = "Table Grid"
-    sh = sent_table.rows[0].cells
-    sh[0].text, sh[1].text, sh[2].text, sh[3].text = "時間", "情緒", "成長", "熱點(炒作)"
-    for p_name, s, g, h in [("近 48H", ctx['sent_48h'], ctx['g_48h'], ctx['h_48h']), ("近 1W", ctx['sent_1w'], ctx['g_1w'], ctx['h_1w']), ("近 2W", ctx['sent_2w'], ctx['g_2w'], ctx['h_2w']), ("近 1M", ctx['sent_1m'], ctx['g_1m'], ctx['h_1m']), ("近 2M", ctx['sent_2m'], ctx['g_2m'], ctx['h_2m'])]:
-        sr = sent_table.add_row().cells
-        sr[0].text, sr[1].text, sr[2].text, sr[3].text = p_name, f"{s:.1f}", f"{g:.1f}", f"{h:.1f}"
+        r[0].text, r[1].text, r[2].text, r[3].text, r[4].text, r[5].text = p_label, str(src_dict.get('Google News',0)), str(src_dict.get('鉅亨網 Anue',0)), str(src_dict.get('Yahoo 股市',0)), str(merged_c), f"{h_val:.1f}分"
 
     doc.add_heading("三、本益比評價子項拆解說明", level=1)
-    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x（由系統歷史中位數定錨）")
-    doc.add_paragraph(f"• 輿情情緒權重 (Sentiment Exp)：{ctx['sentiment_exp']:+.2f}x（反映短線買盤與氣氛）")
-    doc.add_paragraph(f"• 展望成長權重 (Growth Exp)：{ctx['growth_exp']:+.2f}x（反映基本面動能增幅）")
-    doc.add_paragraph(f"• 下行風險折價 (Risk Penalty)：-{ctx['risk_val']:.1f}x（防守防護傘扣減）")
+    doc.add_paragraph(f"• 產業中樞本益比 (PE_base)：{ctx['pe_base']:.1f}x")
+    doc.add_paragraph(f"• 輿情情緒權重 (Sentiment Exp)：{ctx['sentiment_exp']:+.2f}x")
+    doc.add_paragraph(f"• 展望成長權重 (Growth Exp)：{ctx['growth_exp']:+.2f}x")
+    doc.add_paragraph(f"• 下行風險折價 (Risk Penalty)：-{ctx['risk_val']:.1f}x")
 
-    doc.add_heading("四、K線頻率特性與模型應用提醒", level=1)
-    doc.add_paragraph(ctx['freq_advice'])
+    doc.add_heading("四、實質風險與波動率動態量化模組", level=1)
+    doc.add_paragraph(f"• 匯率風險 (USDTWD=X)：最新 {ctx['fx_latest']:.2f}，年化波動 {ctx['fx_annual_vol']:.2f}%")
+    doc.add_paragraph(f"• 個股歷史波動率：{ctx['stock_vol_1y']:.2f}%，最悲觀防守安全價：{ctx['real_safety_price']:.2f} 元")
 
-    doc.add_heading("五、實質風險與波動率動態量化模組", level=1)
-    doc.add_paragraph(f"• 實際匯率風險 (USDTWD=X)：最新匯率 {ctx['fx_latest']:.2f}，年化波動率 {ctx['fx_annual_vol']:.2f}%，68% 合理區間 [{ctx['fx_low']:.2f}, {ctx['fx_high']:.2f}]。")
-    doc.add_paragraph(f"• 市場競爭與個股風險：過去一年個股真實年化波動率為 {ctx['stock_vol_1y']:.2f}%。")
-    doc.add_paragraph(f"• 估值模型安全邊際：近四季 TTM EPS {ctx['ttm']:.2f} 元，歷史 1 年 PE 標準差為 {ctx['pe_std']:.2f}，最悲觀防守安全價為 {ctx['real_safety_price']:.2f} 元。")
-    doc.add_paragraph(f"• 短長期波動比值 (5期 vs 20期)：短期 {ctx['vol_5d']:.2f}% / 長期 {ctx['vol_20d']:.2f}%，比值為 {ctx['vol_ratio']:.4f} ({ctx['vol_signal']})。")
-
-    doc.add_paragraph("")
     doc.add_paragraph(DISCLAIMER)
     buf = BytesIO()
     doc.save(buf)
@@ -556,6 +536,7 @@ with st.sidebar.form(key="search_form"):
 if not user_query: st.stop()
 symbol = resolve_symbol(user_query)
 company_name = get_company_name(symbol)
+stock_code = symbol.split('.')[0] # 提前定義 stock_code 避免 NameError
 
 # 執行所有時間維度的新聞爬取與特徵評分
 sent_48h, g_48h, h_48h, b48h, r48h, c48h, titles_48h, s_48h = comprehensive_quant_evaluation(symbol, company_name, 48)
@@ -750,7 +731,7 @@ freq_advice_text = (
 )
 
 # ==========================================
-# 7. 最終 UI 呈現
+# 7. 最終 UI 呈現 (含全時段熱點輸出)
 # ==========================================
 st.title("📈 跨領域專家 AI 投資分析與量化預測")
 st.subheader(f"🏢 {company_name} — 【{interval_label}】")
@@ -775,7 +756,7 @@ r_col4.metric("近 40 期", fmt_pct(ret_2m))
 r_col5.metric("近 60 期", fmt_pct(ret_3m))
 
 st.markdown("---")
-st.markdown("### 📰 多來源真實新聞爬取與 NLP 評分 (深度分頁與隱藏 API)")
+st.markdown("### 📰 多來源真實新聞爬取與 NLP 評分 (含各時段熱點指數)")
 src_df_data = [
     {"時間": "48H", "Google News": s_48h.get('Google News',0), "鉅亨網": s_48h.get('鉅亨網 Anue',0), "Yahoo": s_48h.get('Yahoo 股市',0), "去重篇數": c48h},
     {"時間": "1週 (168H)", "Google News": s_1w.get('Google News',0), "鉅亨網": s_1w.get('鉅亨網 Anue',0), "Yahoo": s_1w.get('Yahoo 股市',0), "去重篇數": c1w},
@@ -785,16 +766,18 @@ src_df_data = [
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-s_col1, s_col2, s_col3 = st.columns(3)
-with s_col1:
-    st.metric("近 1 週輿情情緒", f"{sent_1w:.1f} 分", f"多:{b1w} | 空:{r1w}")
-    st.metric("近 1 個月輿情情緒", f"{sent_1m:.1f} 分", f"多:{b1m} | 空:{r1m}")
-with s_col2:
-    st.metric("近 1 週展望成長", f"{g_1w:.1f} 分")
-    st.metric("近 1 個月展望成長", f"{g_1m:.1f} 分")
-with s_col3:
-    st.metric("🔥 近 1 週新聞熱點 (炒作度)", f"{h_1w:.1f} 分")
-    st.metric("🔥 近 1 個月新聞熱點 (炒作度)", f"{h_1m:.1f} 分")
+st.markdown("#### 📊 各時間維度 NLP 情緒、展望與熱點(炒作度)評分")
+h_col1, h_col2, h_col3, h_col4, h_col5 = st.columns(5)
+with h_col1:
+    st.metric("近 48H 熱點", f"{h_48h:.1f} 分", f"情緒:{sent_48h:.1f}")
+with h_col2:
+    st.metric("近 1W 熱點", f"{h_1w:.1f} 分", f"情緒:{sent_1w:.1f}")
+with h_col3:
+    st.metric("近 2W 熱點", f"{h_2w:.1f} 分", f"情緒:{sent_2w:.1f}")
+with h_col4:
+    st.metric("近 1M 熱點", f"{h_1m:.1f} 分", f"情緒:{sent_1m:.1f}")
+with h_col5:
+    st.metric("近 2M 熱點", f"{h_2m:.1f} 分", f"情緒:{sent_2m:.1f}")
 
 st.markdown("---")
 st.subheader("🎯 本益比評價子項拆解與情境目標價")
