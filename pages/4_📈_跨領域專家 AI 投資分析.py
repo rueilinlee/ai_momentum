@@ -220,7 +220,7 @@ def get_company_name(symbol):
     return symbol
 
 # ==========================================
-# 2. 爬蟲與 FinBERT 評分引擎
+# 2. 爬蟲與 FinBERT 評分引擎（含嚴格雜訊過濾）
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_finbert_model():
@@ -258,7 +258,28 @@ def analyze_sentiment_finbert_nonlinear(titles, hours=168):
     except Exception:
         return None, 0, 0
 
-def fetch_rss_feed_timed(rss_url, keyword, hours=168):
+def _is_relevant_news(title: str, clean_name: str, clean_code: str) -> bool:
+    """嚴格過濾與該標的無關之社會、影劇、政治等雜訊新聞"""
+    t_lower = title.lower()
+    
+    # 1. 必須包含標的名稱或代號，或者是大盤指數相關
+    has_target = (clean_code in t_lower) or (clean_name in t_lower) or ("台股" in t_lower) or ("大盤" in t_lower)
+    if not has_target and clean_code != "^TWII":
+        # 如果標題完全沒提到公司名稱或代號，直接過濾掉
+        return False
+        
+    # 2. 定義絕對要排除的非財經雜訊關鍵字（如車禍、命案、影劇八卦、社會事件）
+    noise_keywords = [
+        "車禍", "撞擊", "身亡", "死亡", "骨折", "送醫", "命案", "凶殺", "鬼臉", "影星", 
+        "抗癌", "剃光頭", "抗癌歷程", "福利政見", "里長", "總統", "立委", "選戰", "連假悲劇"
+    ]
+    for noise in noise_keywords:
+        if noise in t_lower:
+            return False
+            
+    return True
+
+def fetch_rss_feed_timed(rss_url, keyword, hours=168, clean_name="", clean_code=""):
     titles = []
     items_with_time = []
     time_threshold = datetime.now() - timedelta(hours=hours)
@@ -276,7 +297,12 @@ def fetch_rss_feed_timed(rss_url, keyword, hours=168):
                         from email.utils import parsedate_to_datetime
                         pub_dt = parsedate_to_datetime(d_elem.text).replace(tzinfo=None)
                     except Exception: pass
-                if pub_dt >= time_threshold and title_text and (keyword in title_text or len(title_text) > 6):
+                
+                if pub_dt >= time_threshold and title_text:
+                    # 套用過濾器：確保新聞與該標的相關且排除雜訊
+                    if clean_name and clean_code:
+                        if not _is_relevant_news(title_text, clean_name, clean_code):
+                            continue
                     titles.append(title_text)
                     items_with_time.append((title_text, pub_dt))
     except Exception: pass
@@ -286,17 +312,17 @@ def fetch_moneydj_rss_timed(stock_code, company_name, hours=168):
     clean_code = stock_code.split('.')[0]
     clean_name = company_name.split('(')[0].strip()
     rss_url = f"https://www.moneydj.com/KMDJ/rss/rss.aspx?svc=NW&a={clean_code}"
-    titles, items = fetch_rss_feed_timed(rss_url, clean_code, hours)
+    titles, items = fetch_rss_feed_timed(rss_url, clean_code, hours, clean_name, clean_code)
     if not titles:
         g_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:moneydj.com&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        titles, items = fetch_rss_feed_timed(g_url, clean_name, hours)
+        titles, items = fetch_rss_feed_timed(g_url, clean_name, hours, clean_name, clean_code)
     return titles, items
 
 def fetch_chinatimes_rss_timed(company_name, stock_code, hours=168):
     clean_name = company_name.split('(')[0].strip()
     clean_code = stock_code.split('.')[0]
-    rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:chinatimes.com&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    return fetch_rss_feed_timed(rss_url, clean_code, hours)
+    rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_name)}+site:chinatimes.com+財經&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    return fetch_rss_feed_timed(rss_url, clean_code, hours, clean_name, clean_code)
 
 def fetch_google_news_rss_timed(company_name, stock_code, hours=168):
     clean_code = stock_code.split('.')[0]
@@ -305,9 +331,9 @@ def fetch_google_news_rss_timed(company_name, stock_code, hours=168):
     now = datetime.now()
     date_after = (now - timedelta(days=days_total)).strftime("%Y-%m-%d")
     date_before = now.strftime("%Y-%m-%d")
-    search_query = f"{clean_name} {clean_code} after:{date_after} before:{date_before}"
+    search_query = f"{clean_name} {clean_code} 股市 財經 after:{date_after} before:{date_before}"
     rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(search_query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    return fetch_rss_feed_timed(rss_url, clean_code, hours)
+    return fetch_rss_feed_timed(rss_url, clean_code, hours, clean_name, clean_code)
 
 @st.cache_data(ttl=1800)
 def comprehensive_quant_evaluation(stock_code, company_name, hours=168):
@@ -912,8 +938,8 @@ src_df_data = [
 ]
 st.dataframe(pd.DataFrame(src_df_data), hide_index=True, use_container_width=True)
 
-# 帶有按鈕可顯示/隱藏的近 48H 即時新聞明細區塊
-with st.expander("📰 點擊展開/收合：近 48H 即時新聞標題與明細清單", expanded=False):
+# 帶有按鈕可顯示/隱藏的近 48H 即時新聞明細區塊（已加入嚴格標的關聯過濾）
+with st.expander("📰 點擊展開/收合：近 48H 即時新聞標題與明細清單 (已過濾與標的無關雜訊)", expanded=False):
     if items_48h:
         for idx, (t_title, t_dt) in enumerate(items_48h[:15], 1):
             st.markdown(f"<small><b>{idx}.</b> [{t_dt.strftime('%m-%d %H:%M')}] {t_title}</small>", unsafe_allow_html=True)
@@ -1060,7 +1086,7 @@ ctx = {
     "low_1m": low_1m, "high_1m": high_1m, "low_2m": low_2m, "high_2m": high_2m,
     "low_3m": low_3m, "high_3m": high_3m,
     "turning_bar": turning_bar_name, "turning_prob": turning_bar_prob, "turning_direction": turning_direction,
-    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp48h, "gn_48h": gn48h, "h_48h": h_48h, "sent_48h": sent_48h,
+    "s_48h": s_48h, "c48h": c48h, "b48h": b48h, "r48h": r48h, "gp_48h": gp_48h, "gn_48h": gn_48h, "h_48h": h_48h, "sent_48h": sent_48h,
     "s_1w": s_1w, "c1w": c1w, "b1w": b1w, "r1w": r1w, "gp_1w": gp1w, "gn_1w": gn1w, "h_1w": h_1w, "sent_1w": sent_1w,
     "s_2w": s_2w, "c2w": c2w, "b2w": b2w, "r2w": r2w, "gp_2w": gp2w, "gn_2w": gn2w, "h_2w": h_2w, "sent_2w": sent_2w,
     "s_1m": s_1m, "c1m": c1m, "b1m": b1m, "r1m": r1m, "gp_1m": gp1m, "gn_1m": gn1m, "h_1m": h_1m, "sent_1m": sent_1m,
