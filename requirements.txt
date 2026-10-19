@@ -27,3 +27,4 @@ yfinance
 python-docx
 feedparser
 plotly
+schedule
