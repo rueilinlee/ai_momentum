@@ -26,3 +26,4 @@ pandas
 yfinance
 python-docx
 feedparser
+plotly
