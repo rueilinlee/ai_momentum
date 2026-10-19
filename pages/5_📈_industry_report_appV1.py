@@ -11,12 +11,15 @@
 import io
 import json
 import logging
+import math
+import os
 import re
 import time
 import urllib.parse
 from datetime import datetime, timedelta
 
 import feedparser
+import numpy as np
 import pandas as pd
 import pytz
 import streamlit as st
@@ -753,6 +756,207 @@ def build_score_table(quant, ai, ai_weight):
 
 
 # ==========================================================
+# 階段五：分數記錄與回測（IC、命中率、多空價差、AI 權重估計）
+# ==========================================================
+SCORE_LOG = "score_log.csv"
+LOG_COLS = ["記錄日期", "記錄時間", "次產業", "量化分數", "AI分數", "綜合分數", "AI權重", "模型", "成分股"]
+HORIZONS = {"1 週（5 個交易日）": 5, "2 週（10 個交易日）": 10, "1 個月（21 個交易日）": 21}
+T0_SHRINK = 24          # 權重收縮：有效期數達 T0 時，估計值與先驗各占一半
+W_MIN, W_MAX = 0.2, 0.8  # 建議權重的上下限
+
+
+def load_score_log():
+    if os.path.exists(SCORE_LOG):
+        df = pd.read_csv(SCORE_LOG, encoding="utf-8-sig", dtype={"記錄日期": str})
+        for c in LOG_COLS:
+            if c not in df.columns:
+                df[c] = np.nan
+        return df[LOG_COLS]
+    return pd.DataFrame(columns=LOG_COLS)
+
+
+def save_score_log(df):
+    df = df.drop_duplicates(subset=["記錄日期", "次產業"], keep="last")
+    df.sort_values(["記錄日期", "次產業"]).to_csv(SCORE_LOG, index=False, encoding="utf-8-sig")
+
+
+def append_score_log(table, ai_weight, model, members, when):
+    """追加本次分數；同一天同一次產業只保留最後一次。回傳寫入筆數。"""
+    new = pd.DataFrame([{
+        "記錄日期": when.strftime("%Y-%m-%d"),
+        "記錄時間": when.strftime("%H:%M:%S"),
+        "次產業": r["次產業"],
+        "量化分數": r["量化分數"],
+        "AI分數": r["AI分數"],
+        "綜合分數": r["綜合分數"],
+        "AI權重": ai_weight,
+        "模型": model,
+        "成分股": ";".join(members.get(r["次產業"], [])),
+    } for _, r in table.iterrows()])
+    log = load_score_log()
+    save_score_log(pd.concat([log, new], ignore_index=True) if not log.empty else new)
+    return len(new)
+
+
+def fetch_close_history(tickers, start_date):
+    """抓還原收盤價（含股利）。回傳 ({代號: Series}, 失敗清單)。"""
+    out, fails = {}, []
+    for tk in tickers:
+        try:
+            df = with_retry(
+                lambda tk=tk: yf.Ticker(tk).history(start=start_date.strftime("%Y-%m-%d"), auto_adjust=True),
+                f"{tk} 歷史股價")
+            s = df["Close"].dropna()
+            s.index = pd.to_datetime(s.index).tz_localize(None).normalize()
+            out[tk] = s
+        except Exception as e:  # noqa: BLE001
+            logger.error("%s", e)
+            fails.append({"代號": tk, "原因": str(e)})
+        time.sleep(0.4)
+    return out, fails
+
+
+def forward_return(series, t_date, h):
+    """記錄日（含）之前最後一個收盤價 → 之後第 h 個交易日收盤價的報酬；未到期回傳 NaN。"""
+    idx = series.index
+    pos = idx.searchsorted(pd.Timestamp(t_date), side="right") - 1
+    if pos < 0 or pos + h >= len(idx):
+        return np.nan
+    return float(series.iloc[pos + h] / series.iloc[pos] - 1)
+
+
+def spearman(x, y):
+    d = pd.DataFrame({"x": x, "y": y}).dropna()
+    if len(d) < 4 or d["x"].nunique() < 2 or d["y"].nunique() < 2:
+        return np.nan
+    return float(np.corrcoef(d["x"].rank(), d["y"].rank())[0, 1])
+
+
+def newey_west_t(x, lag):
+    """平均數的 Newey-West t 值（處理重疊視窗造成的自相關）。"""
+    x = np.asarray(pd.Series(x).dropna(), dtype=float)
+    T = len(x)
+    if T < 3:
+        return np.nan
+    e = x - x.mean()
+    var = (e @ e) / T
+    for l in range(1, min(lag, T - 1) + 1):
+        var += 2 * (1 - l / (lag + 1)) * ((e[l:] @ e[:-l]) / T)
+    var = max(var, 1e-12)
+    return float(x.mean() / math.sqrt(var / T))
+
+
+def _z(s):
+    sd = s.std(ddof=0)
+    return (s - s.mean()) / sd if sd and sd > 0 else s * np.nan
+
+
+def summarize_ic(series, lag):
+    x = series.dropna()
+    if len(x) < 2:
+        return {"期數": len(x), "平均IC": np.nan, "ICIR": np.nan, "NW t值": np.nan, "IC>0比例": np.nan}
+    sd = x.std(ddof=1)
+    return {"期數": len(x), "平均IC": x.mean(), "ICIR": x.mean() / sd if sd > 0 else np.nan,
+            "NW t值": newey_west_t(x, lag), "IC>0比例": float((x > 0).mean())}
+
+
+def estimate_weight(d, T_eff):
+    """用標準化後的 zA、zQ、zr 估計 AI 權重（含向 0.5 收縮與上下限）。"""
+    d = d.dropna(subset=["zA", "zQ", "zr"])
+    if len(d) < 10:
+        return None
+    rhoA, rhoQ, c = d["zA"].corr(d["zr"]), d["zQ"].corr(d["zr"]), d["zA"].corr(d["zQ"])
+    if pd.isna(rhoA) or pd.isna(rhoQ) or pd.isna(c) or abs(c) >= 0.999:
+        return None
+    bA = (rhoA - c * rhoQ) / (1 - c ** 2)
+    bQ = (rhoQ - c * rhoA) / (1 - c ** 2)
+    if bA > 0 and bQ > 0:
+        raw = bA / (bA + bQ)
+    elif bA > 0:
+        raw = 1.0
+    elif bQ > 0:
+        raw = 0.0
+    else:
+        raw = None
+    lam = T_eff / (T_eff + T0_SHRINK)
+    shrunk = 0.5 if raw is None else lam * raw + (1 - lam) * 0.5
+    return {"rhoA": rhoA, "rhoQ": rhoQ, "c": c, "bA": bA, "bQ": bQ, "raw": raw,
+            "lam": lam, "shrunk": shrunk, "final": _clip(shrunk, W_MIN, W_MAX), "n": len(d)}
+
+
+def evaluate_log(log, prices, h, monthly=False):
+    df = log.copy()
+    df["記錄日期"] = df["記錄日期"].astype(str)
+    if monthly:  # 每月只取第一筆，避免相鄰記錄的報酬視窗重疊
+        df["_ym"] = df["記錄日期"].str[:7]
+        df = df.sort_values("記錄日期").groupby(["_ym", "次產業"]).head(1).drop(columns="_ym")
+
+    Rs = []
+    for _, r in df.iterrows():
+        members = [m for m in str(r["成分股"]).split(";") if m in prices]
+        rets = [forward_return(prices[m], r["記錄日期"], h) for m in members]
+        rets = [x for x in rets if not np.isnan(x)]
+        Rs.append(float(np.mean(rets)) if rets else np.nan)
+    df["R"] = Rs
+    df["r"] = df["R"] - df.groupby("記錄日期")["R"].transform("mean")  # 次產業間的超額報酬
+
+    ic_rows = []
+    for dt, g in df.groupby("記錄日期"):
+        g = g.dropna(subset=["r"])
+        if len(g) < 4:
+            continue
+        ic_rows.append({"記錄日期": dt,
+                        "綜合": spearman(g["綜合分數"], g["r"]),
+                        "AI": spearman(g["AI分數"], g["r"]),
+                        "量化": spearman(g["量化分數"], g["r"])})
+    ic = pd.DataFrame(ic_rows)
+
+    step_td = float(h)
+    if len(ic) >= 2:
+        gap = pd.to_datetime(ic["記錄日期"]).diff().dt.days.median()
+        if pd.notna(gap):
+            step_td = max(1.0, gap * 5 / 7)
+    lag = max(0, math.ceil(h / step_td) - 1)
+    overlap = min(1.0, step_td / h)
+
+    summary = pd.DataFrame(
+        {name: summarize_ic(ic[name], lag) if not ic.empty else summarize_ic(pd.Series(dtype=float), lag)
+         for name in ["綜合", "AI", "量化"]}
+    ).T
+
+    # 保守 t：只用「有效獨立期數」計算，不讓重疊視窗灌水
+    summary["保守t(有效期數)"] = summary["ICIR"].astype(float) * math.sqrt(max(len(ic) * overlap, 0))
+
+    d = df.dropna(subset=["r"]).copy()
+    for col, z in [("綜合分數", "zS"), ("AI分數", "zA"), ("量化分數", "zQ"), ("r", "zr")]:
+        d[z] = d.groupby("記錄日期")[col].transform(_z)
+
+    hit = None
+    dh = d.dropna(subset=["zS", "zr"])
+    dh = dh[(dh["zS"] != 0) & (dh["zr"] != 0)]
+    if len(dh) >= 10:
+        n = len(dh)
+        H = int((np.sign(dh["zS"]) == np.sign(dh["zr"])).sum())
+        hit = {"n": n, "H": H, "rate": H / n, "z": (H - n / 2) / (math.sqrt(n) / 2)}
+
+    spreads = []
+    for _, g in d.dropna(subset=["綜合分數"]).groupby("記錄日期"):
+        if len(g) >= 4:
+            g = g.sort_values("綜合分數")
+            spreads.append(float(g["r"].iloc[-1] - g["r"].iloc[0]))
+    spread = None
+    if len(spreads) >= 3:
+        spread = {"n": len(spreads), "mean": float(np.mean(spreads)), "t": newey_west_t(spreads, lag)}
+
+    n_dates_A = d.dropna(subset=["zA", "zQ", "zr"])["記錄日期"].nunique()
+    weight = estimate_weight(d, n_dates_A * overlap)
+
+    return {"ic": ic, "summary": summary, "hit": hit, "spread": spread, "weight": weight,
+            "matured": int(df["R"].notna().sum()), "total": len(df), "lag": lag,
+            "step_td": step_td, "T_eff": len(ic) * overlap}
+
+
+# ==========================================================
 # Word 報告
 # ==========================================================
 def _set_cell(cell, text, bold=False, size=9):
@@ -837,15 +1041,17 @@ _defaults = {
     "momentum_df": pd.DataFrame(), "final_stock_list": [],
     "report_df": pd.DataFrame(), "fetch_failures": [], "fetch_warns": [], "fetched_at": "",
     "score_table": pd.DataFrame(), "quant_detail": pd.DataFrame(), "ai_debug": {}, "overall_score": 50,
+    "price_cache": {}, "price_fails": [],
 }
 for _k, _v in _defaults.items():
     st.session_state.setdefault(_k, _v)
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "第一階段：新聞熱點與二階動能",
     "第二階段：次產業與個股動態篩選",
     "第三階段：財務數據與報告匯出",
     "第四階段：AI 評分",
+    "第五階段：分數記錄與回測",
 ])
 
 # ---------------------------- Tab 1 ----------------------------
@@ -1033,6 +1239,7 @@ with tab4:
         c3, c4 = st.columns(2)
         use_ai = c3.checkbox("使用 AI 評分", value=True)
         ai_pct = c4.slider("AI 分數權重 (%)", 0, 100, 50, disabled=not use_ai)
+        log_it = st.checkbox("記錄本次分數，供日後回測（同一天同一次產業只保留最後一次）", value=True)
 
         if st.button("計算次產業分數", type="primary"):
             df_all = st.session_state.news_all
@@ -1065,6 +1272,18 @@ with tab4:
 
             table = build_score_table(quant, ai_result, ai_pct / 100 if ai_result else 0.0)
             st.session_state.score_table = table
+            if log_it and not table.empty:
+                tracked = st.session_state.final_stock_list
+                members = {}
+                for sec_name in SECTOR_ORDER:
+                    if tracked:
+                        members[sec_name] = [x["代號"] for x in tracked if x["次產業"] == sec_name]
+                    else:
+                        members[sec_name] = [c["ticker"] for c in COMPANIES
+                                             if c["subsector"] == sec_name and c["ticker"] in DEFAULT_TRACKED]
+                n_logged = append_score_log(table, ai_pct / 100 if ai_result else 0.0,
+                                            model_name if ai_result else "", members, datetime.now(TZ))
+                st.success(f"已記錄 {n_logged} 筆至 {SCORE_LOG}。")
             st.session_state.quant_detail = pd.DataFrame(
                 [{"次產業": s, **comps} for s, (_, comps) in quant.items()]
             )
@@ -1089,3 +1308,97 @@ with tab4:
                 st.text(st.session_state.ai_debug.get("payload", ""))
                 if st.session_state.ai_debug.get("raw"):
                     st.code(st.session_state.ai_debug["raw"], language="json")
+
+# ---------------------------- Tab 5 ----------------------------
+with tab5:
+    st.header("分數記錄與回測")
+    st.caption("每次在第四階段計算分數時記錄下來；持有期間結束後，用次產業成分股的還原股價結算超額報酬，"
+               "再檢驗分數與之後表現是否一致。樣本期數少時結論不可靠，請累積足夠期數後再參考。")
+
+    log = load_score_log()
+    if log.empty:
+        st.info("尚無記錄。請到第四階段計算分數並勾選「記錄本次分數」。")
+    else:
+        st.write(f"共 **{log['記錄日期'].nunique()}** 個記錄日期、{len(log)} 筆"
+                 f"（{log['記錄日期'].min()} ～ {log['記錄日期'].max()}）。")
+        c1, c2 = st.columns(2)
+        h_label = c1.selectbox("持有期間", list(HORIZONS.keys()), index=2)
+        sampling = c2.radio("取樣方式", ["全部記錄", "每月第一筆（不重疊）"], horizontal=True)
+        h = HORIZONS[h_label]
+
+        if st.button("更新股價並結算", type="primary"):
+            tickers = sorted({t for s in log["成分股"].dropna() for t in str(s).split(";") if t})
+            start = pd.to_datetime(log["記錄日期"].min()).date() - timedelta(days=10)
+            with st.spinner(f"正在抓取 {len(tickers)} 檔歷史股價…"):
+                prices, fails = fetch_close_history(tickers, start)
+            st.session_state.price_cache = prices
+            st.session_state.price_fails = fails
+
+        if st.session_state.price_fails:
+            st.error(f"{len(st.session_state.price_fails)} 檔股價抓取失敗（詳見 {LOG_FILE}）")
+            st.dataframe(pd.DataFrame(st.session_state.price_fails), hide_index=True)
+
+        if not st.session_state.price_cache:
+            st.info("請按「更新股價並結算」。")
+        else:
+            res = evaluate_log(log, st.session_state.price_cache, h, monthly=sampling.startswith("每月"))
+            st.write(f"已到期並可結算：**{res['matured']} / {res['total']}** 筆；"
+                     f"相鄰記錄約間隔 {res['step_td']:.1f} 個交易日，Newey-West 落後期數 {res['lag']}，"
+                     f"有效獨立期數約 **{res['T_eff']:.1f}**。")
+
+            if res["ic"].empty:
+                st.warning("目前沒有任何記錄日期同時有 4 個以上已到期的次產業，還無法計算 IC。"
+                           f"請等持有期間（{h} 個交易日）過後再來。")
+            else:
+                st.subheader("排名相關係數 IC（分數排名 vs 超額報酬排名）")
+                if res["T_eff"] < 10:
+                    st.warning(f"有效獨立期數只有 {res['T_eff']:.1f}（建議至少 10 以上，最好 24 以上）。"
+                               "此時 t 值與權重估計雜訊很大，Newey-West t 值在樣本少時尤其容易高估，請以「保守t」為準並僅作參考。")
+                st.dataframe(res["summary"].round(3))
+                st.line_chart(res["ic"].set_index("記錄日期")[["綜合", "AI", "量化"]])
+
+                m1, m2 = st.columns(2)
+                with m1:
+                    st.subheader("方向命中率")
+                    if res["hit"]:
+                        st.metric("命中率", f"{res['hit']['rate']:.1%}",
+                                  help=f"{res['hit']['H']} / {res['hit']['n']}；z = {res['hit']['z']:.2f}（|z|>2 才較可能非巧合）")
+                        st.caption(f"{res['hit']['H']} / {res['hit']['n']} 筆；z = {res['hit']['z']:.2f}")
+                    else:
+                        st.write("樣本不足。")
+                with m2:
+                    st.subheader("最高分 − 最低分 價差")
+                    if res["spread"]:
+                        st.metric("平均超額報酬差", f"{res['spread']['mean']:.2%}")
+                        st.caption(f"{res['spread']['n']} 期；Newey-West t = {res['spread']['t']:.2f}")
+                    else:
+                        st.write("樣本不足。")
+
+                st.subheader("AI 權重估計")
+                w = res["weight"]
+                if w is None:
+                    st.write("需要至少 10 筆同時含 AI 與量化分數、且已到期的記錄。")
+                else:
+                    a, b, c_ = st.columns(3)
+                    a.metric("原始估計 w*", "無正向訊號" if w["raw"] is None else f"{w['raw']:.2f}")
+                    b.metric("收縮後", f"{w['shrunk']:.2f}", help=f"λ = {w['lam']:.2f}，先驗 0.5")
+                    c_.metric("建議 AI 權重（限制 0.2–0.8）", f"{w['final']:.2f}")
+                    st.caption(f"ρ(AI)= {w['rhoA']:.3f}、ρ(量化)= {w['rhoQ']:.3f}、AI 與量化相關 c = {w['c']:.3f}；"
+                               f"β(AI)= {w['bA']:.3f}、β(量化)= {w['bQ']:.3f}；樣本 {w['n']} 筆。"
+                               "有效期數越少，估計越不可靠，因此會向 0.5 收縮。")
+
+    st.divider()
+    st.subheader("記錄檔管理")
+    st.caption(f"記錄存在執行目錄的 {SCORE_LOG}。若部署在雲端主機，檔案可能在重啟後消失，請定期下載備份。")
+    if not log.empty:
+        st.download_button("下載記錄 CSV", log.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=SCORE_LOG, mime="text/csv")
+    up = st.file_uploader("匯入先前備份的記錄（會與現有記錄合併）", type="csv")
+    if up is not None and st.button("合併匯入"):
+        try:
+            old = pd.read_csv(up, encoding="utf-8-sig", dtype={"記錄日期": str})
+            merged = pd.concat([load_score_log(), old.reindex(columns=LOG_COLS)], ignore_index=True)
+            save_score_log(merged)
+            st.success("已合併。請重新整理頁面。")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"匯入失敗：{e}")
