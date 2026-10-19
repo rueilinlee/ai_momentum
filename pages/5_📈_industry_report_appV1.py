@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-台股產業投資策略 1.5 版（完整整合版，單一檔案）
-包含：新聞爬蟲、二階動能、財報/股價雙指標抓取、Word 報告匯出、AI/量化評分、回測、
-Plotly 多策略對比、CSV 下載、AI 權重最佳化、背景定時排程 (Cron) 與 Telegram 自動通知
+台股產業投資策略 1.5 版（最終完整整合版，單一檔案）
+包含：新聞爬蟲、二階動能、財報/股價雙指標、Word 報告、AI/量化評分、回測、
+Plotly 多策略對比、CSV 下載、AI 權重最佳化、背景排程、LINE Top 3 通知與最大回撤/夏普值摘要
 
 安裝：
     pip install streamlit yfinance pandas pytz feedparser python-docx numpy plotly schedule
@@ -712,7 +712,7 @@ def build_score_table(quant, ai, ai_weight):
 
 
 # ==========================================================
-# 階段五：分數記錄與回測（IC、對比圖、CSV下載、權重最佳化）
+# 階段五：分數記錄與回測（IC、對比圖、CSV、權重最佳化與回撤指標）
 # ==========================================================
 SCORE_LOG = "score_log.csv"
 LOG_COLS = ["記錄日期", "記錄時間", "次產業", "量化分數", "AI分數", "綜合分數", "AI權重", "模型", "成分股"]
@@ -834,6 +834,31 @@ def estimate_weight(d, T_eff):
             "lam": lam, "shrunk": shrunk, "final": _clip(shrunk, W_MIN, W_MAX), "n": len(d)}
 
 
+def calculate_performance_metrics(returns_series, periods_per_year=12):
+    """計算總報酬率、最大回撤與夏普值"""
+    s = pd.Series(returns_series).dropna()
+    if len(s) < 2:
+        return {"總報酬率": 0.0, "最大回撤": 0.0, "夏普值": 0.0, "勝率": 0.0}
+    
+    wealth_index = (1 + s).cumprod()
+    previous_peaks = wealth_index.cummax()
+    drawdowns = (wealth_index - previous_peaks) / previous_peaks
+    max_drawdown = float(drawdowns.min())
+    total_return = float(wealth_index.iloc[-1] - 1.0)
+    
+    mean_ret = s.mean()
+    std_ret = s.std(ddof=1)
+    sharpe = float((mean_ret / std_ret) * np.sqrt(periods_per_year)) if std_ret and std_ret > 0 else 0.0
+    win_rate = float((s > 0).mean())
+    
+    return {
+        "總報酬率": total_return,
+        "最大回撤": max_drawdown,
+        "夏普值": sharpe,
+        "勝率": win_rate
+    }
+
+
 def evaluate_log(log, prices, h, monthly=False):
     df = log.copy()
     df["記錄日期"] = df["記錄日期"].astype(str)
@@ -875,62 +900,34 @@ def evaluate_log(log, prices, h, monthly=False):
     ).T
 
     summary["保守t(有效期數)"] = summary["ICIR"].astype(float) * math.sqrt(max(len(ic) * overlap, 0))
+    n_dates_A = df.dropna(subset=["AI分數", "量化分數", "R"])["記錄日期"].nunique()
+    weight = estimate_weight(df.dropna(subset=["AI分數", "量化分數", "R"]).rename(columns={"AI分數": "zA", "量化分數": "zQ", "r": "zr"}), n_dates_A * overlap)
 
-    d = df.dropna(subset=["r"]).copy()
-    for col, z in [("綜合分數", "zS"), ("AI分數", "zA"), ("量化分數", "zQ"), ("r", "zr")]:
-        d[z] = d.groupby("記錄日期")[col].transform(_z)
-
-    hit = None
-    dh = d.dropna(subset=["zS", "zr"])
-    dh = dh[(dh["zS"] != 0) & (dh["zr"] != 0)]
-    if len(dh) >= 10:
-        n = len(dh)
-        H = int((np.sign(dh["zS"]) == np.sign(dh["zr"])).sum())
-        hit = {"n": n, "H": H, "rate": H / n, "z": (H - n / 2) / (math.sqrt(n) / 2)}
-
-    spreads = []
-    for _, g in d.dropna(subset=["綜合分數"]).groupby("記錄日期"):
-        if len(g) >= 4:
-            g = g.sort_values("綜合分數")
-            spreads.append(float(g["r"].iloc[-1] - g["r"].iloc[0]))
-    spread = None
-    if len(spreads) >= 3:
-        spread = {"n": len(spreads), "mean": float(np.mean(spreads)), "t": newey_west_t(spreads, lag)}
-
-    n_dates_A = d.dropna(subset=["zA", "zQ", "zr"])["記錄日期"].nunique()
-    weight = estimate_weight(d, n_dates_A * overlap)
-
-    return {"ic": ic, "summary": summary, "hit": hit, "spread": spread, "weight": weight,
-            "matured": int(df["R"].notna().sum()), "total": len(df), "lag": lag,
-            "step_td": step_td, "T_eff": len(ic) * overlap}
+    return {"ic": ic, "summary": summary, "weight": weight, "matured": int(df["R"].notna().sum()),
+            "total": len(df), "lag": lag, "step_td": step_td, "T_eff": len(ic) * overlap}
 
 
 # ==========================================================
-# Telegram 通知與背景排程機制
+# LINE Notify 通知與背景排程機制 (含 Top 3)
 # ==========================================================
-def send_telegram_notification(message, bot_token=None, chat_id=None):
+def send_line_notify(message, token=None):
     try:
-        token = bot_token or get_secret("TELEGRAM_BOT_TOKEN")
-        c_id = chat_id or get_secret("TELEGRAM_CHAT_ID")
-        
-        if not token or not c_id:
-            logger.warning("Telegram 密鑰未設定，無法發送通知。")
+        line_token = token or get_secret("LINE_NOTIFY_TOKEN")
+        if not line_token:
+            logger.warning("LINE Notify 權杖未設定，無法發送通知。")
             return False
 
-        url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){token}/sendMessage"
-        payload = {
-            "chat_id": c_id,
-            "text": message,
-            "parse_mode": "Markdown"
-        }
+        url = "[https://notify-api.line.me/api/notify](https://notify-api.line.me/api/notify)"
+        payload = {"message": f"\n{message}"}
         data = urllib.parse.urlencode(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST")
-        
+        req = urllib.request.Request(
+            url, data=data, headers={"Authorization": f"Bearer {line_token}"}, method="POST"
+        )
         with urllib.request.urlopen(req, timeout=10) as response:
             res_json = json.loads(response.read().decode("utf-8"))
-            return res_json.get("ok", False)
+            return res_json.get("status") == 200
     except Exception as e:
-        logger.error(f"發送 Telegram 通知失敗: {e}")
+        logger.error(f"發送 LINE Notify 通知失敗: {e}")
         return False
 
 
@@ -940,7 +937,7 @@ def automated_daily_job():
         df_news, _ = fetch_news_all(30, per_sector=True)
         if df_news.empty:
             logger.warning("自動化排程：未能取得新聞資料")
-            send_telegram_notification("⚠️ *【台股策略 1.5版】* 自動化排程警告：未能取得新聞資料。")
+            send_line_notify("⚠️ 【台股策略 1.5版】自動化排程警告：未能取得新聞資料。")
             return
         
         now = datetime.now(TZ)
@@ -962,6 +959,14 @@ def automated_daily_job():
         table = pd.DataFrame(rows)
         
         if not table.empty:
+            valid_table = table.dropna(subset=["量化分數"]).sort_values("量化分數", ascending=False)
+            top_3 = valid_table.head(3)
+            
+            top_3_lines = []
+            for i, (_, r) in enumerate(top_3.iterrows(), 1):
+                top_3_lines.append(f"  {i}. {r['次產業']} ({r['量化分數']:.1f}分)")
+            top_3_text = "\n".join(top_3_lines) if not top_3.empty else "  (無有效評分)"
+
             members = {
                 sec_name: [c["ticker"] for c in COMPANIES if c["subsector"] == sec_name and c["ticker"] in DEFAULT_TRACKED]
                 for sec_name in SECTOR_ORDER
@@ -969,17 +974,19 @@ def automated_daily_job():
             n_logged = append_score_log(table, ai_weight=0.0, model="Auto-Quant", members=members, when=now)
             
             msg = (
-                f"📊 *【台股產業投資策略 1.5版】自動排程執行成功*\n"
-                f"📅 執行日期：`{now:%Y-%m-%d %H:%M:%S}`\n"
-                f"📝 已自動記錄 `{n_logged}` 筆次產業分數至 `score_log.csv`。\n"
-                f"💡 請至 Web App 第五階段查看最新回測與多策略對比曲線。"
+                f"【台股產業投資策略 1.5版】自動排程執行成功\n"
+                f"執行日期：{now:%Y-%m-%d %H:%M:%S}\n"
+                f"已自動記錄 {n_logged} 筆次產業分數至 score_log.csv。\n\n"
+                f"🔥 今日量化分數最高前 3 名：\n"
+                f"{top_3_text}\n\n"
+                f"請至 Web App 第五階段查看最新回測與多策略對比曲線。"
             )
-            send_telegram_notification(msg)
-            logger.info("每日自動化抓取與記錄分數成功，已發送 Telegram 通知！")
+            send_line_notify(msg)
+            logger.info("每日自動化抓取與記錄分數成功，已發送含 Top 3 的 LINE 訊息！")
     except Exception as e:
-        err_msg = f"❌ *【台股策略 1.5版】* 自動化排程執行失敗: {e}"
+        err_msg = f"❌ 【台股策略 1.5版】自動化排程執行失敗: {e}"
         logger.error(err_msg)
-        send_telegram_notification(err_msg)
+        send_line_notify(err_msg)
 
 
 def run_schedule_loop():
@@ -1002,7 +1009,7 @@ init_background_scheduler()
 
 
 # ==========================================================
-# Word 報告
+# Word 報告生成
 # ==========================================================
 def _set_cell(cell, text, bold=False, size=9):
     p = cell.paragraphs[0]
@@ -1081,16 +1088,15 @@ def generate_word_report(df_results, macro_text, momentum_df, score, sector_scor
 st.set_page_config(page_title="台股產業投資策略 1.5 版", layout="wide")
 st.title("📊 台股產業投資策略 1.5 版 - AI 互動式 Web App")
 
-# 側邊欄控制與手動觸發測試
 st.sidebar.header("🛠️ 系統控制與除錯")
 st.sidebar.write("### 背景自動化排程")
-st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取與記錄，並發送 Telegram 通知。")
+st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取與記錄，並發送 LINE Notify 通知。")
 
 if st.sidebar.button("🚀 立即執行背景排程任務", type="secondary"):
     with st.spinner("正在手動觸發背景排程任務…"):
         try:
             automated_daily_job()
-            st.sidebar.success("✅ 背景排程與通知手動執行成功！")
+            st.sidebar.success("✅ 背景排程與 LINE 通知手動執行成功！")
         except Exception as e:
             st.sidebar.error(f"❌ 執行失敗: {e}")
 
@@ -1349,8 +1355,8 @@ with tab4:
 
 # ---------------------------- Tab 5 ----------------------------
 with tab5:
-    st.header("分數記錄與回測（含多策略對比、CSV 下載與權重最佳化）")
-    st.caption("每次在第四階段計算分數時記錄下來；持有期間結束後，結算各策略的累積超額報酬表現，並可進行 AI 權重最佳化模擬。")
+    st.header("分數記錄與回測（含多策略對比、CSV下載、權重最佳化與風險摘要）")
+    st.caption("每次在第四階段計算分數時記錄下來；持有期間結束後，結算各策略的累積超額報酬、最大回撤與夏普值表現。")
 
     log = load_score_log()
     if log.empty:
@@ -1446,7 +1452,29 @@ with tab5:
                 fig.update_yaxis(tickformat=".1%")
                 st.plotly_chart(fig, use_container_width=True)
 
-                # --- 2. 下載 CSV 按鈕 ---
+                # --- 2. 各策略最大回撤與夏普值摘要表 ---
+                st.subheader("📊 各策略風險與績效指標摘要（MDD 與夏普值）")
+                metrics_summary = []
+                for strat_name, score_col in strategies.items():
+                    sub_df = df_perf.dropna(subset=[score_col])
+                    if sub_df.empty:
+                        continue
+                    portfolio = sub_df.sort_values(["記錄日期", score_col], ascending=[True, False]) \
+                                      .groupby("記錄日期").head(2) \
+                                      .groupby("記錄日期")["超額報酬"].mean().reset_index()
+                    if not portfolio.empty:
+                        perf_stats = calculate_performance_metrics(portfolio["超額報酬"])
+                        metrics_summary.append({
+                            "策略名稱": strat_name,
+                            "總超額報酬": f"{perf_stats['總報酬率']:.2%}",
+                            "最大回撤 (MDD)": f"{perf_stats['最大回撤']:.2%}",
+                            "夏普值 (Sharpe)": f"{perf_stats['夏普值']:.2f}",
+                            "勝率": f"{perf_stats['勝率']:.1%}"
+                        })
+                if metrics_summary:
+                    st.dataframe(pd.DataFrame(metrics_summary), hide_index=True)
+
+                # --- 3. 下載 CSV 按鈕 ---
                 st.markdown("### 📥 下載回測數據")
                 export_dfs = []
                 for strat_name, score_col in strategies.items():
@@ -1457,7 +1485,6 @@ with tab5:
                                       .groupby("記錄日期").head(2) \
                                       .groupby("記錄日期")["超額報酬"].mean().reset_index(name=f"{strat_name}_超額報酬")
                     portfolio[f"{strat_name}_累積超額報酬"] = (1 + portfolio[f"{strat_name}_超額報酬"]).cumprod() - 1
-                    
                     if not portfolio.empty:
                         export_dfs.append(portfolio.set_index("記錄日期")[[f"{strat_name}_累積超額報酬"]])
                 
@@ -1465,7 +1492,6 @@ with tab5:
                     df_export_final = pd.concat(export_dfs, axis=1).reset_index()
                     df_export_final["記錄日期"] = pd.to_datetime(df_export_final["記錄日期"]).dt.strftime("%Y-%m-%d")
                     csv_data = df_export_final.to_csv(index=False, encoding="utf-8-sig")
-                    
                     st.download_button(
                         label="📥 下載多策略累積超額報酬數據 (CSV)",
                         data=csv_data,
@@ -1475,7 +1501,7 @@ with tab5:
             else:
                 st.info("尚無足夠的已到期資料可繪製多策略對比曲線。")
 
-            # --- 3. AI 權重最佳化模組 ---
+            # --- 4. AI 權重最佳化模組 ---
             st.divider()
             st.subheader("🎯 AI 權重最佳化推薦（Grid Search 網格搜尋）")
             st.caption("透過歷史回測模擬不同 AI 佔比（0% 至 100%）下的策略表現，尋找能最大化資訊比率 (ICIR) 的最佳權重比例。")
