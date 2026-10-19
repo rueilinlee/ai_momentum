@@ -2,7 +2,7 @@
 """
 台股產業投資策略 1.5 版（最終完整整合版，單一檔案）
 包含：新聞爬蟲、二階動能、財報/股價雙指標、Word 報告、AI/量化評分、回測、
-Plotly 多策略對比、CSV 下載、AI 權重最佳化、背景排程、LINE Top 3 通知與最大回撤/夏普值摘要
+Plotly 多策略對比、CSV 下載、AI 權重最佳化、背景排程、LINE Messaging API Top 3 推播與最大回撤/夏普值
 
 安裝：
     pip install streamlit yfinance pandas pytz feedparser python-docx numpy plotly schedule
@@ -908,26 +908,38 @@ def evaluate_log(log, prices, h, monthly=False):
 
 
 # ==========================================================
-# LINE Notify 通知與背景排程機制 (含 Top 3)
+# LINE Messaging API 通知與背景排程機制 (含 Top 3)
 # ==========================================================
-def send_line_notify(message, token=None):
+def send_line_messaging_api(message, token=None, user_id=None):
     try:
-        line_token = token or get_secret("LINE_NOTIFY_TOKEN")
-        if not line_token:
-            logger.warning("LINE Notify 權杖未設定，無法發送通知。")
+        access_token = token or get_secret("LINE_CHANNEL_ACCESS_TOKEN")
+        target_user = user_id or get_secret("LINE_USER_ID")
+        
+        if not access_token or not target_user:
+            logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-        url = "[https://notify-api.line.me/api/notify](https://notify-api.line.me/api/notify)"
-        payload = {"message": f"\n{message}"}
-        data = urllib.parse.urlencode(payload).encode("utf-8")
+        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
+        payload = {
+            "to": target_user,
+            "messages": [{"type": "text", "text": message}]
+        }
+        
+        data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            url, data=data, headers={"Authorization": f"Bearer {line_token}"}, method="POST"
+            url, 
+            data=data, 
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }, 
+            method="POST"
         )
+        
         with urllib.request.urlopen(req, timeout=10) as response:
-            res_json = json.loads(response.read().decode("utf-8"))
-            return res_json.get("status") == 200
+            return response.status == 200
     except Exception as e:
-        logger.error(f"發送 LINE Notify 通知失敗: {e}")
+        logger.error(f"發送 LINE Messaging API 推播失敗: {e}")
         return False
 
 
@@ -937,7 +949,7 @@ def automated_daily_job():
         df_news, _ = fetch_news_all(30, per_sector=True)
         if df_news.empty:
             logger.warning("自動化排程：未能取得新聞資料")
-            send_line_notify("⚠️ 【台股策略 1.5版】自動化排程警告：未能取得新聞資料。")
+            send_line_messaging_api("⚠️ 【台股策略 1.5版】自動化排程警告：未能取得新聞資料。")
             return
         
         now = datetime.now(TZ)
@@ -981,12 +993,12 @@ def automated_daily_job():
                 f"{top_3_text}\n\n"
                 f"請至 Web App 第五階段查看最新回測與多策略對比曲線。"
             )
-            send_line_notify(msg)
-            logger.info("每日自動化抓取與記錄分數成功，已發送含 Top 3 的 LINE 訊息！")
+            send_line_messaging_api(msg)
+            logger.info("每日自動化抓取與記錄分數成功，已透過 LINE Messaging API 發送推播！")
     except Exception as e:
         err_msg = f"❌ 【台股策略 1.5版】自動化排程執行失敗: {e}"
         logger.error(err_msg)
-        send_line_notify(err_msg)
+        send_line_messaging_api(err_msg)
 
 
 def run_schedule_loop():
@@ -1090,13 +1102,13 @@ st.title("📊 台股產業投資策略 1.5 版 - AI 互動式 Web App")
 
 st.sidebar.header("🛠️ 系統控制與除錯")
 st.sidebar.write("### 背景自動化排程")
-st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取與記錄，並發送 LINE Notify 通知。")
+st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取與記錄，並發送 LINE 推播通知。")
 
 if st.sidebar.button("🚀 立即執行背景排程任務", type="secondary"):
     with st.spinner("正在手動觸發背景排程任務…"):
         try:
             automated_daily_job()
-            st.sidebar.success("✅ 背景排程與 LINE 通知手動執行成功！")
+            st.sidebar.success("✅ 背景排程與 LINE 推播手動執行成功！")
         except Exception as e:
             st.sidebar.error(f"❌ 執行失敗: {e}")
 
