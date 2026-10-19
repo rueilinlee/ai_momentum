@@ -348,6 +348,46 @@ def calc_dividend_yield_pct(info, price):
     return None
 
 
+def dividend_yield_from_history(stock, price, as_of):
+    """備援：近 12 個月實際配息合計 / 最新股價。"""
+    try:
+        div = stock.dividends
+        if div is not None and not div.empty and price:
+            d = div.copy()
+            d.index = pd.to_datetime(d.index).tz_localize(None)
+            start = pd.Timestamp(as_of) - pd.Timedelta(days=365)
+            total = float(d[d.index > start].sum())
+            if total > 0:
+                return total / price * 100
+    except Exception as e:  # noqa: BLE001
+        logger.warning("%s 配息歷史取得失敗: %s", stock.ticker, e)
+    return None
+
+
+def book_value_per_share(stock, info):
+    """備援：每股淨值。優先 info.bookValue，其次資產負債表（股東權益 / 股數）。"""
+    bv = to_float(info.get("bookValue"))
+    if bv and bv > 0:
+        return bv, "info.bookValue"
+    try:
+        bs = stock.quarterly_balance_sheet
+        if bs is not None and not bs.empty:
+            eq_row = next((r for r in ("Stockholders Equity", "Common Stock Equity",
+                                       "Total Equity Gross Minority Interest") if r in bs.index), None)
+            sh_row = next((r for r in ("Ordinary Shares Number", "Share Issued") if r in bs.index), None)
+            if eq_row and sh_row:
+                eq = bs.loc[eq_row].dropna()
+                sh = bs.loc[sh_row].dropna()
+                common = eq.index.intersection(sh.index)
+                if len(common):
+                    d = max(common)
+                    if float(sh.loc[d]) > 0 and float(eq.loc[d]) > 0:
+                        return float(eq.loc[d]) / float(sh.loc[d]), "資產負債表(權益/股數)"
+    except Exception as e:  # noqa: BLE001
+        logger.warning("%s 每股淨值計算失敗: %s", stock.ticker, e)
+    return None, "N/A"
+
+
 def get_ttm_eps(stock, info):
     try:
         income = stock.quarterly_income_stmt
@@ -416,17 +456,49 @@ def fetch_one(item, cutoff_date):
         past_date, price_past = past_df.index[-1], float(past_df["Close"].iloc[-1])
     return_rate = (price_latest - price_past) / price_past * 100
 
+    def _get_info():
+        data = stock.info
+        # Yahoo 被限流時常只回傳寥寥數個欄位，視為失敗並重試
+        if not isinstance(data, dict) or len(data) < 10:
+            raise ValueError(f"info 欄位過少 ({len(data) if isinstance(data, dict) else 0})")
+        return data
+
     try:
-        info = with_retry(lambda: stock.info, f"{ticker} info")
+        info = with_retry(_get_info, f"{ticker} info")
     except Exception as e:  # noqa: BLE001
         logger.error("%s", e)
-        warnings.append(f"{name}: 基本面資料取得失敗 ({e})")
+        warnings.append(f"{name}: Yahoo 基本面資料取得失敗，改用備援計算 ({e})")
         info = {}
 
-    pe, pb = to_float(info.get("trailingPE")), to_float(info.get("priceToBook"))
-    dy = calc_dividend_yield_pct(info, price_latest)
     eps_ttm, eps_src = get_ttm_eps(stock, info)
     rev_yoy, rev_src = get_revenue_yoy(stock, info)
+
+    # 本益比：Yahoo → 股價 / 近四季 EPS
+    pe, pe_src = to_float(info.get("trailingPE")), "Yahoo"
+    if pe is None:
+        if eps_ttm and eps_ttm > 0:
+            pe, pe_src = price_latest / eps_ttm, "股價/近四季EPS"
+        else:
+            pe_src = "N/A"
+            warnings.append(f"{name}: 本益比無法取得（EPS 缺值或為負）")
+
+    # 股價淨值比：Yahoo → 股價 / 每股淨值
+    pb, pb_src = to_float(info.get("priceToBook")), "Yahoo"
+    if pb is None:
+        bvps, bv_src = book_value_per_share(stock, info)
+        if bvps:
+            pb, pb_src = price_latest / bvps, f"股價/每股淨值({bv_src})"
+        else:
+            pb_src = "N/A"
+            warnings.append(f"{name}: 股價淨值比無法取得")
+
+    # 殖利率：Yahoo 欄位 → 近 12 個月配息 / 股價
+    dy, dy_src = calc_dividend_yield_pct(info, price_latest), "Yahoo"
+    if dy is None:
+        dy = dividend_yield_from_history(stock, price_latest, latest_date)
+        dy_src = "近12個月配息/股價" if dy is not None else "N/A"
+        if dy is None:
+            warnings.append(f"{name}: 殖利率無法取得（查無近 12 個月配息紀錄）")
     if eps_src != "四季單季加總":
         warnings.append(f"{name}: EPS 來源為 {eps_src}")
     if rev_src != "單季同期比":
@@ -435,6 +507,7 @@ def fetch_one(item, cutoff_date):
     return {
         "次產業": subsector, "公司名稱": name, "代號": ticker,
         "本益比": pe, "股價淨值比": pb, "殖利率(%)": dy,
+        "本益比來源": pe_src, "股價淨值比來源": pb_src, "殖利率來源": dy_src,
         "近四季EPS合計": eps_ttm, "EPS來源": eps_src,
         "營收年增率(%)": rev_yoy, "營收來源": rev_src,
         "最新股價": price_latest, "最新股價日期": latest_date,
