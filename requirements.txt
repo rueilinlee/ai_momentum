@@ -28,7 +28,7 @@ python-docx
 feedparser
 plotly
 schedule
-[secrets]
+
 LINE_CHANNEL_ACCESS_TOKEN = "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
 LINE_USER_ID = "@992pwvai"
 anthropic>=0.18.0
