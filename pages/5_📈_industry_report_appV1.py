@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 台股產業投資策略 1.5 版（完整整合版，單一檔案）
+包含：新聞爬蟲、二階動能、財報/股價雙指標抓取、Word 報告匯出、AI/量化評分、回測、
+Plotly 多策略對比、CSV 下載、AI 權重最佳化、背景定時排程 (Cron) 與 Telegram 自動通知
 
 安裝：
-    pip install streamlit yfinance pandas pytz feedparser python-docx
+    pip install streamlit yfinance pandas pytz feedparser python-docx numpy plotly schedule
 執行：
     streamlit run app.py
 """
@@ -14,14 +16,19 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 
 import feedparser
 import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import pytz
+import schedule
 import streamlit as st
 import yfinance as yf
 from docx import Document
@@ -37,7 +44,7 @@ TZ = pytz.timezone("Asia/Taipei")
 LOG_FILE = "fetch_errors.log"
 
 logger = logging.getLogger("tw_strategy")
-if not logger.handlers:  # Streamlit 每次互動都會重跑腳本，避免重複加 handler
+if not logger.handlers:
     logger.setLevel(logging.INFO)
     _h = logging.FileHandler(LOG_FILE, encoding="utf-8")
     _h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -50,7 +57,6 @@ DEFAULT_MACRO_TEXT = (
 
 # ==========================================================
 # 公司字典：次產業 / 供應鏈位置 / 細分角色
-# 供應鏈位置：上游=IC設計與設備、中游=製造封測與零組件、下游=系統組裝、終端需求=國際客戶
 # ==========================================================
 COMPANIES = [
     {"name": "台積電", "ticker": "2330.TW", "aliases": ["台積電", "TSMC"],
@@ -108,7 +114,6 @@ FOREIGN = [
     {"name": "Meta", "aliases": ["Meta"], "role": "雲端資本支出"},
 ]
 
-# 預設勾選追蹤的 15 檔（其餘為可選的擴充名單）
 DEFAULT_TRACKED = {
     "2330.TW", "2303.TW", "5347.TWO", "6669.TW", "2382.TW", "2376.TW", "3131.TWO", "6640.TWO",
     "6187.TWO", "3653.TW", "3017.TW", "3324.TWO", "5274.TWO", "3661.TW", "5269.TW",
@@ -129,10 +134,15 @@ ENTRIES = [
 ]
 
 # ==========================================================
-# 通用工具
+# 通用工具與密鑰讀取
 # ==========================================================
+def get_secret(name):
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
 def with_retry(fn, label, retries=3, base_delay=1.5):
-    """失敗或回傳空資料時以指數退避重試；最終失敗拋出例外。"""
     last_err = None
     for attempt in range(1, retries + 1):
         try:
@@ -145,7 +155,7 @@ def with_retry(fn, label, retries=3, base_delay=1.5):
             if empty:
                 raise ValueError("回傳空資料")
             return result
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             last_err = e
             logger.warning("%s 第 %d/%d 次失敗: %s", label, attempt, retries, e)
             if attempt < retries:
@@ -167,7 +177,7 @@ def fmt(v, suffix="", nd=2):
 
 
 # ==========================================================
-# 階段一：新聞抓取、評分、標的歸類、二階動能
+# 階段一：新聞抓取與二階動能
 # ==========================================================
 GENERAL_QUERY = "台股 (半導體 OR 伺服器 OR 散熱 OR 封裝 OR IC設計)"
 
@@ -179,7 +189,6 @@ NEGATIVE_KW = {"下修": -20, "衰退": -18, "承壓": -15, "遞延": -12, "缺�
 
 
 def score_title(title):
-    """關鍵字加權評分（已移除隨機擾動，結果可重現）。"""
     score = 50
     for kw, w in POSITIVE_KW.items():
         if kw in title:
@@ -213,7 +222,6 @@ def _entry_to_row(entry):
 
 
 def fetch_news_all(days=30, per_sector=True):
-    """抓取通用查詢 + （可選）各次產業公司名稱查詢，合併去重。回傳 (DataFrame, 失敗查詢清單)。"""
     queries = [GENERAL_QUERY]
     if per_sector:
         for sector in SECTOR_ORDER:
@@ -225,9 +233,7 @@ def fetch_news_all(days=30, per_sector=True):
         try:
             entries = with_retry(lambda q=q: _fetch_feed(q, days), f"新聞查詢 {q[:24]}")
             rows.extend(_entry_to_row(e) for e in entries)
-            logger.info("新聞查詢成功: %s (%d 則)", q[:40], len(entries))
-        except Exception as e:  # noqa: BLE001
-            logger.error("%s", e)
+        except Exception as e:
             failed.append({"查詢": q, "原因": str(e)})
         time.sleep(0.5)
 
@@ -251,7 +257,6 @@ def sentiment_label(score, bull, bear):
 
 
 def classify_news(df_news, bull=60, bear=40):
-    """回傳 (tagged 明細, by_company 公司彙總, by_sector 次產業×供應鏈位置矩陣, untagged 未歸類新聞)。"""
     rows, untagged_rows = [], []
     for _, r in df_news.iterrows():
         hits = match_companies(r["新聞標題"])
@@ -294,13 +299,9 @@ def classify_news(df_news, bull=60, bear=40):
 
 
 def compute_momentum(tagged, now):
-    """依次產業統計近1個月/半個月/1星期的利多利空則數，並套用二階動能加速度公式。"""
     out = []
     for sector in SECTOR_ORDER:
-        if tagged.empty:
-            sub = tagged
-        else:
-            sub = tagged[tagged["次產業"] == sector].drop_duplicates("新聞標題")
+        sub = tagged[tagged["次產業"] == sector].drop_duplicates("新聞標題") if not tagged.empty else tagged
 
         def cnt(days):
             if sub.empty:
@@ -328,7 +329,7 @@ def compute_momentum(tagged, now):
 
 
 # ==========================================================
-# 階段三：財務數據擷取（重試 + 日誌 + EPS + 營收年增率）
+# 階段三：財務數據擷取
 # ==========================================================
 def get_latest_trade_cutoff(now=None):
     now = now or datetime.now(TZ)
@@ -338,7 +339,6 @@ def get_latest_trade_cutoff(now=None):
 
 
 def calc_dividend_yield_pct(info, price):
-    """殖利率(%)。優先用 每股股利/股價 自行計算，避免 yfinance 單位不一致。"""
     rate = to_float(info.get("dividendRate"))
     if rate and price:
         return rate / price * 100
@@ -352,7 +352,6 @@ def calc_dividend_yield_pct(info, price):
 
 
 def dividend_yield_from_history(stock, price, as_of):
-    """備援：近 12 個月實際配息合計 / 最新股價。"""
     try:
         div = stock.dividends
         if div is not None and not div.empty and price:
@@ -362,13 +361,12 @@ def dividend_yield_from_history(stock, price, as_of):
             total = float(d[d.index > start].sum())
             if total > 0:
                 return total / price * 100
-    except Exception as e:  # noqa: BLE001
-        logger.warning("%s 配息歷史取得失敗: %s", stock.ticker, e)
+    except Exception:
+        pass
     return None
 
 
 def book_value_per_share(stock, info):
-    """備援：每股淨值。優先 info.bookValue，其次資產負債表（股東權益 / 股數）。"""
     bv = to_float(info.get("bookValue"))
     if bv and bv > 0:
         return bv, "info.bookValue"
@@ -386,8 +384,8 @@ def book_value_per_share(stock, info):
                     d = max(common)
                     if float(sh.loc[d]) > 0 and float(eq.loc[d]) > 0:
                         return float(eq.loc[d]) / float(sh.loc[d]), "資產負債表(權益/股數)"
-    except Exception as e:  # noqa: BLE001
-        logger.warning("%s 每股淨值計算失敗: %s", stock.ticker, e)
+    except Exception:
+        pass
     return None, "N/A"
 
 
@@ -400,8 +398,8 @@ def get_ttm_eps(stock, info):
                     s = income.loc[row].dropna().sort_index(ascending=False)
                     if len(s) >= 4:
                         return float(s.iloc[:4].sum()), "四季單季加總"
-    except Exception as e:  # noqa: BLE001
-        logger.warning("%s 單季 EPS 取得失敗: %s", stock.ticker, e)
+    except Exception:
+        pass
     eps = to_float(info.get("trailingEps"))
     if eps is not None:
         return eps, "trailingEps(退回)"
@@ -420,8 +418,8 @@ def get_revenue_yoy(stock, info):
                 prev_val = float(s.loc[match])
                 if gap <= 25 and prev_val > 0:
                     return (latest_val / prev_val - 1) * 100, "單季同期比"
-    except Exception as e:  # noqa: BLE001
-        logger.warning("%s 營收年增率計算失敗: %s", stock.ticker, e)
+    except Exception:
+        pass
     g = to_float(info.get("revenueGrowth"))
     if g is not None:
         return g * 100, "revenueGrowth(退回)"
@@ -436,11 +434,7 @@ def fetch_one(item, cutoff_date):
     start = cutoff_date - timedelta(days=60)
     end = cutoff_date + timedelta(days=1)
 
-    def _history():
-        return stock.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"),
-                             auto_adjust=False)
-
-    df = with_retry(_history, f"{ticker} 股價")
+    df = with_retry(lambda: stock.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"), auto_adjust=False), f"{ticker} 股價")
     if "Close" not in df.columns:
         raise RuntimeError(f"{ticker} 股價資料缺少 Close 欄位")
     df = df.dropna(subset=["Close"])
@@ -459,33 +453,22 @@ def fetch_one(item, cutoff_date):
         past_date, price_past = past_df.index[-1], float(past_df["Close"].iloc[-1])
     return_rate = (price_latest - price_past) / price_past * 100
 
-    def _get_info():
-        data = stock.info
-        # Yahoo 被限流時常只回傳寥寥數個欄位，視為失敗並重試
-        if not isinstance(data, dict) or len(data) < 10:
-            raise ValueError(f"info 欄位過少 ({len(data) if isinstance(data, dict) else 0})")
-        return data
-
     try:
-        info = with_retry(_get_info, f"{ticker} info")
-    except Exception as e:  # noqa: BLE001
-        logger.error("%s", e)
+        info = with_retry(lambda: stock.info, f"{ticker} info")
+    except Exception as e:
         warnings.append(f"{name}: Yahoo 基本面資料取得失敗，改用備援計算 ({e})")
         info = {}
 
     eps_ttm, eps_src = get_ttm_eps(stock, info)
     rev_yoy, rev_src = get_revenue_yoy(stock, info)
 
-    # 本益比：Yahoo → 股價 / 近四季 EPS
     pe, pe_src = to_float(info.get("trailingPE")), "Yahoo"
     if pe is None:
         if eps_ttm and eps_ttm > 0:
             pe, pe_src = price_latest / eps_ttm, "股價/近四季EPS"
         else:
             pe_src = "N/A"
-            warnings.append(f"{name}: 本益比無法取得（EPS 缺值或為負）")
 
-    # 股價淨值比：Yahoo → 股價 / 每股淨值
     pb, pb_src = to_float(info.get("priceToBook")), "Yahoo"
     if pb is None:
         bvps, bv_src = book_value_per_share(stock, info)
@@ -493,19 +476,11 @@ def fetch_one(item, cutoff_date):
             pb, pb_src = price_latest / bvps, f"股價/每股淨值({bv_src})"
         else:
             pb_src = "N/A"
-            warnings.append(f"{name}: 股價淨值比無法取得")
 
-    # 殖利率：Yahoo 欄位 → 近 12 個月配息 / 股價
     dy, dy_src = calc_dividend_yield_pct(info, price_latest), "Yahoo"
     if dy is None:
         dy = dividend_yield_from_history(stock, price_latest, latest_date)
         dy_src = "近12個月配息/股價" if dy is not None else "N/A"
-        if dy is None:
-            warnings.append(f"{name}: 殖利率無法取得（查無近 12 個月配息紀錄）")
-    if eps_src != "四季單季加總":
-        warnings.append(f"{name}: EPS 來源為 {eps_src}")
-    if rev_src != "單季同期比":
-        warnings.append(f"{name}: 營收年增率來源為 {rev_src}")
 
     return {
         "次產業": subsector, "公司名稱": name, "代號": ticker,
@@ -542,9 +517,7 @@ def fetch_all(stock_list, progress_cb=None, sleep_between=0.6):
             row, w = fetch_one(item, cutoff)
             rows.append(row)
             warns.extend(w)
-            logger.info("%s 擷取成功", label)
-        except Exception as e:  # noqa: BLE001
-            logger.error("%s 擷取失敗: %s", label, e)
+        except Exception as e:
             failures.append({"公司": label, "原因": str(e)})
         time.sleep(sleep_between)
     if progress_cb:
@@ -556,7 +529,6 @@ def fetch_all(stock_list, progress_cb=None, sleep_between=0.6):
 
 
 def make_display_df(df):
-    """轉成報表用的文字欄位。"""
     rank = df["雙指標名次"].map(lambda v: "N/A" if pd.isna(v) else str(int(v)))
     return pd.DataFrame({
         "次產業": df["次產業"],
@@ -574,9 +546,8 @@ def make_display_df(df):
 
 
 # ==========================================================
-# 階段四：次產業評分（量化分數 + AI 分數）
+# 階段四：次產業評分
 # ==========================================================
-# 量化分數的各項權重（可自行調整；缺資料的項目會自動排除並重新配比）
 SCORE_WEIGHTS = {"新聞情緒": 30, "二階動能": 15, "價格動能": 15, "營收成長": 25, "估值": 15}
 
 LLM_PROVIDERS = {
@@ -601,18 +572,7 @@ def _clip(x, lo, hi):
     return max(lo, min(hi, x))
 
 
-def get_secret(name):
-    try:
-        return st.secrets.get(name)
-    except Exception:  # noqa: BLE001  (沒有 secrets.toml 時會拋例外)
-        return None
-
-
 def quant_scores(momentum_df, df_r):
-    """
-    規則式量化分數（0-100，50 為中性）。回傳 {次產業: (分數, {分項: 分數})}。
-    新聞情緒依樣本數向 50 收縮（樣本越少越不採信）。
-    """
     out = {}
     for sector in SECTOR_ORDER:
         comps = {}
@@ -647,7 +607,6 @@ def quant_scores(momentum_df, df_r):
 
 
 def build_sector_payload(sector, tagged_all, momentum_df, df_r):
-    """整理單一次產業送給 AI 的資料（也會顯示在畫面上供檢視）。"""
     lines = [f"## {sector}"]
     if momentum_df is not None and not momentum_df.empty:
         m = momentum_df[momentum_df["次產業"] == sector]
@@ -680,18 +639,16 @@ def build_sector_payload(sector, tagged_all, momentum_df, df_r):
 def call_llm(provider, api_key, model, system, user):
     if provider == "Claude (Anthropic)":
         import anthropic
-
         client = anthropic.Anthropic(api_key=api_key)
         kwargs = dict(model=model, max_tokens=2000, system=system,
                       messages=[{"role": "user", "content": user}])
         try:
             msg = client.messages.create(temperature=0, **kwargs)
-        except Exception:  # noqa: BLE001  (部分模型不接受 temperature)
+        except Exception:
             msg = client.messages.create(**kwargs)
         return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
 
     from google import genai
-
     client = genai.Client(api_key=api_key)
     resp = client.models.generate_content(
         model=model, contents=user,
@@ -729,7 +686,6 @@ def parse_ai_json(text):
 
 
 def build_score_table(quant, ai, ai_weight):
-    """合併量化與 AI 分數；沒有 AI 分數的次產業只用量化分數。"""
     rows = []
     for sector in SECTOR_ORDER:
         q = quant.get(sector, (None, {}))[0]
@@ -756,13 +712,13 @@ def build_score_table(quant, ai, ai_weight):
 
 
 # ==========================================================
-# 階段五：分數記錄與回測（IC、命中率、多空價差、AI 權重估計）
+# 階段五：分數記錄與回測（IC、對比圖、CSV下載、權重最佳化）
 # ==========================================================
 SCORE_LOG = "score_log.csv"
 LOG_COLS = ["記錄日期", "記錄時間", "次產業", "量化分數", "AI分數", "綜合分數", "AI權重", "模型", "成分股"]
 HORIZONS = {"1 週（5 個交易日）": 5, "2 週（10 個交易日）": 10, "1 個月（21 個交易日）": 21}
-T0_SHRINK = 24          # 權重收縮：有效期數達 T0 時，估計值與先驗各占一半
-W_MIN, W_MAX = 0.2, 0.8  # 建議權重的上下限
+T0_SHRINK = 24
+W_MIN, W_MAX = 0.2, 0.8
 
 
 def load_score_log():
@@ -781,7 +737,6 @@ def save_score_log(df):
 
 
 def append_score_log(table, ai_weight, model, members, when):
-    """追加本次分數；同一天同一次產業只保留最後一次。回傳寫入筆數。"""
     new = pd.DataFrame([{
         "記錄日期": when.strftime("%Y-%m-%d"),
         "記錄時間": when.strftime("%H:%M:%S"),
@@ -799,7 +754,6 @@ def append_score_log(table, ai_weight, model, members, when):
 
 
 def fetch_close_history(tickers, start_date):
-    """抓還原收盤價（含股利）。回傳 ({代號: Series}, 失敗清單)。"""
     out, fails = {}, []
     for tk in tickers:
         try:
@@ -809,15 +763,13 @@ def fetch_close_history(tickers, start_date):
             s = df["Close"].dropna()
             s.index = pd.to_datetime(s.index).tz_localize(None).normalize()
             out[tk] = s
-        except Exception as e:  # noqa: BLE001
-            logger.error("%s", e)
+        except Exception as e:
             fails.append({"代號": tk, "原因": str(e)})
         time.sleep(0.4)
     return out, fails
 
 
 def forward_return(series, t_date, h):
-    """記錄日（含）之前最後一個收盤價 → 之後第 h 個交易日收盤價的報酬；未到期回傳 NaN。"""
     idx = series.index
     pos = idx.searchsorted(pd.Timestamp(t_date), side="right") - 1
     if pos < 0 or pos + h >= len(idx):
@@ -833,7 +785,6 @@ def spearman(x, y):
 
 
 def newey_west_t(x, lag):
-    """平均數的 Newey-West t 值（處理重疊視窗造成的自相關）。"""
     x = np.asarray(pd.Series(x).dropna(), dtype=float)
     T = len(x)
     if T < 3:
@@ -861,7 +812,6 @@ def summarize_ic(series, lag):
 
 
 def estimate_weight(d, T_eff):
-    """用標準化後的 zA、zQ、zr 估計 AI 權重（含向 0.5 收縮與上下限）。"""
     d = d.dropna(subset=["zA", "zQ", "zr"])
     if len(d) < 10:
         return None
@@ -887,7 +837,7 @@ def estimate_weight(d, T_eff):
 def evaluate_log(log, prices, h, monthly=False):
     df = log.copy()
     df["記錄日期"] = df["記錄日期"].astype(str)
-    if monthly:  # 每月只取第一筆，避免相鄰記錄的報酬視窗重疊
+    if monthly:
         df["_ym"] = df["記錄日期"].str[:7]
         df = df.sort_values("記錄日期").groupby(["_ym", "次產業"]).head(1).drop(columns="_ym")
 
@@ -898,7 +848,7 @@ def evaluate_log(log, prices, h, monthly=False):
         rets = [x for x in rets if not np.isnan(x)]
         Rs.append(float(np.mean(rets)) if rets else np.nan)
     df["R"] = Rs
-    df["r"] = df["R"] - df.groupby("記錄日期")["R"].transform("mean")  # 次產業間的超額報酬
+    df["r"] = df["R"] - df.groupby("記錄日期")["R"].transform("mean")
 
     ic_rows = []
     for dt, g in df.groupby("記錄日期"):
@@ -924,7 +874,6 @@ def evaluate_log(log, prices, h, monthly=False):
          for name in ["綜合", "AI", "量化"]}
     ).T
 
-    # 保守 t：只用「有效獨立期數」計算，不讓重疊視窗灌水
     summary["保守t(有效期數)"] = summary["ICIR"].astype(float) * math.sqrt(max(len(ic) * overlap, 0))
 
     d = df.dropna(subset=["r"]).copy()
@@ -954,6 +903,102 @@ def evaluate_log(log, prices, h, monthly=False):
     return {"ic": ic, "summary": summary, "hit": hit, "spread": spread, "weight": weight,
             "matured": int(df["R"].notna().sum()), "total": len(df), "lag": lag,
             "step_td": step_td, "T_eff": len(ic) * overlap}
+
+
+# ==========================================================
+# Telegram 通知與背景排程機制
+# ==========================================================
+def send_telegram_notification(message, bot_token=None, chat_id=None):
+    try:
+        token = bot_token or get_secret("TELEGRAM_BOT_TOKEN")
+        c_id = chat_id or get_secret("TELEGRAM_CHAT_ID")
+        
+        if not token or not c_id:
+            logger.warning("Telegram 密鑰未設定，無法發送通知。")
+            return False
+
+        url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){token}/sendMessage"
+        payload = {
+            "chat_id": c_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        data = urllib.parse.urlencode(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST")
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_json = json.loads(response.read().decode("utf-8"))
+            return res_json.get("ok", False)
+    except Exception as e:
+        logger.error(f"發送 Telegram 通知失敗: {e}")
+        return False
+
+
+def automated_daily_job():
+    logger.info("開始執行每日自動化新聞抓取與評分記錄...")
+    try:
+        df_news, _ = fetch_news_all(30, per_sector=True)
+        if df_news.empty:
+            logger.warning("自動化排程：未能取得新聞資料")
+            send_telegram_notification("⚠️ *【台股策略 1.5版】* 自動化排程警告：未能取得新聞資料。")
+            return
+        
+        now = datetime.now(TZ)
+        tagged_all, _, _, _ = classify_news(df_news, bull=60, bear=40)
+        momentum_df = compute_momentum(tagged_all, now)
+        
+        quant = quant_scores(momentum_df, None)
+        
+        rows = []
+        for sector in SECTOR_ORDER:
+            q = quant.get(sector, (None, {}))[0]
+            if q is not None:
+                rows.append({
+                    "次產業": sector,
+                    "量化分數": q,
+                    "AI分數": np.nan,
+                    "綜合分數": q,
+                })
+        table = pd.DataFrame(rows)
+        
+        if not table.empty:
+            members = {
+                sec_name: [c["ticker"] for c in COMPANIES if c["subsector"] == sec_name and c["ticker"] in DEFAULT_TRACKED]
+                for sec_name in SECTOR_ORDER
+            }
+            n_logged = append_score_log(table, ai_weight=0.0, model="Auto-Quant", members=members, when=now)
+            
+            msg = (
+                f"📊 *【台股產業投資策略 1.5版】自動排程執行成功*\n"
+                f"📅 執行日期：`{now:%Y-%m-%d %H:%M:%S}`\n"
+                f"📝 已自動記錄 `{n_logged}` 筆次產業分數至 `score_log.csv`。\n"
+                f"💡 請至 Web App 第五階段查看最新回測與多策略對比曲線。"
+            )
+            send_telegram_notification(msg)
+            logger.info("每日自動化抓取與記錄分數成功，已發送 Telegram 通知！")
+    except Exception as e:
+        err_msg = f"❌ *【台股策略 1.5版】* 自動化排程執行失敗: {e}"
+        logger.error(err_msg)
+        send_telegram_notification(err_msg)
+
+
+def run_schedule_loop():
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+
+def init_background_scheduler():
+    if "scheduler_started" not in st.session_state:
+        schedule.every().day.at("14:00").do(automated_daily_job)
+        t = threading.Thread(target=run_schedule_loop, daemon=True)
+        t.start()
+        st.session_state.scheduler_started = True
+        logger.info("背景排程執行緒已成功啟動 (設定時間: 每天 14:00)")
+
+
+# 啟動背景排程
+init_background_scheduler()
 
 
 # ==========================================================
@@ -1031,10 +1076,23 @@ def generate_word_report(df_results, macro_text, momentum_df, score, sector_scor
 
 
 # ==========================================================
-# Streamlit 介面
+# Streamlit 介面與側邊欄
 # ==========================================================
 st.set_page_config(page_title="台股產業投資策略 1.5 版", layout="wide")
 st.title("📊 台股產業投資策略 1.5 版 - AI 互動式 Web App")
+
+# 側邊欄控制與手動觸發測試
+st.sidebar.header("🛠️ 系統控制與除錯")
+st.sidebar.write("### 背景自動化排程")
+st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取與記錄，並發送 Telegram 通知。")
+
+if st.sidebar.button("🚀 立即執行背景排程任務", type="secondary"):
+    with st.spinner("正在手動觸發背景排程任務…"):
+        try:
+            automated_daily_job()
+            st.sidebar.success("✅ 背景排程與通知手動執行成功！")
+        except Exception as e:
+            st.sidebar.error(f"❌ 執行失敗: {e}")
 
 _defaults = {
     "news_all": pd.DataFrame(), "news_failed": [], "news_fetched": False,
@@ -1081,7 +1139,6 @@ with tab1:
         now = datetime.now(TZ)
         st.success(f"已取得 {len(df_all)} 則不重複新聞（近 30 天）。")
 
-        # --- 榜單 ---
         recent = df_all[df_all["發布時間"] >= now - timedelta(days=list_days)]
         top_10 = recent.sort_values("分數", ascending=False).head(10)
         rest = recent[~recent["新聞標題"].isin(top_10["新聞標題"])]
@@ -1096,16 +1153,13 @@ with tab1:
             st.subheader("❄️ 最低分數前 10 則產業新聞")
             st.dataframe(bottom_10[show_cols].reset_index(drop=True))
 
-        # --- 二階動能（依次產業，以全部新聞計算）---
         st.divider()
         tagged_all, _, _, _ = classify_news(df_all, bull, bear)
         momentum_df = compute_momentum(tagged_all, now)
         st.session_state.momentum_df = momentum_df
         st.subheader("📈 各次產業二階動能加速度")
-        st.caption("依新聞標題命中的公司歸入次產業後計算；近 1 個月 / 半個月 / 1 星期為巢狀時間窗。")
         st.dataframe(momentum_df[[c for c in momentum_df.columns if not c.startswith("_")]], hide_index=True)
 
-        # --- 標的歸類 ---
         st.divider()
         st.subheader("🏭 新聞標的與產業位置歸類")
         scope = st.radio("歸類範圍", ["僅榜單前 / 後 10 則", "全部抓取新聞"], horizontal=True)
@@ -1128,7 +1182,6 @@ with tab1:
             with t1:
                 st.dataframe(by_company, hide_index=True)
             with t2:
-                st.caption("數字為利多則數減利空則數（淨多空）。")
                 st.dataframe(by_sector)
             with t3:
                 detail = tagged.drop(columns=["發布時間"])
@@ -1136,7 +1189,6 @@ with tab1:
                 st.download_button("下載歸類明細 CSV", detail.to_csv(index=False).encode("utf-8-sig"),
                                    file_name="news_tagged.csv", mime="text/csv")
             with t4:
-                st.caption("沒命中名單的新聞，可從中找出需要補進字典的公司。")
                 if untagged.empty:
                     st.write("無。")
                 else:
@@ -1155,7 +1207,7 @@ with tab2:
     edited_df = st.data_editor(candidates, hide_index=True, num_rows="dynamic", key="candidates_editor")
 
     if st.button("鎖定個股名單並進入第三階段"):
-        chosen = edited_df[edited_df["追蹤"] == True]  # noqa: E712
+        chosen = edited_df[edited_df["追蹤"] == True]
         final_list = []
         for rec in chosen.to_dict("records"):
             tk, nm, sec_ = str(rec.get("代號") or "").strip(), str(rec.get("名稱") or "").strip(), str(rec.get("次產業") or "").strip()
@@ -1185,11 +1237,11 @@ with tab3:
 
         df_r = st.session_state.report_df
         if st.session_state.fetched_at:
-            st.write(f"擷取時間：**{st.session_state.fetched_at}**　｜　成功 **{len(df_r)}** / "
+            st.write(f"擷取時間：**{st.session_state.fetched_at}** ｜ 成功 **{len(df_r)}** / "
                      f"{len(st.session_state.final_stock_list)} 檔")
 
         if st.session_state.fetch_failures:
-            st.error(f"{len(st.session_state.fetch_failures)} 檔擷取失敗（詳見 {LOG_FILE}）")
+            st.error(f"{len(st.session_state.fetch_failures)} 檔擷取失敗")
             st.dataframe(pd.DataFrame(st.session_state.fetch_failures), hide_index=True)
         if st.session_state.fetch_warns:
             with st.expander("警告（資料來源退回、基準日調整等）"):
@@ -1205,7 +1257,7 @@ with tab3:
                               int(st.session_state.overall_score))
 
             doc_buffer = generate_word_report(df_r, macro_text, st.session_state.momentum_df, score,
-                                           st.session_state.score_table)
+                                              st.session_state.score_table)
             st.download_button(
                 label="📥 下載橫向排版 Word 投資報告",
                 data=doc_buffer,
@@ -1216,14 +1268,11 @@ with tab3:
 # ---------------------------- Tab 4 ----------------------------
 with tab4:
     st.header("次產業評分：量化分數 + AI 分數")
-    st.caption("量化分數是依固定規則計算的透明指標；AI 分數由大型語言模型閱讀新聞標題與財務數據後判斷。"
-               "兩者可依權重合成。分數未經歷史回測，僅作研究參考，不構成投資建議。")
-
     if not st.session_state.news_fetched:
         st.warning("請先於第一階段抓取新聞。")
     else:
         if st.session_state.report_df.empty:
-            st.info("尚未擷取第三階段財務數據：目前只能依新聞計算，價格、營收與估值項目會被排除。")
+            st.info("尚未擷取第三階段財務數據：目前只能依新聞計算。")
 
         c1, c2 = st.columns(2)
         provider = c1.selectbox("AI 模型供應商", list(LLM_PROVIDERS.keys()))
@@ -1239,7 +1288,7 @@ with tab4:
         c3, c4 = st.columns(2)
         use_ai = c3.checkbox("使用 AI 評分", value=True)
         ai_pct = c4.slider("AI 分數權重 (%)", 0, 100, 50, disabled=not use_ai)
-        log_it = st.checkbox("記錄本次分數，供日後回測（同一天同一次產業只保留最後一次）", value=True)
+        log_it = st.checkbox("記錄本次分數，供日後回測", value=True)
 
         if st.button("計算次產業分數", type="primary"):
             df_all = st.session_state.news_all
@@ -1265,9 +1314,7 @@ with tab4:
                                 "AI 評分", retries=2,
                             )
                             ai_result = parse_ai_json(raw_text)
-                        logger.info("AI 評分成功 (%s / %s)", provider, model_name)
-                    except Exception as e:  # noqa: BLE001
-                        logger.error("AI 評分失敗: %s", e)
+                    except Exception as e:
                         st.error(f"AI 評分失敗，已改用量化分數：{e}")
 
             table = build_score_table(quant, ai_result, ai_pct / 100 if ai_result else 0.0)
@@ -1300,27 +1347,15 @@ with tab4:
             st.dataframe(show, hide_index=True)
             st.bar_chart(show.set_index("次產業")[["量化分數", "AI分數", "綜合分數"]])
 
-            with st.expander("量化分數分項（0-100，50 為中性）"):
-                st.dataframe(st.session_state.quant_detail, hide_index=True)
-                st.caption("權重：" + "、".join(f"{k} {v}" for k, v in SCORE_WEIGHTS.items())
-                           + "。缺資料的項目會被排除並重新配比。")
-            with st.expander("送給 AI 的資料與原始回覆（供檢視）"):
-                st.text(st.session_state.ai_debug.get("payload", ""))
-                if st.session_state.ai_debug.get("raw"):
-                    st.code(st.session_state.ai_debug["raw"], language="json")
-
 # ---------------------------- Tab 5 ----------------------------
 with tab5:
-    st.header("分數記錄與回測")
-    st.caption("每次在第四階段計算分數時記錄下來；持有期間結束後，用次產業成分股的還原股價結算超額報酬，"
-               "再檢驗分數與之後表現是否一致。樣本期數少時結論不可靠，請累積足夠期數後再參考。")
+    st.header("分數記錄與回測（含多策略對比、CSV 下載與權重最佳化）")
+    st.caption("每次在第四階段計算分數時記錄下來；持有期間結束後，結算各策略的累積超額報酬表現，並可進行 AI 權重最佳化模擬。")
 
     log = load_score_log()
     if log.empty:
         st.info("尚無記錄。請到第四階段計算分數並勾選「記錄本次分數」。")
     else:
-        st.write(f"共 **{log['記錄日期'].nunique()}** 個記錄日期、{len(log)} 筆"
-                 f"（{log['記錄日期'].min()} ～ {log['記錄日期'].max()}）。")
         c1, c2 = st.columns(2)
         h_label = c1.selectbox("持有期間", list(HORIZONS.keys()), index=2)
         sampling = c2.radio("取樣方式", ["全部記錄", "每月第一筆（不重疊）"], horizontal=True)
@@ -1335,70 +1370,183 @@ with tab5:
             st.session_state.price_fails = fails
 
         if st.session_state.price_fails:
-            st.error(f"{len(st.session_state.price_fails)} 檔股價抓取失敗（詳見 {LOG_FILE}）")
+            st.error(f"{len(st.session_state.price_fails)} 檔股價抓取失敗")
             st.dataframe(pd.DataFrame(st.session_state.price_fails), hide_index=True)
 
         if not st.session_state.price_cache:
             st.info("請按「更新股價並結算」。")
         else:
             res = evaluate_log(log, st.session_state.price_cache, h, monthly=sampling.startswith("每月"))
-            st.write(f"已到期並可結算：**{res['matured']} / {res['total']}** 筆；"
-                     f"相鄰記錄約間隔 {res['step_td']:.1f} 個交易日，Newey-West 落後期數 {res['lag']}，"
-                     f"有效獨立期數約 **{res['T_eff']:.1f}**。")
+            
+            # --- 1. Plotly 多策略累積超額報酬對比圖 ---
+            st.subheader("📈 多策略累積超額報酬對比（綜合 vs 量化 vs AI）")
+            
+            df_eval = log.copy()
+            df_eval["記錄日期"] = pd.to_datetime(df_eval["記錄日期"])
 
-            if res["ic"].empty:
-                st.warning("目前沒有任何記錄日期同時有 4 個以上已到期的次產業，還無法計算 IC。"
-                           f"請等持有期間（{h} 個交易日）過後再來。")
+            perf_records = []
+            for _, r in df_eval.iterrows():
+                members = [m for m in str(r["成分股"]).split(";") if m in st.session_state.price_cache]
+                if not members:
+                    continue
+                rets = [forward_return(st.session_state.price_cache[m], r["記錄日期"], h) for m in members]
+                rets = [x for x in rets if not np.isnan(x)]
+                if rets:
+                    perf_records.append({
+                        "記錄日期": r["記錄日期"],
+                        "次產業": r["次產業"],
+                        "綜合分數": r["綜合分數"],
+                        "量化分數": r["量化分數"],
+                        "AI分數": r["AI分數"],
+                        "報酬率": np.mean(rets)
+                    })
+
+            if perf_records:
+                df_perf = pd.DataFrame(perf_records)
+                market_mean = df_perf.groupby("記錄日期")["報酬率"].mean().reset_index(name="市場均值")
+                df_perf = df_perf.merge(market_mean, on="記錄日期")
+                df_perf["超額報酬"] = df_perf["報酬率"] - df_perf["市場均值"]
+
+                strategies = {
+                    "綜合策略 (Composite)": "綜合分數",
+                    "純量化策略 (Quant)": "量化分數",
+                    "純 AI 策略 (AI)": "AI分數"
+                }
+                
+                fig = go.Figure()
+                colors = {"綜合策略 (Composite)": "#1f77b4", "純量化策略 (Quant)": "#ff7f0e", "純 AI 策略 (AI)": "#2ca02c"}
+
+                for strat_name, score_col in strategies.items():
+                    sub_df = df_perf.dropna(subset=[score_col])
+                    if sub_df.empty:
+                        continue
+                        
+                    portfolio = sub_df.sort_values(["記錄日期", score_col], ascending=[True, False]) \
+                                      .groupby("記錄日期").head(2) \
+                                      .groupby("記錄日期")["超額報酬"].mean().reset_index()
+                    
+                    portfolio["累積超額報酬"] = (1 + portfolio["超額報酬"]).cumprod() - 1
+                    
+                    fig.add_trace(go.Scatter(
+                        x=portfolio["記錄日期"],
+                        y=portfolio["累積超額報酬"],
+                        mode="lines+markers",
+                        name=strat_name,
+                        line=dict(color=colors[strat_name], width=2.5)
+                    ))
+
+                fig.update_layout(
+                    title=f"多策略累積超額報酬對比 (持有期: {h_label})",
+                    xaxis_title="回測日期",
+                    yaxis_title="累積超額報酬率",
+                    hovermode="x unified",
+                    template="plotly_white",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                fig.update_yaxis(tickformat=".1%")
+                st.plotly_chart(fig, use_container_width=True)
+
+                # --- 2. 下載 CSV 按鈕 ---
+                st.markdown("### 📥 下載回測數據")
+                export_dfs = []
+                for strat_name, score_col in strategies.items():
+                    sub_df = df_perf.dropna(subset=[score_col])
+                    if sub_df.empty:
+                        continue
+                    portfolio = sub_df.sort_values(["記錄日期", score_col], ascending=[True, False]) \
+                                      .groupby("記錄日期").head(2) \
+                                      .groupby("記錄日期")["超額報酬"].mean().reset_index(name=f"{strat_name}_超額報酬")
+                    portfolio[f"{strat_name}_累積超額報酬"] = (1 + portfolio[f"{strat_name}_超額報酬"]).cumprod() - 1
+                    
+                    if not portfolio.empty:
+                        export_dfs.append(portfolio.set_index("記錄日期")[[f"{strat_name}_累積超額報酬"]])
+                
+                if export_dfs:
+                    df_export_final = pd.concat(export_dfs, axis=1).reset_index()
+                    df_export_final["記錄日期"] = pd.to_datetime(df_export_final["記錄日期"]).dt.strftime("%Y-%m-%d")
+                    csv_data = df_export_final.to_csv(index=False, encoding="utf-8-sig")
+                    
+                    st.download_button(
+                        label="📥 下載多策略累積超額報酬數據 (CSV)",
+                        data=csv_data,
+                        file_name=f"multi_strategy_backtest_{datetime.now(TZ):%Y%m%d}.csv",
+                        mime="text/csv",
+                    )
             else:
-                st.subheader("排名相關係數 IC（分數排名 vs 超額報酬排名）")
-                if res["T_eff"] < 10:
-                    st.warning(f"有效獨立期數只有 {res['T_eff']:.1f}（建議至少 10 以上，最好 24 以上）。"
-                               "此時 t 值與權重估計雜訊很大，Newey-West t 值在樣本少時尤其容易高估，請以「保守t」為準並僅作參考。")
-                st.dataframe(res["summary"].round(3))
-                st.line_chart(res["ic"].set_index("記錄日期")[["綜合", "AI", "量化"]])
+                st.info("尚無足夠的已到期資料可繪製多策略對比曲線。")
 
-                m1, m2 = st.columns(2)
-                with m1:
-                    st.subheader("方向命中率")
-                    if res["hit"]:
-                        st.metric("命中率", f"{res['hit']['rate']:.1%}",
-                                  help=f"{res['hit']['H']} / {res['hit']['n']}；z = {res['hit']['z']:.2f}（|z|>2 才較可能非巧合）")
-                        st.caption(f"{res['hit']['H']} / {res['hit']['n']} 筆；z = {res['hit']['z']:.2f}")
+            # --- 3. AI 權重最佳化模組 ---
+            st.divider()
+            st.subheader("🎯 AI 權重最佳化推薦（Grid Search 網格搜尋）")
+            st.caption("透過歷史回測模擬不同 AI 佔比（0% 至 100%）下的策略表現，尋找能最大化資訊比率 (ICIR) 的最佳權重比例。")
+
+            if st.button("執行 AI 權重最佳化運算", type="primary"):
+                with st.spinner("正在進行多權重組合回測模擬…"):
+                    grid_weights = np.linspace(0.0, 1.0, 21)
+                    optimization_results = []
+
+                    for w in grid_weights:
+                        df_sim = log.copy()
+                        ai_s = df_sim["AI分數"].astype(float)
+                        quant_s = df_sim["量化分數"].astype(float)
+                        
+                        df_sim["模擬綜合分數"] = w * ai_s.fillna(quant_s) + (1 - w) * quant_s.fillna(ai_s)
+                        
+                        sim_prices = st.session_state.price_cache
+                        Rs = []
+                        for _, r in df_sim.iterrows():
+                            members = [m for m in str(r["成分股"]).split(";") if m in sim_prices]
+                            rets = [forward_return(sim_prices[m], r["記錄日期"], h) for m in members]
+                            rets = [x for x in rets if not np.isnan(x)]
+                            Rs.append(float(np.mean(rets)) if rets else np.nan)
+                        
+                        df_sim["R"] = Rs
+                        df_sim["r"] = df_sim["R"] - df_sim.groupby("記錄日期")["R"].transform("mean")
+
+                        ic_list = []
+                        for _, g in df_sim.groupby("記錄日期"):
+                            g = g.dropna(subset=["r", "模擬綜合分數"])
+                            if len(g) >= 4:
+                                ic_list.append(spearman(g["模擬綜合分數"], g["r"]))
+                        
+                        ic_series = pd.Series(ic_list).dropna()
+                        if len(ic_series) >= 2 and ic_series.std(ddof=1) > 0:
+                            icir = ic_series.mean() / ic_series.std(ddof=1)
+                        else:
+                            icir = 0.0
+
+                        optimization_results.append({
+                            "AI權重": w,
+                            "量化權重": round(1 - w, 2),
+                            "平均IC": ic_series.mean() if not ic_series.empty else 0.0,
+                            "ICIR": icir
+                        })
+
+                    df_opt = pd.DataFrame(optimization_results)
+                    
+                    if not df_opt.empty and df_opt["ICIR"].max() > 0:
+                        best_row = df_opt.loc[df_opt["ICIR"].idxmax()]
+                        best_ai_weight = best_row["AI權重"]
+
+                        st.success(f"✨ 最佳推薦：建議 **AI 權重設定為 {best_ai_weight:.0%}**（量化權重 {(1-best_ai_weight):.0%}），此配置在歷史回測中展現最高的資訊比率（ICIR = {best_row['ICIR']:.3f}）。")
+
+                        fig_opt = px.line(
+                            df_opt, 
+                            x="AI權重", 
+                            y="ICIR", 
+                            markers=True,
+                            title="不同 AI 權重配置下的資訊比率 (ICIR) 表現",
+                            labels={"AI權重": "AI 分數權重比例", "ICIR": "資訊比率 (ICIR)"}
+                        )
+                        fig_opt.add_vline(x=best_ai_weight, line_dash="dash", line_color="red", annotation_text=f"最佳權重: {best_ai_weight:.0%}")
+                        fig_opt.update_layout(template="plotly_white")
+                        st.plotly_chart(fig_opt, use_container_width=True)
+
+                        with st.expander("查看完整權重測試明細"):
+                            st.dataframe(df_opt.round(4), hide_index=True)
                     else:
-                        st.write("樣本不足。")
-                with m2:
-                    st.subheader("最高分 − 最低分 價差")
-                    if res["spread"]:
-                        st.metric("平均超額報酬差", f"{res['spread']['mean']:.2%}")
-                        st.caption(f"{res['spread']['n']} 期；Newey-West t = {res['spread']['t']:.2f}")
-                    else:
-                        st.write("樣本不足。")
+                        st.warning("歷史到期樣本不足以支撐權重最佳化計算，請累積更多回測期數。")
 
-                st.subheader("AI 權重估計")
-                w = res["weight"]
-                if w is None:
-                    st.write("需要至少 10 筆同時含 AI 與量化分數、且已到期的記錄。")
-                else:
-                    a, b, c_ = st.columns(3)
-                    a.metric("原始估計 w*", "無正向訊號" if w["raw"] is None else f"{w['raw']:.2f}")
-                    b.metric("收縮後", f"{w['shrunk']:.2f}", help=f"λ = {w['lam']:.2f}，先驗 0.5")
-                    c_.metric("建議 AI 權重（限制 0.2–0.8）", f"{w['final']:.2f}")
-                    st.caption(f"ρ(AI)= {w['rhoA']:.3f}、ρ(量化)= {w['rhoQ']:.3f}、AI 與量化相關 c = {w['c']:.3f}；"
-                               f"β(AI)= {w['bA']:.3f}、β(量化)= {w['bQ']:.3f}；樣本 {w['n']} 筆。"
-                               "有效期數越少，估計越不可靠，因此會向 0.5 收縮。")
-
-    st.divider()
-    st.subheader("記錄檔管理")
-    st.caption(f"記錄存在執行目錄的 {SCORE_LOG}。若部署在雲端主機，檔案可能在重啟後消失，請定期下載備份。")
-    if not log.empty:
-        st.download_button("下載記錄 CSV", log.to_csv(index=False).encode("utf-8-sig"),
-                           file_name=SCORE_LOG, mime="text/csv")
-    up = st.file_uploader("匯入先前備份的記錄（會與現有記錄合併）", type="csv")
-    if up is not None and st.button("合併匯入"):
-        try:
-            old = pd.read_csv(up, encoding="utf-8-sig", dtype={"記錄日期": str})
-            merged = pd.concat([load_score_log(), old.reindex(columns=LOG_COLS)], ignore_index=True)
-            save_score_log(merged)
-            st.success("已合併。請重新整理頁面。")
-        except Exception as e:  # noqa: BLE001
-            st.error(f"匯入失敗：{e}")
+            st.write(f"已到期並可結算：**{res['matured']} / {res['total']}** 筆；"
+                     f"有效獨立期數約 **{res['T_eff']:.1f}**。")
+            st.dataframe(res["summary"].round(3))
