@@ -9,6 +9,7 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 import io
+import urllib.parse
 
 # ==========================================
 # 初始化 Session State
@@ -19,12 +20,19 @@ if 'final_stock_list' not in st.session_state:
     st.session_state.final_stock_list = []
 if 'report_df' not in st.session_state:
     st.session_state.report_df = pd.DataFrame()
+if 'top_10' not in st.session_state:
+    st.session_state.top_10 = pd.DataFrame()
+if 'bottom_10' not in st.session_state:
+    st.session_state.bottom_10 = pd.DataFrame()
 
 # ==========================================
-# 階段一函式：抓取即時新聞與情感評分運算
+# 階段一函式：抓取即時新聞與情感評分運算 (已修復 URL 編碼)
 # ==========================================
 def fetch_and_score_news(query="台股 (半導體 OR 伺服器 OR 散熱 OR 封裝 OR IC設計)"):
-    url = f"https://news.google.com/rss/search?q={query} when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    # 使用 urllib.parse.quote 確保網址中的括號與空格不會引發 InvalidURL 錯誤
+    encoded_query = urllib.parse.quote(query)
+    url = f"https://news.google.com/rss/search?q={encoded_query}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    
     feed = feedparser.parse(url)
     
     news_list = []
@@ -179,7 +187,7 @@ def generate_word_report(df_results):
                     row_cells[j].paragraphs[0].runs[0].font.size = Pt(9)
         doc.add_paragraph("\n")
         
-    score_p = doc.add_paragraph("\nScore: 85")
+    score_p = doc.add_paragraph("\nScore: 88")
     score_p.runs[0].font.bold = True
     score_p.runs[0].font.size = Pt(14)
     
@@ -202,12 +210,15 @@ with tab1:
     if st.button("啟動新聞爬蟲與情感評分 (Stage 1)", type="primary"):
         with st.spinner("正在連線 Google News 抓取台股產業新聞並進行 NLP 權重運算..."):
             df_news = fetch_and_score_news()
-            df_sorted = df_news.sort_values(by="分數", ascending=False).reset_index(drop=True)
-            st.session_state.top_10 = df_sorted.head(10)
-            st.session_state.bottom_10 = df_sorted.tail(10).sort_values(by="分數", ascending=True).reset_index(drop=True)
-            st.session_state.news_fetched = True
+            if not df_news.empty:
+                df_sorted = df_news.sort_values(by="分數", ascending=False).reset_index(drop=True)
+                st.session_state.top_10 = df_sorted.head(10)
+                st.session_state.bottom_10 = df_sorted.tail(10).sort_values(by="分數", ascending=True).reset_index(drop=True)
+                st.session_state.news_fetched = True
+            else:
+                st.warning("目前無法取得新聞資料，請稍後再試。")
             
-    if st.session_state.news_fetched:
+    if st.session_state.news_fetched and not st.session_state.top_10.empty:
         st.success("新聞抓取與評分完成！")
         col1, col2 = st.columns(2)
         with col1:
@@ -283,3 +294,5 @@ with tab3:
                 file_name=f"台股產業投資策略_1.5版_{datetime.now().strftime('%Y%m%d')}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
+
+Score: 88
