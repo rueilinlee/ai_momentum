@@ -25,3 +25,4 @@ streamlit
 pandas
 yfinance
 python-docx
+feedparser
