@@ -913,7 +913,7 @@ def evaluate_log(log, prices, h, monthly=False):
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
         # 直接使用您的真實憑證進行測試
-        access_token = token or "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
+        access_token = token or "LoWdzyXkvVwbPsmYoPxWuFPik/CvtFx5YxKqgZ2bUvePKq2rpVDJ/j6ARw3AtJD84m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbplVO+5vidqACFyXjoPXNneG9pP7xIyDGvEaIpLOO+gwQdB04t89/1O/w1cDnyilFU="
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
         if not access_token or not target_user:
@@ -921,7 +921,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-        url ="https://api.line.me/v2/bot/message/push"
+        url = "https://api.line.me/v2/bot/message/push"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
