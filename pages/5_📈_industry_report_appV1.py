@@ -1603,5 +1603,5 @@ with tab5:
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
         # 直接寫死真實憑證來測試
-        access_token = token or "填入您的_Channel_Access_Token"
+        access_token = token or "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
