@@ -916,6 +916,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
         target_user = user_id or get_secret("LINE_USER_ID")
         
         if not access_token or not target_user:
+            st.error("❌ LINE 推播失敗：找不到 Channel Access Token 或 User ID 密鑰！請檢查 Streamlit Secrets 設定。")
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
@@ -937,9 +938,20 @@ def send_line_messaging_api(message, token=None, user_id=None):
         )
         
         with urllib.request.urlopen(req, timeout=10) as response:
-            return response.status == 200
+            success = response.status == 200
+            if success:
+                st.sidebar.success("✅ LINE 智慧推播發送成功！")
+            return success
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
+        err_msg = f"❌ LINE API HTTP 錯誤 ({e.code}): {error_body}"
+        logger.error(err_msg)
+        st.error(err_msg)  # 直接把 LINE 官方回傳的拒絕原因印在網頁上！
+        return False
     except Exception as e:
-        logger.error(f"發送 LINE Messaging API 推播失敗: {e}")
+        err_msg = f"❌ 發送 LINE 推播發生未預期錯誤: {e}"
+        logger.error(err_msg)
+        st.error(err_msg)
         return False
 
 
