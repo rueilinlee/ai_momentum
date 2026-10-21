@@ -1600,3 +1600,8 @@ with tab5:
             st.write(f"已到期並可結算：**{res['matured']} / {res['total']}** 筆；"
                      f"有效獨立期數約 **{res['T_eff']:.1f}**。")
             st.dataframe(res["summary"].round(3))
+def send_line_messaging_api(message, token=None, user_id=None):
+    try:
+        # 直接寫死真實憑證來測試
+        access_token = token or "填入您的_Channel_Access_Token"
+        target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
