@@ -116,7 +116,7 @@ FOREIGN = [
 
 DEFAULT_TRACKED = {
     "2330.TW", "2303.TW", "5347.TWO", "6669.TW", "2382.TW", "2376.TW", "3131.TWO", "6640.TWO",
-    "6187.TWO", "3653.TW", "3017.TW", "3324.TWO", "5274.TWO", "3661.TW", "5269.TW",
+    "6187.TWO", "3653.TW", "3017.TW", "3324.TWO", "5274.TW", "3661.TW", "5269.TW",
 }
 
 SECTOR_ORDER = list(dict.fromkeys(c["subsector"] for c in COMPANIES))
@@ -374,7 +374,7 @@ def book_value_per_share(stock, info):
         bs = stock.quarterly_balance_sheet
         if bs is not None and not bs.empty:
             eq_row = next((r for r in ("Stockholders Equity", "Common Stock Equity",
-                                       "Total Equity Gross Minority Interest") if r in bs.index), None)
+                                        "Total Equity Gross Minority Interest") if r in bs.index), None)
             sh_row = next((r for r in ("Ordinary Shares Number", "Share Issued") if r in bs.index), None)
             if eq_row and sh_row:
                 eq = bs.loc[eq_row].dropna()
@@ -912,15 +912,16 @@ def evaluate_log(log, prices, h, monthly=False):
 # ==========================================================
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
-        access_token = token or get_secret("LINE_CHANNEL_ACCESS_TOKEN")
-        target_user = user_id or get_secret("LINE_USER_ID")
+        # 直接使用您的真實憑證進行測試
+        access_token = token or "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
+        target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
         if not access_token or not target_user:
-            st.error("❌ LINE 推播失敗：找不到 Channel Access Token 或 User ID 密鑰！請檢查 Streamlit Secrets 設定。")
+            st.error("❌ LINE 推播失敗：找不到 Channel Access Token 或 User ID 密鑰！")
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-        url = "https://api.line.me/v2/bot/message/push"
+        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
@@ -946,7 +947,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
         error_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
         err_msg = f"❌ LINE API HTTP 錯誤 ({e.code}): {error_body}"
         logger.error(err_msg)
-        st.error(err_msg)  # 直接把 LINE 官方回傳的拒絕原因印在網頁上！
+        st.error(err_msg)  # 直接把 LINE 官方回傳的錯誤原因印在網頁上！
         return False
     except Exception as e:
         err_msg = f"❌ 發送 LINE 推播發生未預期錯誤: {e}"
@@ -1600,8 +1601,3 @@ with tab5:
             st.write(f"已到期並可結算：**{res['matured']} / {res['total']}** 筆；"
                      f"有效獨立期數約 **{res['T_eff']:.1f}**。")
             st.dataframe(res["summary"].round(3))
-def send_line_messaging_api(message, token=None, user_id=None):
-    try:
-        # 直接寫死真實憑證來測試
-        access_token = token or "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
-        target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
