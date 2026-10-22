@@ -914,7 +914,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
     try:
         # 直接使用您的真實憑證進行測試
         access_token = token or "LoWdzyXkvVwbPsmYoPxWuFPik/CvtFx5YxKqgZ2bUvePKq2rpVDJ/j6ARw3AtJD84m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbplVO+5vidqACFyXjoPXNneG9pP7xIyDGvEaIpLOO+gwQdB04t89/1O/w1cDnyilFU="
-        target_user = user_id or "U18e95399cb9a506d8adc9633844d0acf"
+        target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
         if not access_token or not target_user:
             st.error("❌ LINE 推播失敗：找不到 Channel Access Token 或 User ID 密鑰！")
