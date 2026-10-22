@@ -921,8 +921,8 @@ def send_line_messaging_api(message, token=None, user_id=None):
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-#        url = "https://api.line.me/v2/bot/message/push"
-         url = "https://webhook.site/c0825810-08ea-41bd-b7a1-4cb3438f7537"
+        # 確保網址開頭絕對沒有任何多餘的中括號
+        url = "https://api.line.me/v2/bot/message/push"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
@@ -955,7 +955,6 @@ def send_line_messaging_api(message, token=None, user_id=None):
         logger.error(err_msg)
         st.error(err_msg)
         return False
-
 
 def automated_daily_job():
     logger.info("開始執行每日自動化新聞抓取與評分記錄...")
