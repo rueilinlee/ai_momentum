@@ -2,7 +2,8 @@
 """
 台股產業投資策略 1.5 版（最終完整整合版，單一檔案）
 包含：新聞爬蟲、二階動能、財報/股價雙指標、Word 報告、AI/量化評分、回測、
-Plotly 多策略對比、CSV 下載、AI 權重最佳化、背景排程、LINE Messaging API Top 3 推播與最大回撤/夏普值
+Plotly 多策略對比、CSV 下載、AI 權重最佳化、背景排程、LINE Messaging API Top 3 推播、
+Email 前 5 名自動寄送與最大回撤/夏普值
 
 安裝：
     pip install streamlit yfinance pandas pytz feedparser python-docx numpy plotly schedule
@@ -21,6 +22,9 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 import feedparser
 import numpy as np
@@ -912,7 +916,6 @@ def evaluate_log(log, prices, h, monthly=False):
 # ==========================================================
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
-        # 直接使用您的真實憑證進行測試
         access_token = token or "LoWdzyXkvVwbPsmYoPxWuFPik/CvtFx5YxKqgZ2bUvePKq2rpVDJ/j6ARw3AtJD84m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbplVO+5vidqACFyXjoPXNneG9pP7xIyDGvEaIpLOO+gwQdB04t89/1O/w1cDnyilFU="
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
@@ -921,8 +924,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-        # 確保網址開頭絕對沒有任何多餘的中括號
-        url = "https://api.line.me/v2/bot/message/push"
+        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
@@ -948,13 +950,93 @@ def send_line_messaging_api(message, token=None, user_id=None):
         error_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
         err_msg = f"❌ LINE API HTTP 錯誤 ({e.code}): {error_body}"
         logger.error(err_msg)
-        st.error(err_msg)  # 直接把 LINE 官方回傳的錯誤原因印在網頁上！
+        st.error(err_msg)
         return False
     except Exception as e:
         err_msg = f"❌ 發送 LINE 推播發生未預期錯誤: {e}"
         logger.error(err_msg)
         st.error(err_msg)
         return False
+
+
+# ==========================================================
+# Email 寄送模組：發送綜合 Score 前 5 名最高分
+# ==========================================================
+def send_email_report(top_5_df, receiver_email=None):
+    """
+    透過 SMTP 寄送綜合 Score 前 5 名最高分的次產業報告。
+    需要從 st.secrets 或預設設定讀取 SMTP 伺服器資訊。
+    """
+    try:
+        # 從 st.secrets 讀取 Email 相關設定，若無則使用預設或警告
+        smtp_server = get_secret("SMTP_SERVER") or "smtp.gmail.com"
+        smtp_port = int(get_secret("SMTP_PORT") or 587)
+        sender_email = get_secret("SENDER_EMAIL")
+        sender_password = get_secret("SENDER_PASSWORD")
+        to_email = receiver_email or get_secret("RECEIVER_EMAIL") or sender_email
+
+        if not sender_email or not sender_password:
+            logger.warning("Email 寄件者帳號或密鑰未設定，無法發送 Email。")
+            return False
+
+        now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 組裝郵件內文
+        rows_html = ""
+        for i, (_, r) in enumerate(top_5_df.iterrows(), 1):
+            rows_html += f"""
+            <tr>
+                <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{i}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">{r.get('次產業', '')}</td>
+                <td style="padding: 8px; border: 1px solid #ddd; text-align: center;"><b>{r.get('綜合分數', 0)}</b></td>
+                <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{r.get('量化分數', 'N/A')}</td>
+                <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{r.get('AI分數', 'N/A')}</td>
+            </tr>
+            """
+
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; color: #333;">
+            <h2>📊 【台股產業投資策略 1.5版】綜合 Score 前 5 名次產業報告</h2>
+            <p>執行時間：{now_str}</p>
+            <p>以下為系統最新評估出綜合 Score 最高的前 5 名次產業：</p>
+            <table style="border-collapse: collapse; width: 100%; max-width: 600px;">
+                <thead>
+                    <tr style="background-color: #f2f2f2;">
+                        <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">排名</th>
+                        <th style="padding: 10px; border: 1px solid #ddd; text-align: left;">次產業</th>
+                        <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">綜合分數</th>
+                        <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">量化分數</th>
+                        <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">AI分數</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows_html}
+                </tbody>
+            </table>
+            <p style="margin-top: 20px; font-size: 12px; color: #777;">此郵件由台股產業投資策略 1.5 版系統自動發送，請勿直接回覆。</p>
+        </body>
+        </html>
+        """
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"【台股策略 1.5版】綜合 Score 前 5 名次產業報告 ({datetime.now(TZ):%Y-%m-%d})"
+        msg["From"] = sender_email
+        msg["To"] = to_email
+
+        msg.attach(MIMEText(html_content, "html", "utf-8"))
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, to_email, msg.as_string())
+
+        logger.info(f"✅ Email 報告已成功發送至 {to_email}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ 發送 Email 失敗: {e}")
+        return False
+
 
 def automated_daily_job():
     logger.info("開始執行每日自動化新聞抓取與評分記錄...")
@@ -984,12 +1066,13 @@ def automated_daily_job():
         table = pd.DataFrame(rows)
         
         if not table.empty:
-            valid_table = table.dropna(subset=["量化分數"]).sort_values("量化分數", ascending=False)
-            top_3 = valid_table.head(3)
+            valid_table = table.dropna(subset=["綜合分數"]).sort_values("綜合分數", ascending=False)
+            top_5 = valid_table.head(5)
             
+            top_3 = valid_table.head(3)
             top_3_lines = []
             for i, (_, r) in enumerate(top_3.iterrows(), 1):
-                top_3_lines.append(f"  {i}. {r['次產業']} ({r['量化分數']:.1f}分)")
+                top_3_lines.append(f"  {i}. {r['次產業']} ({r['綜合分數']:.1f}分)")
             top_3_text = "\n".join(top_3_lines) if not top_3.empty else "  (無有效評分)"
 
             members = {
@@ -998,16 +1081,21 @@ def automated_daily_job():
             }
             n_logged = append_score_log(table, ai_weight=0.0, model="Auto-Quant", members=members, when=now)
             
+            # 發送 LINE 推播
             msg = (
                 f"【台股產業投資策略 1.5版】自動排程執行成功\n"
                 f"執行日期：{now:%Y-%m-%d %H:%M:%S}\n"
                 f"已自動記錄 {n_logged} 筆次產業分數至 score_log.csv。\n\n"
-                f"🔥 今日量化分數最高前 3 名：\n"
+                f"🔥 今日綜合分數最高前 3 名：\n"
                 f"{top_3_text}\n\n"
                 f"請至 Web App 第五階段查看最新回測與多策略對比曲線。"
             )
             send_line_messaging_api(msg)
-            logger.info("每日自動化抓取與記錄分數成功，已透過 LINE Messaging API 發送推播！")
+            
+            # 自動寄送 Email 報告（前 5 名）
+            send_email_report(top_5)
+            
+            logger.info("每日自動化抓取與記錄分數成功，已透過 LINE 及 Email 發送報告！")
     except Exception as e:
         err_msg = f"❌ 【台股策略 1.5版】自動化排程執行失敗: {e}"
         logger.error(err_msg)
@@ -1114,16 +1202,31 @@ st.set_page_config(page_title="台股產業投資策略 1.5 版", layout="wide")
 st.title("📊 台股產業投資策略 1.5 版 - AI 互動式 Web App")
 
 st.sidebar.header("🛠️ 系統控制與除錯")
-st.sidebar.write("### 背景自動化排程")
-st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取與記錄，並發送 LINE 推播通知。")
+st.sidebar.write("### 背景自動化排程與通知")
+st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取與記錄，並發送 LINE 推播及 Email 報告。")
 
 if st.sidebar.button("🚀 立即執行背景排程任務", type="secondary"):
     with st.spinner("正在手動觸發背景排程任務…"):
         try:
             automated_daily_job()
-            st.sidebar.success("✅ 背景排程與 LINE 推播手動執行成功！")
+            st.sidebar.success("✅ 背景排程、LINE 推播與 Email 報告發送成功！")
         except Exception as e:
             st.sidebar.error(f"❌ 執行失敗: {e}")
+
+# 側邊欄新增手動寄送 Email 測試區塊
+st.sidebar.divider()
+st.sidebar.write("### 📧 Email 報告測試")
+test_email_input = st.sidebar.text_input("接收測試 Email", value=get_secret("RECEIVER_EMAIL") or "")
+if st.sidebar.button("📤 立即寄送前 5 名 Email 報告"):
+    if not st.session_state.score_table.empty:
+        top_5_test = st.session_state.score_table.sort_values("綜合分數", ascending=False).head(5)
+        success = send_email_report(top_5_test, receiver_email=test_email_input if test_email_input else None)
+        if success:
+            st.sidebar.success("✅ Email 測試發送成功！")
+        else:
+            st.sidebar.error("❌ Email 發送失敗，請檢查設定與密鑰。")
+    else:
+        st.sidebar.warning("⚠️ 目前尚無評分數據（請先至第四階段計算次產業分數）。")
 
 _defaults = {
     "news_all": pd.DataFrame(), "news_failed": [], "news_fetched": False,
