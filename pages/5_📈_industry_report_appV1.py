@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-台股產業投資策略 1.5 版（記憶體暫存與 LINE 推播完整整合版）
-包含：新聞爬蟲、二階動能、財報/股價雙指標、Word 報告、AI/量化評分、
-記憶體多期間暫存回測、Plotly 多策略對比、AI 權重最佳化、背景排程與 LINE Messaging API 推播
+台股產業投資策略 1.5 版（完整新聞明細、來源與 LINE 推播整合版）
+包含：新聞爬蟲、詳細新聞列表與來源、二階動能、財報/股價雙指標、Word 報告、
+AI/量化評分、記憶體多期間暫存回測、Plotly 多策略對比、AI 權重最佳化、背景排程與 LINE 推播
 """
 
 import io
@@ -1062,18 +1062,72 @@ with tab1:
         st.session_state.news_all = df_news
         st.session_state.news_failed = failed
         st.session_state.news_fetched = not df_news.empty
+        if df_news.empty:
+            st.warning("目前無法取得新聞資料，請稍後再試。詳見 fetch_errors.log。")
+
+    if st.session_state.news_failed:
+        with st.expander(f"⚠️ {len(st.session_state.news_failed)} 個新聞查詢失敗"):
+            st.dataframe(pd.DataFrame(st.session_state.news_failed), hide_index=True)
 
     if st.session_state.news_fetched:
         df_all = st.session_state.news_all
         now = datetime.now(TZ)
         st.success(f"已取得 {len(df_all)} 則不重複新聞（近 30 天）。")
-        
-        tagged_all, _, _, _ = classify_news(df_all, bull, bear) if not df_all.empty else (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+
+        recent = df_all[df_all["發布時間"] >= now - timedelta(days=list_days)]
+        top_10 = recent.sort_values("分數", ascending=False).head(10)
+        rest = recent[~recent["新聞標題"].isin(top_10["新聞標題"])]
+        bottom_10 = rest.sort_values("分數", ascending=True).head(10)
+        show_cols = ["新聞標題", "來源與日期", "分數"]
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("🔥 最高分數前 10 則產業新聞")
+            st.dataframe(top_10[show_cols].reset_index(drop=True), hide_index=True)
+        with col2:
+            st.subheader("❄️ 最低分數前 10 則產業新聞")
+            st.dataframe(bottom_10[show_cols].reset_index(drop=True), hide_index=True)
+
+        st.divider()
+        tagged_all, _, _, _ = classify_news(df_all, bull, bear)
         momentum_df = compute_momentum(tagged_all, now) if not tagged_all.empty else pd.DataFrame()
-        
         st.session_state.momentum_df = momentum_df
         st.subheader("📈 各次產業二階動能加速度與多期間分佈")
         st.dataframe(momentum_df[[c for c in momentum_df.columns if not c.startswith("_")]], hide_index=True)
+
+        st.divider()
+        st.subheader("🏭 新聞標的與產業位置歸類")
+        scope = st.radio("歸類範圍", ["僅榜單前 / 後 10 則", "全部抓取新聞"], horizontal=True)
+        if scope.startswith("僅"):
+            src = pd.concat(
+                [top_10.assign(榜單="利多榜"), bottom_10.assign(榜單="利空榜")], ignore_index=True
+            ).drop_duplicates(subset="新聞標題")
+        else:
+            src = df_all
+
+        tagged, by_company, by_sector, untagged = classify_news(src, bull, bear)
+        total_titles = src["新聞標題"].nunique()
+        unmatched = untagged["新聞標題"].nunique() if not untagged.empty else 0
+        st.caption(f"{total_titles - unmatched} / {total_titles} 則新聞對應到名單內公司")
+
+        if tagged.empty:
+            st.info("這批新聞沒有出現名單內的公司。")
+        else:
+            t1, t2, t3, t4 = st.tabs(["公司歸類", "次產業 × 供應鏈位置", "新聞明細", "未歸類新聞"])
+            with t1:
+                st.dataframe(by_company, hide_index=True)
+            with t2:
+                st.dataframe(by_sector)
+            with t3:
+                detail = tagged.drop(columns=["發布時間"])
+                st.dataframe(detail, hide_index=True)
+                st.download_button("下載歸類明細 CSV", detail.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name="news_tagged.csv", mime="text/csv")
+            with t4:
+                if untagged.empty:
+                    st.write("無。")
+                else:
+                    st.dataframe(untagged.drop(columns=["發布時間"], errors="ignore"), hide_index=True)
 
 # ---------------------------- Tab 2 ----------------------------
 with tab2:
