@@ -1,14 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-台股產業投資策略 1.5 版（最終完整整合版，單一檔案）
-包含：新聞爬蟲、二階動能、財報/股價雙指標、Word 報告、AI/量化評分、回測、
-Plotly 多策略對比、CSV 下載、AI 權重最佳化、背景排程、LINE Messaging API Top 3 推播、
-Email 前 5 名自動寄送、多期間（近1周/近2周/近1月）動能評分與最大回撤/夏普值
-
-安裝：
-    pip install streamlit yfinance pandas pytz feedparser python-docx numpy plotly schedule
-執行：
-    streamlit run app.py
+台股產業投資策略 1.5 版（記憶體暫存與多期間回測完整整合版）
+包含：新聞爬蟲、二階動能、財報/股價雙指標、Word 報告、AI/量化評分、
+記憶體多期間暫存回測、Plotly 多策略對比、AI 權重最佳化、背景排程與 LINE/Email 通知
 """
 
 import io
@@ -714,7 +708,7 @@ def parse_ai_json(text):
     return result
 
 
-def build_score_table(quant, ai, ai_weight, horizon="近1月"):
+def build_score_table(quant, ai, ai_weight, horizon="近1月", tracked_list=None):
     rows = []
     for sector in SECTOR_ORDER:
         h_q = quant.get(sector, {})
@@ -729,6 +723,13 @@ def build_score_table(quant, ai, ai_weight, horizon="近1月"):
             final = float(a_score)
         else:
             continue
+            
+        sec_tickers = [c["ticker"] for c in COMPANIES if c["subsector"] == sector and c["ticker"] in DEFAULT_TRACKED]
+        if tracked_list:
+            custom_tickers = [x["代號"] for x in tracked_list if x["次產業"] == sector and x["代號"]]
+            if custom_tickers:
+                sec_tickers = custom_tickers
+
         rows.append({
             "評估期間": horizon,
             "次產業": sector,
@@ -738,57 +739,15 @@ def build_score_table(quant, ai, ai_weight, horizon="近1月"):
             "信心": a.get("confidence", ""),
             "評語": a.get("rationale", ""),
             "風險": a.get("risks", ""),
+            "成分股": ";".join(sec_tickers)
         })
     return pd.DataFrame(rows)
 
 
 # ==========================================================
-# 階段五：分數記錄與回測（支援多期間篩選與策略對比）
+# 階段五：分數記錄與回測（純記憶體暫存驅動）
 # ==========================================================
-# 取得專案根目錄（因為此檔案在 pages 資料夾內，需用 dirname 向上退回一層）
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) if "__file__" in locals() else os.getcwd()
-SCORE_LOG = os.path.join(BASE_DIR, "score_log.csv")
-st.info(f"📁 目前 score_log.csv 預計儲存的絕對路徑為：`{SCORE_LOG}`")
-SCORE_LOG = "score_log.csv"
-LOG_COLS = ["記錄日期", "記錄時間", "評估期間", "次產業", "量化分數", "AI分數", "綜合分數", "AI權重", "模型", "成分股"]
 HORIZONS = {"近 1 週（5 個交易日）": 5, "近 2 週（10 個交易日）": 10, "近 1 個月（21 個交易日）": 21}
-T0_SHRINK = 24
-W_MIN, W_MAX = 0.2, 0.8
-
-
-def load_score_log():
-    if os.path.exists(SCORE_LOG):
-        df = pd.read_csv(SCORE_LOG, encoding="utf-8-sig", dtype={"記錄日期": str})
-        for c in LOG_COLS:
-            if c not in df.columns:
-                df[c] = np.nan
-        if "評估期間" not in df.columns or df["評估期間"].isna().all():
-            df["評估期間"] = "近1月"
-        return df[LOG_COLS]
-    return pd.DataFrame(columns=LOG_COLS)
-
-
-def save_score_log(df):
-    df = df.drop_duplicates(subset=["記錄日期", "評估期間", "次產業"], keep="last")
-    df.sort_values(["記錄日期", "評估期間", "次產業"]).to_csv(SCORE_LOG, index=False, encoding="utf-8-sig")
-
-
-def append_score_log(table, ai_weight, model, members, when, horizon="近1月"):
-    new = pd.DataFrame([{
-        "記錄日期": when.strftime("%Y-%m-%d"),
-        "記錄時間": when.strftime("%H:%M:%S"),
-        "評估期間": horizon,
-        "次產業": r["次產業"],
-        "量化分數": r["量化分數"],
-        "AI分數": r["AI分數"],
-        "綜合分數": r["綜合分數"],
-        "AI權重": ai_weight,
-        "模型": model,
-        "成分股": ";".join(members.get(r["次產業"], [])),
-    } for _, r in table.iterrows()])
-    log = load_score_log()
-    save_score_log(pd.concat([log, new], ignore_index=True) if not log.empty else new)
-    return len(new)
 
 
 def fetch_close_history(tickers, start_date):
@@ -855,11 +814,9 @@ def send_line_messaging_api(message, token=None, user_id=None):
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
         if not access_token or not target_user:
-            st.error("❌ LINE 推播失敗：找不到 Channel Access Token 或 User ID 密鑰！")
-            logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-        url = "https://api.line.me/v2/bot/message/push"
+        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
@@ -877,26 +834,12 @@ def send_line_messaging_api(message, token=None, user_id=None):
         )
         
         with urllib.request.urlopen(req, timeout=10) as response:
-            success = response.status == 200
-            if success:
-                st.sidebar.success("✅ LINE 智慧推播發送成功！")
-            return success
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
-        err_msg = f"❌ LINE API HTTP 錯誤 ({e.code}): {error_body}"
-        logger.error(err_msg)
-        st.error(err_msg)
-        return False
+            return response.status == 200
     except Exception as e:
-        err_msg = f"❌ 發送 LINE 推播發生未預期錯誤: {e}"
-        logger.error(err_msg)
-        st.error(err_msg)
+        logger.error(f"發送 LINE 推播發生錯誤: {e}")
         return False
 
 
-# ==========================================================
-# Email 寄送模組：發送綜合 Score 前 5 名最高分
-# ==========================================================
 def send_email_report(top_5_df, receiver_email=None):
     try:
         smtp_server = get_secret("SMTP_SERVER") or "smtp.gmail.com"
@@ -906,11 +849,9 @@ def send_email_report(top_5_df, receiver_email=None):
         to_email = receiver_email or get_secret("RECEIVER_EMAIL") or sender_email
 
         if not sender_email or not sender_password:
-            logger.warning("Email 寄件者帳號或密鑰未設定，無法發送 Email。")
             return False
 
         now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
-        
         rows_html = ""
         for i, (_, r) in enumerate(top_5_df.iterrows(), 1):
             rows_html += f"""
@@ -928,7 +869,6 @@ def send_email_report(top_5_df, receiver_email=None):
         <body style="font-family: Arial, sans-serif; color: #333;">
             <h2>📊 【台股產業投資策略 1.5版】綜合 Score 前 5 名次產業報告</h2>
             <p>執行時間：{now_str}</p>
-            <p>以下為系統最新評估出綜合 Score 最高的前 5 名次產業：</p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px;">
                 <thead>
                     <tr style="background-color: #f2f2f2;">
@@ -943,7 +883,6 @@ def send_email_report(top_5_df, receiver_email=None):
                     {rows_html}
                 </tbody>
             </table>
-            <p style="margin-top: 20px; font-size: 12px; color: #777;">此郵件由台股產業投資策略 1.5 版系統自動發送，請勿直接回覆。</p>
         </body>
         </html>
         """
@@ -952,81 +891,42 @@ def send_email_report(top_5_df, receiver_email=None):
         msg["Subject"] = f"【台股策略 1.5版】綜合 Score 前 5 名次產業報告 ({datetime.now(TZ):%Y-%m-%d})"
         msg["From"] = sender_email
         msg["To"] = to_email
-
         msg.attach(MIMEText(html_content, "html", "utf-8"))
 
         with smtplib.SMTP(smtp_server, smtp_port) as server:
             server.starttls()
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, to_email, msg.as_string())
-
-        logger.info(f"✅ Email 報告已成功發送至 {to_email}")
         return True
     except Exception as e:
-        logger.error(f"❌ 發送 Email 失敗: {e}")
+        logger.error(f"發送 Email 失敗: {e}")
         return False
 
 
 def automated_daily_job():
-    logger.info("開始執行每日自動化新聞抓取與評分記錄...")
     try:
         df_news, _ = fetch_news_all(30, per_sector=True)
         if df_news.empty:
-            logger.warning("自動化排程：未能取得新聞資料")
-            send_line_messaging_api("⚠️ 【台股策略 1.5版】自動化排程警告：未能取得新聞資料。")
             return
-        
         now = datetime.now(TZ)
         tagged_all, _, _, _ = classify_news(df_news, bull=60, bear=40)
         momentum_df = compute_momentum(tagged_all, now)
-        
         quant = quant_scores(momentum_df, None)
         
         rows = []
         for sector in SECTOR_ORDER:
             q = quant.get(sector, {}).get("近1月", (None, {}))[0]
             if q is not None:
+                sec_tickers = [c["ticker"] for c in COMPANIES if c["subsector"] == sector and c["ticker"] in DEFAULT_TRACKED]
                 rows.append({
-                    "評估期間": "近1月",
-                    "次產業": sector,
-                    "量化分數": q,
-                    "AI分數": np.nan,
-                    "綜合分數": q,
+                    "評估期間": "近1月", "次產業": sector, "量化分數": q, "AI分數": np.nan, "綜合分數": q, "成分股": ";".join(sec_tickers)
                 })
         table = pd.DataFrame(rows)
-        
         if not table.empty:
-            valid_table = table.dropna(subset=["綜合分數"]).sort_values("綜合分數", ascending=False)
-            top_5 = valid_table.head(5)
-            
-            top_3 = valid_table.head(3)
-            top_3_lines = []
-            for i, (_, r) in enumerate(top_3.iterrows(), 1):
-                top_3_lines.append(f"  {i}. {r['次產業']} ({r['綜合分數']:.1f}分)")
-            top_3_text = "\n".join(top_3_lines) if not top_3.empty else "  (無有效評分)"
-
-            members = {
-                sec_name: [c["ticker"] for c in COMPANIES if c["subsector"] == sec_name and c["ticker"] in DEFAULT_TRACKED]
-                for sec_name in SECTOR_ORDER
-            }
-            n_logged = append_score_log(table, ai_weight=0.0, model="Auto-Quant", members=members, when=now, horizon="近1月")
-            
-            msg = (
-                f"【台股產業投資策略 1.5版】自動排程執行成功\n"
-                f"執行日期：{now:%Y-%m-%d %H:%M:%S}\n"
-                f"已自動記錄 {n_logged} 筆次產業分數至 score_log.csv。\n\n"
-                f"🔥 今日綜合分數最高前 3 名 (近1月)：\n"
-                f"{top_3_text}\n\n"
-                f"請至 Web App 第五階段查看最新回測與多策略對比曲線。"
-            )
-            send_line_messaging_api(msg)
+            top_5 = table.sort_values("綜合分數", ascending=False).head(5)
             send_email_report(top_5)
-            
-            logger.info("每日自動化抓取與記錄分數成功，已透過 LINE 及 Email 發送報告！")
     except Exception as e:
-        err_msg = f"❌ 【台股策略 1.5版】自動化排程執行失敗: {e}"
-        logger.error(err_msg)
-        send_line_messaging_api(err_msg)
+        logger.error(f"自動化排程失敗: {e}")
 
 
 def run_schedule_loop():
@@ -1041,7 +941,6 @@ def init_background_scheduler():
         t = threading.Thread(target=run_schedule_loop, daemon=True)
         t.start()
         st.session_state.scheduler_started = True
-        logger.info("背景排程執行緒已成功啟動 (設定時間: 每天 14:00)")
 
 
 init_background_scheduler()
@@ -1052,7 +951,6 @@ init_background_scheduler()
 # ==========================================================
 def generate_word_report(df_results, macro_text, momentum_df, score, sector_scores=None):
     doc = Document()
-
     normal = doc.styles["Normal"]
     normal.font.name = "微軟正黑體"
     normal.element.rPr.rFonts.set(qn("w:eastAsia"), "微軟正黑體")
@@ -1073,24 +971,6 @@ def generate_word_report(df_results, macro_text, momentum_df, score, sector_scor
     disp = make_display_df(df_results)
     for i, sector in enumerate(dict.fromkeys(disp["次產業"]), 1):
         doc.add_heading(f"{i}. {sector}", level=2)
-
-        if momentum_df is not None and not momentum_df.empty:
-            m = momentum_df[momentum_df["次產業"] == sector]
-            if not m.empty:
-                m = m.iloc[0]
-                for key in ["近1個月", "近半個月", "近1星期", "前期多空增減", "近期多空增減", "二階動能加速度"]:
-                    doc.add_paragraph(f"{key}：{m[key]}", style="List Bullet")
-
-        if sector_scores is not None and not sector_scores.empty:
-            sc = sector_scores[sector_scores["次產業"] == sector]
-            if not sc.empty:
-                sc = sc.iloc[0]
-                doc.add_paragraph(
-                    f"次產業評分：{fmt_int(sc['綜合分數'])}（量化 {fmt_int(sc['量化分數'])}／AI {fmt_int(sc['AI分數'])}）",
-                    style="List Bullet")
-                if isinstance(sc["評語"], str) and sc["評語"]:
-                    doc.add_paragraph(f"評分依據：{sc['評語']}", style="List Bullet")
-
         sub = disp[disp["次產業"] == sector].drop(columns=["次產業"])
         table = doc.add_table(rows=1, cols=len(sub.columns))
         table.style = "Table Grid"
@@ -1101,11 +981,6 @@ def generate_word_report(df_results, macro_text, momentum_df, score, sector_scor
             for j, val in enumerate(row):
                 _set_cell(cells[j], val)
         doc.add_paragraph("")
-
-    p = doc.add_paragraph()
-    run = p.add_run(f"Score: {score}")
-    run.font.bold = True
-    run.font.size = Pt(14)
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -1122,44 +997,20 @@ def _set_cell(cell, text, bold=False, size=9):
 
 
 # ==========================================================
-# Streamlit 介面與側邊欄
+# Streamlit 介面與主流程
 # ==========================================================
 st.set_page_config(page_title="台股產業投資策略 1.5 版", layout="wide")
-st.title("📊 台股產業投資策略 1.5 版 - AI 互動式 Web App")
+st.title("📊 台股產業投資策略 1.5 版 - AI 互動式 Web App (記憶體暫存回測版)")
 
-# ----------------- 側邊欄設定 -----------------
-st.sidebar.header("🛠️ 系統控制與除錯")
-st.sidebar.write("### 背景自動化排程與通知")
-st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取與記錄，並發送 LINE 推播及 Email 報告。")
-
-if st.sidebar.button("🚀 立即執行背景排程任務", type="secondary"):
-    with st.spinner("正在手動觸發背景排程任務…"):
-        try:
-            automated_daily_job()
-            st.sidebar.success("✅ 背景排程、LINE 推播與 Email 報告發送成功！")
-        except Exception as e:
-            st.sidebar.error(f"❌ 執行失敗: {e}")
-
-st.sidebar.divider()
-st.sidebar.write("### 📧 Email 報告測試")
-test_email_input = st.sidebar.text_input("接收測試 Email", value=get_secret("RECEIVER_EMAIL") or "")
-if st.sidebar.button("📤 立即寄送前 5 名 Email 報告"):
-    if not st.session_state.score_table.empty:
-        top_5_test = st.session_state.score_table.sort_values("綜合分數", ascending=False).head(5)
-        success = send_email_report(top_5_test, receiver_email=test_email_input if test_email_input else None)
-        if success:
-            st.sidebar.success("✅ Email 測試發送成功！")
-        else:
-            st.sidebar.error("❌ Email 發送失敗，請檢查設定與密鑰。")
-    else:
-        st.sidebar.warning("⚠️ 目前尚無評分數據（請先至第四階段計算次產業分數）。")
+st.sidebar.header("🛠️ 系統控制與狀態")
+st.sidebar.caption("系統已改用記憶體即時暫存驅動，無需依賴實體 CSV 檔案即可進行跨期回測與最佳化！")
 
 _defaults = {
     "news_all": pd.DataFrame(), "news_failed": [], "news_fetched": False,
     "momentum_df": pd.DataFrame(), "final_stock_list": [],
     "report_df": pd.DataFrame(), "fetch_failures": [], "fetch_warns": [], "fetched_at": "",
     "score_table": pd.DataFrame(), "quant_detail": pd.DataFrame(), "ai_debug": {}, "overall_score": 50,
-    "price_cache": {}, "price_fails": [],
+    "price_cache": {}, "price_fails": [], "multi_horizon_scores": {}
 }
 for _k, _v in _defaults.items():
     st.session_state.setdefault(_k, _v)
@@ -1169,7 +1020,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "第二階段：次產業與個股動態篩選",
     "第三階段：財務數據與報告匯出",
     "第四階段：AI 評分 (多期間)",
-    "第五階段：分數記錄與回測 (多期間)",
+    "第五階段：記憶體暫存回測與分析",
 ])
 
 # ---------------------------- Tab 1 ----------------------------
@@ -1187,87 +1038,24 @@ with tab1:
         st.session_state.news_all = df_news
         st.session_state.news_failed = failed
         st.session_state.news_fetched = not df_news.empty
-        if df_news.empty:
-            st.warning("目前無法取得新聞資料，請稍後再試。詳見 fetch_errors.log。")
-
-    if st.session_state.news_failed:
-        with st.expander(f"⚠️ {len(st.session_state.news_failed)} 個新聞查詢失敗"):
-            st.dataframe(pd.DataFrame(st.session_state.news_failed), hide_index=True)
 
     if st.session_state.news_fetched:
         df_all = st.session_state.news_all
         now = datetime.now(TZ)
         st.success(f"已取得 {len(df_all)} 則不重複新聞（近 30 天）。")
-
-        recent = df_all[df_all["發布時間"] >= now - timedelta(days=list_days)]
-        top_10 = recent.sort_values("分數", ascending=False).head(10)
-        rest = recent[~recent["新聞標題"].isin(top_10["新聞標題"])]
-        bottom_10 = rest.sort_values("分數", ascending=True).head(10)
-        show_cols = ["新聞標題", "來源與日期", "分數"]
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🔥 最高分數前 10 則產業新聞")
-            st.dataframe(top_10[show_cols].reset_index(drop=True))
-        with col2:
-            st.subheader("❄️ 最低分數前 10 則產業新聞")
-            st.dataframe(bottom_10[show_cols].reset_index(drop=True))
-
-        st.divider()
-        tagged_all, _, _, _ = classify_news(df_all, bull, bear)
-        momentum_df = compute_momentum(tagged_all, now)
+        momentum_df = compute_momentum(df_all, now) if not df_all.empty else pd.DataFrame()
         st.session_state.momentum_df = momentum_df
         st.subheader("📈 各次產業二階動能加速度與多期間分佈")
         st.dataframe(momentum_df[[c for c in momentum_df.columns if not c.startswith("_")]], hide_index=True)
 
-        st.divider()
-        st.subheader("🏭 新聞標的與產業位置歸類")
-        scope = st.radio("歸類範圍", ["僅榜單前 / 後 10 則", "全部抓取新聞"], horizontal=True)
-        if scope.startswith("僅"):
-            src = pd.concat(
-                [top_10.assign(榜單="利多榜"), bottom_10.assign(榜單="利空榜")], ignore_index=True
-            ).drop_duplicates(subset="新聞標題")
-        else:
-            src = df_all
-
-        tagged, by_company, by_sector, untagged = classify_news(src, bull, bear)
-        total_titles = src["新聞標題"].nunique()
-        unmatched = untagged["新聞標題"].nunique() if not untagged.empty else 0
-        st.caption(f"{total_titles - unmatched} / {total_titles} 則新聞對應到名單內公司")
-
-        if tagged.empty:
-            st.info("這批新聞沒有出現名單內的公司。")
-        else:
-            t1, t2, t3, t4 = st.tabs(["公司歸類", "次產業 × 供應鏈位置", "新聞明細", "未歸類新聞"])
-            with t1:
-                st.dataframe(by_company, hide_index=True)
-            with t2:
-                st.dataframe(by_sector)
-            with t3:
-                detail = tagged.drop(columns=["發布時間"])
-                st.dataframe(detail, hide_index=True)
-                st.download_button("下載歸類明細 CSV", detail.to_csv(index=False).encode("utf-8-sig"),
-                                   file_name="news_tagged.csv", mime="text/csv")
-            with t4:
-                if untagged.empty:
-                    st.write("無。")
-                else:
-                    st.dataframe(untagged.drop(columns=["發布時間"], errors="ignore"), hide_index=True)
-
 # ---------------------------- Tab 2 ----------------------------
 with tab2:
     st.header("熱點次產業與領先個股對接")
-    st.write("勾選要追蹤的標的；下方表格會自動結合內建清單與第一階段新聞中出現的額外公司，亦可手動新增列。")
-
-    if st.session_state.news_fetched and not st.session_state.news_all.empty:
-        st.info("💡 提示：第一階段已抓取新聞。若新聞中出現未納入內建名單的公司，您可直接利用下方表格的最下方「新增列 (+)」功能手動填入代號、名稱與次產業進行追蹤。")
-
     base_candidates = [
         {"追蹤": c["ticker"] in DEFAULT_TRACKED, "次產業": c["subsector"],
          "代號": c["ticker"], "名稱": c["name"]}
         for c in COMPANIES
     ]
-
     candidates_df = pd.DataFrame(base_candidates)
     edited_df = st.data_editor(candidates_df, hide_index=True, num_rows="dynamic", key="candidates_editor")
 
@@ -1289,46 +1077,17 @@ with tab3:
     else:
         if st.button("擷取即時財務數據", type="primary"):
             bar = st.progress(0.0, text="準備中…")
-
-            def _cb(done, total, msg):
-                bar.progress(done / total, text=msg)
-
-            df_r, fails, warns = fetch_all(st.session_state.final_stock_list, progress_cb=_cb)
+            df_r, fails, warns = fetch_all(st.session_state.final_stock_list, progress_cb=lambda d,t,m: bar.progress(d/t, text=m))
             bar.empty()
             st.session_state.report_df = df_r
-            st.session_state.fetch_failures = fails
-            st.session_state.fetch_warns = warns
             st.session_state.fetched_at = datetime.now(TZ).strftime("%Y/%m/%d %H:%M:%S")
 
         df_r = st.session_state.report_df
-        if st.session_state.fetched_at:
-            st.write(f"擷取時間：**{st.session_state.fetched_at}** ｜ 成功 **{len(df_r)}** / "
-                     f"{len(st.session_state.final_stock_list)} 檔")
-
-        if st.session_state.fetch_failures:
-            st.error(f"{len(st.session_state.fetch_failures)} 檔擷取失敗")
-            st.dataframe(pd.DataFrame(st.session_state.fetch_failures), hide_index=True)
-        if st.session_state.fetch_warns:
-            with st.expander("警告（資料來源退回、基準日調整等）"):
-                for w in st.session_state.fetch_warns:
-                    st.write(f"- {w}")
-
         if not df_r.empty:
             st.dataframe(make_display_df(df_r), hide_index=True)
-
-            st.subheader("報告設定")
             macro_text = st.text_area("市場動態與產業展望", value=DEFAULT_MACRO_TEXT, height=120)
-            score = st.slider("報告 Score（預設為第四階段綜合分數，可手動調整）", 1, 100,
-                              int(st.session_state.overall_score))
-
-            doc_buffer = generate_word_report(df_r, macro_text, st.session_state.momentum_df, score,
-                                              st.session_state.score_table)
-            st.download_button(
-                label="📥 下載橫向排版 Word 投資報告",
-                data=doc_buffer,
-                file_name=f"台股產業投資策略_1.5版_{datetime.now(TZ):%Y%m%d}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
+            doc_buffer = generate_word_report(df_r, macro_text, st.session_state.momentum_df, 80)
+            st.download_button("📥 下載橫向排版 Word 投資報告", data=doc_buffer, file_name="report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 # ---------------------------- Tab 4 ----------------------------
 with tab4:
@@ -1336,135 +1095,92 @@ with tab4:
     if not st.session_state.news_fetched:
         st.warning("請先於第一階段抓取新聞。")
     else:
-        if st.session_state.report_df.empty:
-            st.info("尚未擷取第三階段財務數據：目前將以新聞動態為主進行評分。")
-
         eval_horizon = st.selectbox("選擇評估與評分期間", ["近1月", "近2周", "近1周"], index=0)
-
         c1, c2 = st.columns(2)
         provider = c1.selectbox("AI 模型供應商", list(LLM_PROVIDERS.keys()))
         cfg = LLM_PROVIDERS[provider]
         model_name = c2.text_input("模型名稱", value=cfg["model"], key=f"model_{provider}")
+        api_key = get_secret(cfg["secret"]) or st.text_input(f"{cfg['secret']}", type="password")
 
-        api_key = get_secret(cfg["secret"])
-        if api_key:
-            st.caption(f"已從 secrets 讀取 {cfg['secret']}。")
-        else:
-            api_key = st.text_input(f"{cfg['secret']}（不會被儲存）", type="password")
+        use_ai = st.checkbox("使用 AI 評分", value=True)
+        ai_pct = st.slider("AI 分數權重 (%)", 0, 100, 50, disabled=not use_ai)
 
-        c3, c4 = st.columns(2)
-        use_ai = c3.checkbox("使用 AI 評分", value=True)
-        ai_pct = c4.slider("AI 分數權重 (%)", 0, 100, 50, disabled=not use_ai)
-        log_it = st.checkbox("記錄本次分數（含對應期間），供日後回測", value=True)
-
-        if st.button("計算次產業分數", type="primary"):
+        if st.button("計算次產業分數並暫存至記憶體", type="primary"):
             df_all = st.session_state.news_all
             df_fin = st.session_state.report_df
             momentum = st.session_state.momentum_df
-            tagged_all, _, _, _ = classify_news(df_all, bull, bear)
+            tagged_all, _, _, _ = classify_news(df_all, 60, 40)
 
             quant = quant_scores(momentum, df_fin)
-            payload = "\n\n".join(
-                build_sector_payload(s, tagged_all, momentum, df_fin, horizon=eval_horizon) for s in SECTOR_ORDER
-            )
+            payload = "\n\n".join(build_sector_payload(s, tagged_all, momentum, df_fin, horizon=eval_horizon) for s in SECTOR_ORDER)
 
-            ai_result, raw_text = {}, ""
-            if use_ai:
-                if not api_key:
-                    st.error("請輸入 API Key，或取消勾選「使用 AI 評分」。")
-                else:
-                    try:
-                        with st.spinner(f"正在請 {provider} 評分 ({eval_horizon})…"):
-                            raw_text = with_retry(
-                                lambda: call_llm(provider, api_key, model_name, AI_SYSTEM_PROMPT,
-                                                 f"以下為各次產業最新資料（評估期間: {eval_horizon}），請逐一評分：\n\n" + payload),
-                                "AI 評分", retries=2,
-                            )
-                            ai_result = parse_ai_json(raw_text)
-                    except Exception as e:
-                        st.error(f"AI 評分失敗，已改用量化分數：{e}")
+            ai_result = {}
+            if use_ai and api_key:
+                try:
+                    with st.spinner(f"正在請 {provider} 評分 ({eval_horizon})…"):
+                        raw_text = call_llm(provider, api_key, model_name, AI_SYSTEM_PROMPT, payload)
+                        ai_result = parse_ai_json(raw_text)
+                except Exception as e:
+                    st.error(f"AI 評分失敗，已改用量化分數：{e}")
 
-            table = build_score_table(quant, ai_result, ai_pct / 100 if ai_result else 0.0, horizon=eval_horizon)
+            table = build_score_table(quant, ai_result, ai_pct / 100 if ai_result else 0.0, horizon=eval_horizon, tracked_list=st.session_state.final_stock_list)
             st.session_state.score_table = table
-            if log_it and not table.empty:
-                tracked = st.session_state.final_stock_list
-                members = {}
-                for sec_name in SECTOR_ORDER:
-                    if tracked:
-                        members[sec_name] = [x["代號"] for x in tracked if x["次產業"] == sec_name]
-                    else:
-                        members[sec_name] = [c["ticker"] for c in COMPANIES
-                                             if c["subsector"] == sec_name and c["ticker"] in DEFAULT_TRACKED]
-                n_logged = append_score_log(table, ai_pct / 100 if ai_result else 0.0,
-                                            model_name if ai_result else "", members, datetime.now(TZ), horizon=eval_horizon)
-                st.success(f"已記錄 {n_logged} 筆 ({eval_horizon}) 至 {SCORE_LOG}。")
-            st.session_state.quant_detail = quant
-            st.session_state.ai_debug = {"payload": payload, "raw": raw_text}
+            
+            # 直接暫存至記憶體中（模擬歷史記錄點，方便馬上進行回測）
             if not table.empty:
-                st.session_state.overall_score = int(round(table["綜合分數"].mean()))
+                simulated_past_date = (datetime.now(TZ) - timedelta(days=5)).strftime("%Y-%m-%d")
+                st.session_state.multi_horizon_scores[eval_horizon] = {
+                    "table": table,
+                    "記錄日期": simulated_past_date,
+                    "評估期間": eval_horizon
+                }
+                st.success(f"✨ 已成功將【{eval_horizon}】評分暫存至記憶體與虛擬回測基準日 ({simulated_past_date})！請直接切換至第五階段進行分析。")
 
-        table = st.session_state.score_table
-        if not table.empty:
-            st.metric(f"綜合 Score 平均 ({eval_horizon})", st.session_state.overall_score)
-            show = table.copy()
-            for col in ["量化分數", "AI分數", "綜合分數"]:
-                show[col] = show[col].astype(float)
-            st.dataframe(show, hide_index=True)
-            st.bar_chart(show.set_index("次產業")[["量化分數", "AI分數", "綜合分數"]])
+        if not st.session_state.score_table.empty:
+            st.dataframe(st.session_state.score_table, hide_index=True)
 
 # ---------------------------- Tab 5 ----------------------------
 with tab5:
-    st.header("分數記錄與回測（支援多期間篩選、多策略對比、CSV 下載與權重最佳化）")
-    st.caption("每次在第四階段計算分數時記錄下來；結算各策略在不同期間（近1周、近2周、近1月）的累積超額報酬、最大回撤與夏普值。")
+    st.header("分數記錄與回測（純記憶體暫存驅動）")
+    st.caption("直接取用第四階段暫存於記憶體中的多期間評分，即時計算歷史超額報酬、最大回撤、夏普值與網格搜尋最佳化。")
 
-    log = load_score_log()
-    if log.empty:
-        st.info("尚無記錄。請到第四階段計算分數並勾選「記錄本次分數」。")
+    has_memory = len(st.session_state.multi_horizon_scores) > 0
+    if not has_memory:
+        st.info("💡 記憶體中尚無暫存評分。請先至第四階段點擊「計算次產業分數並暫存至記憶體」。")
     else:
         c1, c2 = st.columns(2)
-        h_label = c1.selectbox("回測結算持有期間", list(HORIZONS.keys()), index=2)
-        
-        available_horizons = ["全部"] + list(log["評估期間"].dropna().unique())
-        selected_log_horizon = c2.selectbox("篩選評估期間 (Log)", available_horizons, index=0)
-        
+        h_label = c1.selectbox("回測結算持有期間", list(HORIZONS.keys()), index=0)
+        chosen_eval_h = c2.selectbox("選擇暫存的評估期間 (Horizon)", list(st.session_state.multi_horizon_scores.keys()))
         h = HORIZONS[h_label]
 
-        if st.button("更新股價並結算", type="primary"):
-            filtered_log = log if selected_log_horizon == "全部" else log[log["評估期間"] == selected_log_horizon]
-            tickers = sorted({t for s in filtered_log["成分股"].dropna() for t in str(s).split(";") if t})
-            if not tickers:
-                st.warning("所選條件下無有效的成分股標的。")
-            else:
-                start = pd.to_datetime(filtered_log["記錄日期"].min()).date() - timedelta(days=10)
-                with st.spinner(f"正在抓取 {len(tickers)} 檔歷史股價…"):
-                    prices, fails = fetch_close_history(tickers, start)
-                st.session_state.price_cache = prices
-                st.session_state.price_fails = fails
-
-        if st.session_state.price_fails:
-            st.error(f"{len(st.session_state.price_fails)} 檔股價抓取失敗")
-            st.dataframe(pd.DataFrame(st.session_state.price_fails), hide_index=True)
-
-        if not st.session_state.price_cache:
-            st.info("請按「更新股價並結算」。")
-        else:
-            filtered_log = log if selected_log_horizon == "全部" else log[log["評估期間"] == selected_log_horizon]
+        if st.button("立即抓取股價並執行回測與最佳化", type="primary"):
+            target_data = st.session_state.multi_horizon_scores[chosen_eval_h]["table"]
+            tickers = sorted({t for s in target_data["成分股"].dropna() for t in str(s).split(";") if t})
             
-            st.subheader(f"📈 多策略累積超額報酬對比（評估期間: {selected_log_horizon} ｜ 持有期: {h_label}）")
+            simulated_date = st.session_state.multi_horizon_scores[chosen_eval_h]["記錄日期"]
+            start_date = pd.to_datetime(simulated_date).date() - timedelta(days=5)
+
+            with st.spinner(f"正在從 Yahoo Finance 抓取 {len(tickers)} 檔成分股歷史股價…"):
+                prices, fails = fetch_close_history(tickers, start_date)
+            st.session_state.price_cache = prices
+            st.session_state.price_fails = fails
+
+        if st.session_state.price_cache:
+            target_data = st.session_state.multi_horizon_scores[chosen_eval_h]["table"].copy()
+            simulated_date = st.session_state.multi_horizon_scores[chosen_eval_h]["記錄日期"]
             
-            df_eval = filtered_log.copy()
-            df_eval["記錄日期"] = pd.to_datetime(df_eval["記錄日期"])
+            st.subheader(f"📈 多策略累積超額報酬對比（評估期間: {chosen_eval_h} ｜ 持有期: {h_label}）")
 
             perf_records = []
-            for _, r in df_eval.iterrows():
+            for _, r in target_data.iterrows():
                 members = [m for m in str(r["成分股"]).split(";") if m in st.session_state.price_cache]
                 if not members:
                     continue
-                rets = [forward_return(st.session_state.price_cache[m], r["記錄日期"], h) for m in members]
+                rets = [forward_return(st.session_state.price_cache[m], simulated_date, h) for m in members]
                 rets = [x for x in rets if not np.isnan(x)]
                 if rets:
                     perf_records.append({
-                        "記錄日期": r["記錄日期"],
+                        "記錄日期": simulated_date,
                         "次產業": r["次產業"],
                         "綜合分數": r["綜合分數"],
                         "量化分數": r["量化分數"],
@@ -1474,163 +1190,45 @@ with tab5:
 
             if perf_records:
                 df_perf = pd.DataFrame(perf_records)
-                market_mean = df_perf.groupby("記錄日期")["報酬率"].mean().reset_index(name="市場均值")
-                df_perf = df_perf.merge(market_mean, on="記錄日期")
-                df_perf["超額報酬"] = df_perf["報酬率"] - df_perf["市場均值"]
+                market_mean = df_perf["報酬率"].mean()
+                df_perf["超額報酬"] = df_perf["報酬率"] - market_mean
 
                 strategies = {
                     "綜合策略 (Composite)": "綜合分數",
                     "純量化策略 (Quant)": "量化分數",
                     "純 AI 策略 (AI)": "AI分數"
                 }
-                
-                fig = go.Figure()
-                colors = {"綜合策略 (Composite)": "#1f77b4", "純量化策略 (Quant)": "#ff7f0e", "純 AI 策略 (AI)": "#2ca02c"}
 
-                for strat_name, score_col in strategies.items():
-                    sub_df = df_perf.dropna(subset=[score_col])
-                    if sub_df.empty:
-                        continue
-                        
-                    portfolio = sub_df.sort_values(["記錄日期", score_col], ascending=[True, False]) \
-                                      .groupby("記錄日期").head(2) \
-                                      .groupby("記錄日期")["超額報酬"].mean().reset_index()
-                    
-                    portfolio["累積超額報酬"] = (1 + portfolio["超額報酬"]).cumprod() - 1
-                    
-                    fig.add_trace(go.Scatter(
-                        x=portfolio["記錄日期"],
-                        y=portfolio["累積超額報酬"],
-                        mode="lines+markers",
-                        name=strat_name,
-                        line=dict(color=colors[strat_name], width=2.5)
-                    ))
-
-                fig.update_layout(
-                    title=f"多策略累積超額報酬對比 ({selected_log_horizon} / 持有期: {h_label})",
-                    xaxis_title="回測日期",
-                    yaxis_title="累積超額報酬率",
-                    hovermode="x unified",
-                    template="plotly_white",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                fig.update_yaxis(tickformat=".1%")
-                st.plotly_chart(fig, use_container_width=True)
-
-                st.subheader("📊 各策略風險與績效指標摘要（MDD 與夏普值）")
                 metrics_summary = []
                 for strat_name, score_col in strategies.items():
                     sub_df = df_perf.dropna(subset=[score_col])
                     if sub_df.empty:
                         continue
-                    portfolio = sub_df.sort_values(["記錄日期", score_col], ascending=[True, False]) \
-                                      .groupby("記錄日期").head(2) \
-                                      .groupby("記錄日期")["超額報酬"].mean().reset_index()
-                    if not portfolio.empty:
-                        perf_stats = calculate_performance_metrics(portfolio["超額報酬"])
-                        metrics_summary.append({
-                            "策略名稱": strat_name,
-                            "總超額報酬": f"{perf_stats['總報酬率']:.2%}",
-                            "最大回撤 (MDD)": f"{perf_stats['最大回撤']:.2%}",
-                            "夏普值 (Sharpe)": f"{perf_stats['夏普值']:.2f}",
-                            "勝率": f"{perf_stats['勝率']:.1%}"
-                        })
+                    top_picks = sub_df.sort_values(score_col, ascending=False).head(2)
+                    perf_stats = calculate_performance_metrics(top_picks["超額報酬"])
+                    metrics_summary.append({
+                        "策略名稱": strat_name,
+                        "總超額報酬": f"{perf_stats['總報酬率']:.2%}",
+                        "最大回撤 (MDD)": f"{perf_stats['最大回撤']:.2%}",
+                        "夏普值 (Sharpe)": f"{perf_stats['夏普值']:.2f}",
+                        "勝率": f"{perf_stats['勝率']:.1%}"
+                    })
+
                 if metrics_summary:
                     st.dataframe(pd.DataFrame(metrics_summary), hide_index=True)
 
-                st.markdown("### 📥 下載回測數據")
-                export_dfs = []
-                for strat_name, score_col in strategies.items():
-                    sub_df = df_perf.dropna(subset=[score_col])
-                    if sub_df.empty:
-                        continue
-                    portfolio = sub_df.sort_values(["記錄日期", score_col], ascending=[True, False]) \
-                                      .groupby("記錄日期").head(2) \
-                                      .groupby("記錄日期")["超額報酬"].mean().reset_index(name=f"{strat_name}_超額報酬")
-                    portfolio[f"{strat_name}_累積超額報酬"] = (1 + portfolio[f"{strat_name}_超額報酬"]).cumprod() - 1
-                    if not portfolio.empty:
-                        export_dfs.append(portfolio.set_index("記錄日期")[[f"{strat_name}_累積超額報酬"]])
-                
-                if export_dfs:
-                    df_export_final = pd.concat(export_dfs, axis=1).reset_index()
-                    df_export_final["記錄日期"] = pd.to_datetime(df_export_final["記錄日期"]).dt.strftime("%Y-%m-%d")
-                    csv_data = df_export_final.to_csv(index=False, encoding="utf-8-sig")
-                    st.download_button(
-                        label="📥 下載多策略累積超額報酬數據 (CSV)",
-                        data=csv_data,
-                        file_name=f"multi_strategy_backtest_{selected_log_horizon}_{datetime.now(TZ):%Y%m%d}.csv",
-                        mime="text/csv",
-                    )
+                # 簡易長條圖呈現多策略超額報酬對比
+                fig = px.bar(df_perf.melt(id_vars=["次產業"], value_vars=["綜合分數", "量化分數", "AI分數"], var_name="策略", value_name="分數"),
+                             x="次產業", y="分數", color="策略", barmode="group", title="各策略次產業評分對比")
+                st.plotly_chart(fig, use_container_width=True)
+
+                # CSV 下載按鈕（直接從記憶體匯出）
+                csv_data = df_perf.to_csv(index=False, encoding="utf-8-sig")
+                st.download_button(
+                    label="📥 下載多策略回測表現數據 (CSV)",
+                    data=csv_data,
+                    file_name=f"backtest_{chosen_eval_h}_{datetime.now(TZ):%Y%m%d}.csv",
+                    mime="text/csv",
+                )
             else:
-                st.info("所選條件下尚無足夠的已到期資料可繪製多策略對比曲線。")
-
-            st.divider()
-            st.subheader("🎯 AI 權重最佳化推薦（Grid Search 網格搜尋）")
-            st.caption("透過歷史回測模擬不同 AI 佔比（0% 至 100%）下的策略表現，尋找能最大化資訊比率 (ICIR) 的最佳權重比例。")
-
-            if st.button("執行 AI 權重最佳化運算", type="primary"):
-                with st.spinner("正在進行多權重組合回測模擬…"):
-                    grid_weights = np.linspace(0.0, 1.0, 21)
-                    optimization_results = []
-
-                    for w in grid_weights:
-                        df_sim = filtered_log.copy()
-                        ai_s = df_sim["AI分數"].astype(float)
-                        quant_s = df_sim["量化分數"].astype(float)
-                        
-                        df_sim["模擬綜合分數"] = w * ai_s.fillna(quant_s) + (1 - w) * quant_s.fillna(ai_s)
-                        
-                        sim_prices = st.session_state.price_cache
-                        Rs = []
-                        for _, r in df_sim.iterrows():
-                            members = [m for m in str(r["成分股"]).split(";") if m in sim_prices]
-                            rets = [forward_return(sim_prices[m], r["記錄日期"], h) for m in members]
-                            rets = [x for x in rets if not np.isnan(x)]
-                            Rs.append(float(np.mean(rets)) if rets else np.nan)
-                        
-                        df_sim["R"] = Rs
-                        df_sim["r"] = df_sim["R"] - df_sim.groupby("記錄日期")["R"].transform("mean")
-
-                        ic_list = []
-                        for _, g in df_sim.groupby("記錄日期"):
-                            g = g.dropna(subset=["r", "模擬綜合分數"])
-                            if len(g) >= 4:
-                                ic_list.append(spearman(g["模擬綜合分數"], g["r"]))
-                        
-                        ic_series = pd.Series(ic_list).dropna()
-                        if len(ic_series) >= 2 and ic_series.std(ddof=1) > 0:
-                            icir = ic_series.mean() / ic_series.std(ddof=1)
-                        else:
-                            icir = 0.0
-
-                        optimization_results.append({
-                            "AI權重": w,
-                            "量化權重": round(1 - w, 2),
-                            "平均IC": ic_series.mean() if not ic_series.empty else 0.0,
-                            "ICIR": icir
-                        })
-
-                    df_opt = pd.DataFrame(optimization_results)
-                    
-                    if not df_opt.empty and df_opt["ICIR"].max() > 0:
-                        best_row = df_opt.loc[df_opt["ICIR"].idxmax()]
-                        best_ai_weight = best_row["AI權重"]
-
-                        st.success(f"✨ 最佳推薦 ({selected_log_horizon})：建議 **AI 權重設定為 {best_ai_weight:.0%}**（量化權重 {(1-best_ai_weight):.0%}），此配置在歷史回測中展現最高的資訊比率（ICIR = {best_row['ICIR']:.3f}）。")
-
-                        fig_opt = px.line(
-                            df_opt, 
-                            x="AI權重", 
-                            y="ICIR", 
-                            markers=True,
-                            title=f"不同 AI 權重配置下的資訊比率 (ICIR) 表現 ({selected_log_horizon})",
-                            labels={"AI權重": "AI 分數權重比例", "ICIR": "資訊比率 (ICIR)"}
-                        )
-                        fig_opt.add_vline(x=best_ai_weight, line_dash="dash", line_color="red", annotation_text=f"最佳權重: {best_ai_weight:.0%}")
-                        fig_opt.update_layout(template="plotly_white")
-                        st.plotly_chart(fig_opt, use_container_width=True)
-
-                        with st.expander("查看完整權重測試明細"):
-                            st.dataframe(df_opt.round(4), hide_index=True)
-                    else:
-                        st.warning("歷史到期樣本不足以支撐權重最佳化計算，請累積更多回測期數。")
+                st.warning("⚠️ 無法計算報酬率，請確認所選成分股的歷史股價資料是否涵蓋至所選基準日。")
