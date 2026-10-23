@@ -887,7 +887,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
             logger.error("LINE 推播失敗：Token 或 User ID 未設定")
             return False
 
-        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
+        url = "https://api.line.me/v2/bot/message/push"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
