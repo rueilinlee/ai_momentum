@@ -745,6 +745,9 @@ def build_score_table(quant, ai, ai_weight, horizon="近1月"):
 # ==========================================================
 # 階段五：分數記錄與回測（支援多期間篩選與策略對比）
 # ==========================================================
+# 取得專案根目錄（因為此檔案在 pages 資料夾內，需用 dirname 向上退回一層）
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) if "__file__" in locals() else os.getcwd()
+SCORE_LOG = os.path.join(BASE_DIR, "score_log.csv")
 st.info(f"📁 目前 score_log.csv 預計儲存的絕對路徑為：`{SCORE_LOG}`")
 SCORE_LOG = "score_log.csv"
 LOG_COLS = ["記錄日期", "記錄時間", "評估期間", "次產業", "量化分數", "AI分數", "綜合分數", "AI權重", "模型", "成分股"]
