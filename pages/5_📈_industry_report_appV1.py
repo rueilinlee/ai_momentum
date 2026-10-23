@@ -1322,23 +1322,14 @@ with tab2:
     st.header("熱點次產業與領先個股對接")
     st.write("勾選要追蹤的標的；下方表格會自動結合內建清單與第一階段新聞中出現的額外公司，亦可手動新增列。")
 
-    # 動態從第一階段未歸類或已歸類新聞中萃取潛在提及的公司名稱
-    dynamic_extra_companies = []
-    if not st.session_state.news_all.empty:
-        # 簡單透過比對未歸類新聞中可能出現的台股名稱或常見關鍵字
-        # 這裡我們將第一階段抓到的所有公司或新聞中提及的實體做整合
-        pass
+    if st.session_state.news_fetched and not st.session_state.news_all.empty:
+        st.info("💡 提示：第一階段已抓取新聞。若新聞中出現未納入內建名單的公司，您可直接利用下方表格的最下方「新增列 (+)」功能手動填入代號、名稱與次產業進行追蹤。")
 
-    # 建立基礎候選表格資料
     base_candidates = [
         {"追蹤": c["ticker"] in DEFAULT_TRACKED, "次產業": c["subsector"],
          "代號": c["ticker"], "名稱": c["name"]}
         for c in COMPANIES
     ]
-
-    # 如果第一階段已有新聞，自動嘗試將新聞中提及但不在內建名單的公司加入提示或備選
-    if st.session_state.news_fetched and not st.session_state.news_all.empty:
-        st.info("💡 提示：第一階段已抓取新聞。若新聞中出現未納入內建名單的公司，您可直接利用下方表格的最下方「新增列 (+)」功能手動填入代號、名稱與次產業進行追蹤。")
 
     candidates_df = pd.DataFrame(base_candidates)
     edited_df = st.data_editor(candidates_df, hide_index=True, num_rows="dynamic", key="candidates_editor")
@@ -1670,7 +1661,7 @@ with tab5:
 
                         optimization_results.append({
                             "AI權重": w,
-                            "量化權重": root := round(1 - w, 2),
+                            "量化權重": round(1 - w, 2),
                             "平均IC": ic_series.mean() if not ic_series.empty else 0.0,
                             "ICIR": icir
                         })
