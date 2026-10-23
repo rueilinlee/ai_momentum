@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-台股產業投資策略 1.5 版（新增回測持有期 1 天、完整新聞明細、多期間前 5 名與 AI 建議權重 LINE 推播整合版）
+台股產業投資策略 1.5 版（新增回測 1 天、詳細錯誤捕捉、新聞明細、多期間前 5 名與 AI 建議權重 LINE 推播整合版）
 包含：新聞爬蟲、詳細新聞列表與來源、二階動能、財報/股價雙指標、Word 報告、
 AI/量化評分、記憶體多期間暫存回測、Plotly 多策略對比、AI 權重最佳化、背景排程與 LINE 狀態回饋
 """
@@ -811,7 +811,7 @@ def calculate_performance_metrics(returns_series, periods_per_year=12):
 
 
 # ==========================================================
-# LINE Messaging API 通知與背景排程機制 (含 Top 5 與 AI 建議權重)
+# LINE Messaging API 通知與背景排程機制 (含詳細錯誤捕捉)
 # ==========================================================
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
@@ -819,6 +819,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
         if not access_token or not target_user:
+            logger.error("LINE 推播失敗：Token 或 User ID 未設定")
             return False
 
         url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
@@ -840,8 +841,12 @@ def send_line_messaging_api(message, token=None, user_id=None):
         
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.status == 200
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"LINE API HTTP 錯誤 ({e.code}): {error_body}")
+        return False
     except Exception as e:
-        logger.error(f"發送 LINE 推播發生錯誤: {e}")
+        logger.error(f"發送 LINE 推播發生未預期錯誤: {e}")
         return False
 
 
@@ -918,7 +923,6 @@ def automated_daily_job():
         momentum_df = compute_momentum(tagged_all, now)
         quant = quant_scores(momentum_df, None)
         
-        # 分別計算近1月與近1週的評分與建議權重
         horizons_to_calc = ["近1月", "近1週"]
         horizon_results = {}
 
@@ -936,7 +940,6 @@ def automated_daily_job():
                 valid_table = table.dropna(subset=["綜合分數"]).sort_values("綜合分數", ascending=False)
                 top_5 = valid_table.head(5)
                 
-                # 計算 AI 建議投資權重（依綜合分數比例分配前 5 名權重）
                 total_score = top_5["綜合分數"].sum()
                 weights = []
                 if total_score > 0:
@@ -972,7 +975,6 @@ def automated_daily_job():
 
             send_line_messaging_api(final_msg)
             
-            # Email 發送以近1月為主的前 5 名
             if "近1月" in horizon_results:
                 send_email_report(horizon_results["近1月"]["top_5"])
     except Exception as e:
@@ -1209,7 +1211,7 @@ with tab3:
 
 # ---------------------------- Tab 4 ----------------------------
 with tab4:
-    st.header("次產業評分：多期間（近1周, 近2周, 近1月）量化 + AI 評分")
+    st.header("次產業評分：多期間（近1周、近2周、近1月）量化 + AI 評分")
     if not st.session_state.news_fetched:
         st.warning("請先於第一階段抓取新聞。")
     else:
