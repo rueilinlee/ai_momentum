@@ -120,7 +120,7 @@ FOREIGN = [
 
 DEFAULT_TRACKED = {
     "2330.TW", "2303.TW", "5347.TWO", "6669.TW", "2382.TW", "2376.TW", "3131.TWO", "6640.TWO",
-    "6187.TWO", "3653.TW", "3017.TW", "3324.TWO", "5274.TW", "3661.TW", "5269.TW",
+    "6187.TWO", "3653.TW", "3017.TW", "3324.TW", "5274.TW", "3661.TW", "5269.TW",
 }
 
 SECTOR_ORDER = list(dict.fromkeys(c["subsector"] for c in COMPANIES))
@@ -923,7 +923,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-        url = "https://api.line.me/v2/bot/message/push"
+        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
