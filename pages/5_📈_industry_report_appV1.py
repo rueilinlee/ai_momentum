@@ -1043,7 +1043,11 @@ with tab1:
         df_all = st.session_state.news_all
         now = datetime.now(TZ)
         st.success(f"已取得 {len(df_all)} 則不重複新聞（近 30 天）。")
-        momentum_df = compute_momentum(df_all, now) if not df_all.empty else pd.DataFrame()
+        
+        # 修正：先進行 classify_news 取得帶有「次產業」的 tagged 資料，再計算動能
+        tagged_all, _, _, _ = classify_news(df_all, bull, bear) if not df_all.empty else (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+        momentum_df = compute_momentum(tagged_all, now) if not tagged_all.empty else pd.DataFrame()
+        
         st.session_state.momentum_df = momentum_df
         st.subheader("📈 各次產業二階動能加速度與多期間分佈")
         st.dataframe(momentum_df[[c for c in momentum_df.columns if not c.startswith("_")]], hide_index=True)
@@ -1126,7 +1130,6 @@ with tab4:
             table = build_score_table(quant, ai_result, ai_pct / 100 if ai_result else 0.0, horizon=eval_horizon, tracked_list=st.session_state.final_stock_list)
             st.session_state.score_table = table
             
-            # 直接暫存至記憶體中（模擬歷史記錄點，方便馬上進行回測）
             if not table.empty:
                 simulated_past_date = (datetime.now(TZ) - timedelta(days=5)).strftime("%Y-%m-%d")
                 st.session_state.multi_horizon_scores[eval_horizon] = {
@@ -1217,12 +1220,10 @@ with tab5:
                 if metrics_summary:
                     st.dataframe(pd.DataFrame(metrics_summary), hide_index=True)
 
-                # 簡易長條圖呈現多策略超額報酬對比
                 fig = px.bar(df_perf.melt(id_vars=["次產業"], value_vars=["綜合分數", "量化分數", "AI分數"], var_name="策略", value_name="分數"),
                              x="次產業", y="分數", color="策略", barmode="group", title="各策略次產業評分對比")
                 st.plotly_chart(fig, use_container_width=True)
 
-                # CSV 下載按鈕（直接從記憶體匯出）
                 csv_data = df_perf.to_csv(index=False, encoding="utf-8-sig")
                 st.download_button(
                     label="📥 下載多策略回測表現數據 (CSV)",
