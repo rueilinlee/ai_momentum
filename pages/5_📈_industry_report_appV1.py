@@ -747,7 +747,7 @@ def build_score_table(quant, ai, ai_weight, horizon="近1月", tracked_list=None
 # ==========================================================
 # 階段五：分數記錄與回測（純記憶體暫存驅動）
 # ==========================================================
-HORIZONS = {"近 1 週（5 個交易日）": 5, "近 2 週（10 個交易日）": 10, "近 1 個月（21 個交易日）": 21}
+HORIZONS = {"近 1 天（1 個交易日）": 1,"近 1 週（5 個交易日）": 5, "近 2 週（10 個交易日）": 10, "近 1 個月（21 個交易日）": 21}
 
 
 def fetch_close_history(tickers, start_date):
@@ -816,7 +816,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
         if not access_token or not target_user:
             return False
 
-        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
+        url = "https://api.line.me/v2/bot/message/push"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
