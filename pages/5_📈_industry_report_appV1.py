@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-台股產業投資策略 1.5 版（記憶體暫存與多期間回測完整整合版）
+台股產業投資策略 1.5 版（記憶體暫存與 LINE 推播完整整合版）
 包含：新聞爬蟲、二階動能、財報/股價雙指標、Word 報告、AI/量化評分、
-記憶體多期間暫存回測、Plotly 多策略對比、AI 權重最佳化、背景排程與 LINE/Email 通知
+記憶體多期間暫存回測、Plotly 多策略對比、AI 權重最佳化、背景排程與 LINE Messaging API 推播
 """
 
 import io
@@ -923,7 +923,20 @@ def automated_daily_job():
                 })
         table = pd.DataFrame(rows)
         if not table.empty:
-            top_5 = table.sort_values("綜合分數", ascending=False).head(5)
+            valid_table = table.dropna(subset=["綜合分數"]).sort_values("綜合分數", ascending=False)
+            top_3 = valid_table.head(3)
+            top_3_lines = [f"  {i}. {r['次產業']} ({r['綜合分數']:.1f}分)" for i, (_, r) in enumerate(top_3.iterrows(), 1)]
+            top_3_text = "\n".join(top_3_lines) if not top_3.empty else "  (無有效評分)"
+
+            msg = (
+                f"【台股產業投資策略 1.5版】自動排程執行成功\n"
+                f"執行日期：{now:%Y-%m-%d %H:%M:%S}\n\n"
+                f"🔥 今日綜合分數最高前 3 名 (近1月)：\n"
+                f"{top_3_text}\n\n"
+                f"請至 Web App 查看最新回測與多策略對比。"
+            )
+            send_line_messaging_api(msg)
+            top_5 = valid_table.head(5)
             send_email_report(top_5)
     except Exception as e:
         logger.error(f"自動化排程失敗: {e}")
@@ -1002,8 +1015,19 @@ def _set_cell(cell, text, bold=False, size=9):
 st.set_page_config(page_title="台股產業投資策略 1.5 版", layout="wide")
 st.title("📊 台股產業投資策略 1.5 版 - AI 互動式 Web App (記憶體暫存回測版)")
 
-st.sidebar.header("🛠️ 系統控制與狀態")
-st.sidebar.caption("系統已改用記憶體即時暫存驅動，無需依賴實體 CSV 檔案即可進行跨期回測與最佳化！")
+# ----------------- 側邊欄設定 -----------------
+st.sidebar.header("🛠️ 系統控制與通知")
+st.sidebar.write("### 背景自動化排程與 LINE 推播")
+st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取，並發送 LINE 推播及 Email 報告。")
+
+if st.sidebar.button("🚀 立即執行 LINE 推播測試", type="secondary"):
+    now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    test_msg = f"【台股產業投資策略 1.5版】手動測試推播\n發送時間：{now_str}\n系統運作正常！"
+    success = send_line_messaging_api(test_msg)
+    if success:
+        st.sidebar.success("✅ LINE 智慧推播測試發送成功！")
+    else:
+        st.sidebar.error("❌ LINE 推播發送失敗，請檢查 Token 與 User ID 設定。")
 
 _defaults = {
     "news_all": pd.DataFrame(), "news_failed": [], "news_fetched": False,
@@ -1044,7 +1068,6 @@ with tab1:
         now = datetime.now(TZ)
         st.success(f"已取得 {len(df_all)} 則不重複新聞（近 30 天）。")
         
-        # 修正：先進行 classify_news 取得帶有「次產業」的 tagged 資料，再計算動能
         tagged_all, _, _, _ = classify_news(df_all, bull, bear) if not df_all.empty else (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
         momentum_df = compute_momentum(tagged_all, now) if not tagged_all.empty else pd.DataFrame()
         
