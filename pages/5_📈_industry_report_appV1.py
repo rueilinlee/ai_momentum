@@ -918,7 +918,8 @@ def send_line_messaging_api(message, token=None, user_id=None):
     try:
         access_token = token or "LoWdzyXkvVwbPsmYoPxWuFPik/CvtFx5YxKqgZ2bUvePKq2rpVDJ/j6ARw3AtJD84m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbplVO+5vidqACFyXjoPXNneG9pP7xIyDGvEaIpLOO+gwQdB04t89/1O/w1cDnyilFU="
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
-        
+        Channel_secret = "bcc7777f7db650fd1970d56bba0afdc"
+
         if not access_token or not target_user:
             st.error("❌ LINE 推播失敗：找不到 Channel Access Token 或 User ID 密鑰！")
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
