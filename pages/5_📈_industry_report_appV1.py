@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-台股產業投資策略 1.5 版（修正 LINE 自動推播與手動測試：完整包含近1月/近1週 Top 5 與 AI 建議權重）
+台股產業投資策略 1.5 版（第五階段新增近1月與近1週 AI 次產業建議權重與分數展示）
 包含：新聞爬蟲、詳細新聞列表與來源、二階動能、財報/股價雙指標、Word 報告、
 AI/量化評分、記憶體多期間暫存回測、Plotly 多策略對比、AI 權重最佳化、背景排程與 LINE 狀態回饋
 """
@@ -814,7 +814,6 @@ def calculate_performance_metrics(returns_series, periods_per_year=12):
 # LINE Messaging API 通知與共用訊息生成邏輯
 # ==========================================================
 def generate_push_message_content():
-    """共用邏輯：計算並組裝包含近1月與近1週 Top 5 及 AI 建議權重的推播訊息"""
     try:
         df_news, _ = fetch_news_all(30, per_sector=True)
         if df_news.empty:
@@ -887,7 +886,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
             logger.error("LINE 推播失敗：Token 或 User ID 未設定")
             return False
 
-        url = "https://api.line.me/v2/bot/message/push"
+        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
@@ -1071,7 +1070,6 @@ if st.sidebar.button("🚀 立即執行 LINE 推播測試", type="secondary"):
     with st.spinner("正在計算並發送 LINE 智慧推播測試…"):
         test_msg, _ = generate_push_message_content()
         if not test_msg:
-            # 若無暫存新聞時的備用訊息
             now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
             test_msg = f"【台股產業投資策略 1.5版】手動測試推播\n發送時間：{now_str}\n系統運作正常（目前無即時新聞數據可計算 Top 5）！"
         
@@ -1079,7 +1077,7 @@ if st.sidebar.button("🚀 立即執行 LINE 推播測試", type="secondary"):
         if success:
             st.sidebar.success("✅ LINE 智慧推播測試發送成功！")
         else:
-            st.sidebar.error("❌ LINE 推播發送失敗，請檢查 Token 與 User ID 設定（或詳見 log）。")
+            st.sidebar.error("❌ LINE 推播發送失敗，請檢查 Token 與 User ID 設定。")
 
 _defaults = {
     "news_all": pd.DataFrame(), "news_failed": [], "news_fetched": False,
@@ -1224,7 +1222,7 @@ with tab3:
 
 # ---------------------------- Tab 4 ----------------------------
 with tab4:
-    st.header("次產業評分：多期間（近1周、近2周、近1月）量化 + AI 評分")
+    st.header("次產業評分：多期間（近1周, 近2周, 近1月）量化 + AI 評分")
     if not st.session_state.news_fetched:
         st.warning("請先於第一階段抓取新聞。")
     else:
@@ -1277,6 +1275,37 @@ with tab5:
     st.caption("直接取用第四階段暫存於記憶體中的多期間評分，即時計算歷史超額報酬、最大回撤、夏普值與網格搜尋最佳化。")
 
     has_memory = len(st.session_state.multi_horizon_scores) > 0
+    
+    # -------------------------------------------------------------
+    # 新增：即時呈現各期間（近1月、近1週）AI 次產業建議權重與分數區塊
+    # -------------------------------------------------------------
+    if has_memory:
+        st.subheader("⚖️ AI 次產業建議權重與分數明細（依暫存資料計算）")
+        col_m1, col_w1 = st.columns(2)
+        
+        def render_horizon_weights(hz_key, col_container):
+            with col_container:
+                st.markdown(f"#### 📅 評估期間：{hz_key}")
+                if hz_key in st.session_state.multi_horizon_scores:
+                    hz_df = st.session_state.multi_horizon_scores[hz_key]["table"]
+                    if not hz_df.empty:
+                        valid_df = hz_df.dropna(subset=["綜合分數"]).sort_values("綜合分數", ascending=False).head(5)
+                        total_s = valid_df["綜合分數"].sum()
+                        if total_s > 0:
+                            for _, r in valid_df.iterrows():
+                                w_pct = (r["綜合分數"] / total_s) * 100
+                                st.markdown(f"- **{r['次產業']}**: **{w_pct:.1f}%** (分數: **{r['綜合分數']:.1f}**) ")
+                        else:
+                            st.info("無有效分數總和")
+                    else:
+                        st.info("該期間表格為空")
+                else:
+                    st.info(f"尚無【{hz_key}】的暫存評分資料，請先至第四階段計算。")
+
+        render_horizon_weights("近1月", col_m1)
+        render_horizon_weights("近1週", col_w1)
+        st.divider()
+
     if not has_memory:
         st.info("💡 記憶體中尚無暫存評分。請先至第四階段點擊「計算次產業分數並暫存至記憶體」。")
     else:
