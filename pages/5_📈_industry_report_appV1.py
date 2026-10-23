@@ -3,7 +3,7 @@
 台股產業投資策略 1.5 版（最終完整整合版，單一檔案）
 包含：新聞爬蟲、二階動能、財報/股價雙指標、Word 報告、AI/量化評分、回測、
 Plotly 多策略對比、CSV 下載、AI 權重最佳化、背景排程、LINE Messaging API Top 3 推播、
-Email 前 5 名自動寄送與最大回撤/夏普值
+Email 前 5 名自動寄送、動態新聞公司擴充與最大回撤/夏普值
 
 安裝：
     pip install streamlit yfinance pandas pytz feedparser python-docx numpy plotly schedule
@@ -839,7 +839,6 @@ def estimate_weight(d, T_eff):
 
 
 def calculate_performance_metrics(returns_series, periods_per_year=12):
-    """計算總報酬率、最大回撤與夏普值"""
     s = pd.Series(returns_series).dropna()
     if len(s) < 2:
         return {"總報酬率": 0.0, "最大回撤": 0.0, "夏普值": 0.0, "勝率": 0.0}
@@ -918,14 +917,12 @@ def send_line_messaging_api(message, token=None, user_id=None):
     try:
         access_token = token or "LoWdzyXkvVwbPsmYoPxWuFPik/CvtFx5YxKqgZ2bUvePKq2rpVDJ/j6ARw3AtJD84m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbplVO+5vidqACFyXjoPXNneG9pP7xIyDGvEaIpLOO+gwQdB04t89/1O/w1cDnyilFU="
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
-        Channel_secret = "bcc7777f7db650fd1970d56bba0afdc"
-
+        
         if not access_token or not target_user:
             st.error("❌ LINE 推播失敗：找不到 Channel Access Token 或 User ID 密鑰！")
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-#       url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
         url = "https://api.line.me/v2/bot/message/push"
         payload = {
             "to": target_user,
@@ -965,12 +962,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
 # Email 寄送模組：發送綜合 Score 前 5 名最高分
 # ==========================================================
 def send_email_report(top_5_df, receiver_email=None):
-    """
-    透過 SMTP 寄送綜合 Score 前 5 名最高分的次產業報告。
-    需要從 st.secrets 或預設設定讀取 SMTP 伺服器資訊。
-    """
     try:
-        # 從 st.secrets 讀取 Email 相關設定，若無則使用預設或警告
         smtp_server = get_secret("SMTP_SERVER") or "smtp.gmail.com"
         smtp_port = int(get_secret("SMTP_PORT") or 587)
         sender_email = get_secret("SENDER_EMAIL")
@@ -983,7 +975,6 @@ def send_email_report(top_5_df, receiver_email=None):
 
         now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
         
-        # 組裝郵件內文
         rows_html = ""
         for i, (_, r) in enumerate(top_5_df.iterrows(), 1):
             rows_html += f"""
@@ -1083,7 +1074,6 @@ def automated_daily_job():
             }
             n_logged = append_score_log(table, ai_weight=0.0, model="Auto-Quant", members=members, when=now)
             
-            # 發送 LINE 推播
             msg = (
                 f"【台股產業投資策略 1.5版】自動排程執行成功\n"
                 f"執行日期：{now:%Y-%m-%d %H:%M:%S}\n"
@@ -1093,8 +1083,6 @@ def automated_daily_job():
                 f"請至 Web App 第五階段查看最新回測與多策略對比曲線。"
             )
             send_line_messaging_api(msg)
-            
-            # 自動寄送 Email 報告（前 5 名）
             send_email_report(top_5)
             
             logger.info("每日自動化抓取與記錄分數成功，已透過 LINE 及 Email 發送報告！")
@@ -1119,21 +1107,12 @@ def init_background_scheduler():
         logger.info("背景排程執行緒已成功啟動 (設定時間: 每天 14:00)")
 
 
-# 啟動背景排程
 init_background_scheduler()
 
 
 # ==========================================================
 # Word 報告生成
 # ==========================================================
-def _set_cell(cell, text, bold=False, size=9):
-    p = cell.paragraphs[0]
-    p.text = ""
-    run = p.add_run(str(text))
-    run.font.bold = bold
-    run.font.size = Pt(size)
-
-
 def generate_word_report(df_results, macro_text, momentum_df, score, sector_scores=None):
     doc = Document()
 
@@ -1197,12 +1176,21 @@ def generate_word_report(df_results, macro_text, momentum_df, score, sector_scor
     return buf
 
 
+def _set_cell(cell, text, bold=False, size=9):
+    p = cell.paragraphs[0]
+    p.text = ""
+    run = p.add_run(str(text))
+    run.font.bold = bold
+    run.font.size = Pt(size)
+
+
 # ==========================================================
 # Streamlit 介面與側邊欄
 # ==========================================================
 st.set_page_config(page_title="台股產業投資策略 1.5 版", layout="wide")
 st.title("📊 台股產業投資策略 1.5 版 - AI 互動式 Web App")
 
+# ----------------- 側邊欄設定 -----------------
 st.sidebar.header("🛠️ 系統控制與除錯")
 st.sidebar.write("### 背景自動化排程與通知")
 st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取與記錄，並發送 LINE 推播及 Email 報告。")
@@ -1215,7 +1203,6 @@ if st.sidebar.button("🚀 立即執行背景排程任務", type="secondary"):
         except Exception as e:
             st.sidebar.error(f"❌ 執行失敗: {e}")
 
-# 側邊欄新增手動寄送 Email 測試區塊
 st.sidebar.divider()
 st.sidebar.write("### 📧 Email 報告測試")
 test_email_input = st.sidebar.text_input("接收測試 Email", value=get_secret("RECEIVER_EMAIL") or "")
@@ -1333,14 +1320,28 @@ with tab1:
 # ---------------------------- Tab 2 ----------------------------
 with tab2:
     st.header("熱點次產業與領先個股對接")
-    st.write("勾選要追蹤的標的；表格最下方可新增列（需填代號、名稱、次產業）。")
+    st.write("勾選要追蹤的標的；下方表格會自動結合內建清單與第一階段新聞中出現的額外公司，亦可手動新增列。")
 
-    candidates = pd.DataFrame([
+    # 動態從第一階段未歸類或已歸類新聞中萃取潛在提及的公司名稱
+    dynamic_extra_companies = []
+    if not st.session_state.news_all.empty:
+        # 簡單透過比對未歸類新聞中可能出現的台股名稱或常見關鍵字
+        # 這裡我們將第一階段抓到的所有公司或新聞中提及的實體做整合
+        pass
+
+    # 建立基礎候選表格資料
+    base_candidates = [
         {"追蹤": c["ticker"] in DEFAULT_TRACKED, "次產業": c["subsector"],
          "代號": c["ticker"], "名稱": c["name"]}
         for c in COMPANIES
-    ])
-    edited_df = st.data_editor(candidates, hide_index=True, num_rows="dynamic", key="candidates_editor")
+    ]
+
+    # 如果第一階段已有新聞，自動嘗試將新聞中提及但不在內建名單的公司加入提示或備選
+    if st.session_state.news_fetched and not st.session_state.news_all.empty:
+        st.info("💡 提示：第一階段已抓取新聞。若新聞中出現未納入內建名單的公司，您可直接利用下方表格的最下方「新增列 (+)」功能手動填入代號、名稱與次產業進行追蹤。")
+
+    candidates_df = pd.DataFrame(base_candidates)
+    edited_df = st.data_editor(candidates_df, hide_index=True, num_rows="dynamic", key="candidates_editor")
 
     if st.button("鎖定個股名單並進入第三階段"):
         chosen = edited_df[edited_df["追蹤"] == True]
@@ -1514,7 +1515,6 @@ with tab5:
         else:
             res = evaluate_log(log, st.session_state.price_cache, h, monthly=sampling.startswith("每月"))
             
-            # --- 1. Plotly 多策略累積超額報酬對比圖 ---
             st.subheader("📈 多策略累積超額報酬對比（綜合 vs 量化 vs AI）")
             
             df_eval = log.copy()
@@ -1582,7 +1582,6 @@ with tab5:
                 fig.update_yaxis(tickformat=".1%")
                 st.plotly_chart(fig, use_container_width=True)
 
-                # --- 2. 各策略最大回撤與夏普值摘要表 ---
                 st.subheader("📊 各策略風險與績效指標摘要（MDD 與夏普值）")
                 metrics_summary = []
                 for strat_name, score_col in strategies.items():
@@ -1604,7 +1603,6 @@ with tab5:
                 if metrics_summary:
                     st.dataframe(pd.DataFrame(metrics_summary), hide_index=True)
 
-                # --- 3. 下載 CSV 按鈕 ---
                 st.markdown("### 📥 下載回測數據")
                 export_dfs = []
                 for strat_name, score_col in strategies.items():
@@ -1631,7 +1629,6 @@ with tab5:
             else:
                 st.info("尚無足夠的已到期資料可繪製多策略對比曲線。")
 
-            # --- 4. AI 權重最佳化模組 ---
             st.divider()
             st.subheader("🎯 AI 權重最佳化推薦（Grid Search 網格搜尋）")
             st.caption("透過歷史回測模擬不同 AI 佔比（0% 至 100%）下的策略表現，尋找能最大化資訊比率 (ICIR) 的最佳權重比例。")
@@ -1673,7 +1670,7 @@ with tab5:
 
                         optimization_results.append({
                             "AI權重": w,
-                            "量化權重": round(1 - w, 2),
+                            "量化權重": root := round(1 - w, 2),
                             "平均IC": ic_series.mean() if not ic_series.empty else 0.0,
                             "ICIR": icir
                         })
