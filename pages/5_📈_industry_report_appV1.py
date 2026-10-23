@@ -580,9 +580,6 @@ def _clip(x, lo, hi):
 
 
 def quant_scores(momentum_df, df_r):
-    """
-    計算多期間（近1周、近2周、近1月）的量化分數
-    """
     out = {}
     for sector in SECTOR_ORDER:
         horizon_scores = {}
@@ -761,7 +758,6 @@ def load_score_log():
         for c in LOG_COLS:
             if c not in df.columns:
                 df[c] = np.nan
-        # 兼容舊版 log 無「評估期間」欄位
         if "評估期間" not in df.columns or df["評估期間"].isna().all():
             df["評估期間"] = "近1月"
         return df[LOG_COLS]
@@ -822,28 +818,6 @@ def spearman(x, y):
     return float(np.corrcoef(d["x"].rank(), d["y"].rank())[0, 1])
 
 
-def newey_west_t(x, lag):
-    x = np.asarray(pd.Series(x).dropna(), dtype=float)
-    T = len(x)
-    if T < 3:
-        return np.nan
-    e = x - x.mean()
-    var = (e @ e) / T
-    for l in range(1, min(lag, T - 1) + 1):
-        var += 2 * (1 - l / (lag + 1)) * ((e[l:] @ e[:-l]) / T)
-    var = max(var, 1e-12)
-    return float(x.mean() / math.sqrt(var / T))
-
-
-def summarize_ic(series, lag):
-    x = series.dropna()
-    if len(x) < 2:
-        return {"期數": len(x), "平均IC": np.nan, "ICIR": np.nan, "NW t值": np.nan, "IC>0比例": np.nan}
-    sd = x.std(ddof=1)
-    return {"期數": len(x), "平均IC": x.mean(), "ICIR": x.mean() / sd if sd > 0 else np.nan,
-            "NW t值": newey_west_t(x, lag), "IC>0比例": float((x > 0).mean())}
-
-
 def calculate_performance_metrics(returns_series, periods_per_year=12):
     s = pd.Series(returns_series).dropna()
     if len(s) < 2:
@@ -881,7 +855,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
             logger.warning("LINE Messaging API 憑證未設定，無法發送通知。")
             return False
 
-        url = "https://api.line.me/v2/bot/message/push"
+        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
@@ -1446,7 +1420,6 @@ with tab5:
         c1, c2 = st.columns(2)
         h_label = c1.selectbox("回測結算持有期間", list(HORIZONS.keys()), index=2)
         
-        # 允許依記錄時的評估期間進行過濾
         available_horizons = ["全部"] + list(log["評估期間"].dropna().unique())
         selected_log_horizon = c2.selectbox("篩選評估期間 (Log)", available_horizons, index=0)
         
