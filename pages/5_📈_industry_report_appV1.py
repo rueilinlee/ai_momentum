@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-台股產業投資策略 1.5 版（新增回測 1 天、詳細錯誤捕捉、新聞明細、多期間前 5 名與 AI 建議權重 LINE 推播整合版）
+台股產業投資策略 1.5 版（修正 LINE 自動推播與手動測試：完整包含近1月/近1週 Top 5 與 AI 建議權重）
 包含：新聞爬蟲、詳細新聞列表與來源、二階動能、財報/股價雙指標、Word 報告、
 AI/量化評分、記憶體多期間暫存回測、Plotly 多策略對比、AI 權重最佳化、背景排程與 LINE 狀態回饋
 """
@@ -811,8 +811,73 @@ def calculate_performance_metrics(returns_series, periods_per_year=12):
 
 
 # ==========================================================
-# LINE Messaging API 通知與背景排程機制 (含詳細錯誤捕捉)
+# LINE Messaging API 通知與共用訊息生成邏輯
 # ==========================================================
+def generate_push_message_content():
+    """共用邏輯：計算並組裝包含近1月與近1週 Top 5 及 AI 建議權重的推播訊息"""
+    try:
+        df_news, _ = fetch_news_all(30, per_sector=True)
+        if df_news.empty:
+            return None
+        now = datetime.now(TZ)
+        tagged_all, _, _, _ = classify_news(df_news, bull=60, bear=40)
+        momentum_df = compute_momentum(tagged_all, now)
+        quant = quant_scores(momentum_df, None)
+        
+        horizons_to_calc = ["近1月", "近1週"]
+        horizon_results = {}
+
+        for hz in horizons_to_calc:
+            rows = []
+            for sector in SECTOR_ORDER:
+                q = quant.get(sector, {}).get(hz, (None, {}))[0]
+                if q is not None:
+                    sec_tickers = [c["ticker"] for c in COMPANIES if c["subsector"] == sector and c["ticker"] in DEFAULT_TRACKED]
+                    rows.append({
+                        "評估期間": hz, "次產業": sector, "量化分數": q, "AI分數": np.nan, "綜合分數": q, "成分股": ";".join(sec_tickers)
+                    })
+            table = pd.DataFrame(rows)
+            if not table.empty:
+                valid_table = table.dropna(subset=["綜合分數"]).sort_values("綜合分數", ascending=False)
+                top_5 = valid_table.head(5)
+                
+                total_score = top_5["綜合分數"].sum()
+                weights = []
+                if total_score > 0:
+                    for _, r in top_5.iterrows():
+                        w = (r["綜合分數"] / total_score) * 100
+                        weights.append(f"  - {r['次產業']}: {w:.1f}% (分數: {r['綜合分數']:.1f})")
+                
+                horizon_results[hz] = {
+                    "top_5": top_5,
+                    "weights": weights
+                }
+
+        if horizon_results:
+            msg_lines = [
+                f"【台股產業投資策略 1.5版】戰情報告",
+                f"執行日期：{now:%Y-%m-%d %H:%M:%S}\n"
+            ]
+
+            for hz in horizons_to_calc:
+                if hz in horizon_results:
+                    top_5_df = horizon_results[hz]["top_5"]
+                    weights_list = horizon_results[hz]["weights"]
+                    
+                    top_5_lines = [f"  {i}. {r['次產業']} ({r['綜合分數']:.1f}分)" for i, (_, r) in enumerate(top_5_df.iterrows(), 1)]
+                    top_5_text = "\n".join(top_5_lines) if not top_5_df.empty else "  (無有效評分)"
+                    weights_text = "\n".join(weights_list) if weights_list else "  (無權重資料)"
+
+                    msg_lines.append(f"🔥 【{hz}】綜合分數最高前 5 名：\n{top_5_text}")
+                    msg_lines.append(f"⚖️ 【{hz}】AI 建議投資權重：\n{weights_text}\n")
+
+            msg_lines.append("請至 Web App 查看詳細回測與多策略對比。")
+            return "\n".join(msg_lines), horizon_results
+    except Exception as e:
+        logger.error(f"生成推播內容失敗: {e}")
+    return None, None
+
+
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
         access_token = token or "LoWdzyXkvVwbPsmYoPxWuFPik/CvtFx5YxKqgZ2bUvePKq2rpVDJ/j6ARw3AtJD84m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbplVO+5vidqACFyXjoPXNneG9pP7xIyDGvEaIpLOO+gwQdB04t89/1O/w1cDnyilFU="
@@ -822,7 +887,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
             logger.error("LINE 推播失敗：Token 或 User ID 未設定")
             return False
 
-        url = "https://api.line.me/v2/bot/message/push"
+        url = "[https://api.line.me/v2/bot/message/push](https://api.line.me/v2/bot/message/push)"
         payload = {
             "to": target_user,
             "messages": [{"type": "text", "text": message}]
@@ -915,67 +980,10 @@ def send_email_report(top_5_df, receiver_email=None):
 
 def automated_daily_job():
     try:
-        df_news, _ = fetch_news_all(30, per_sector=True)
-        if df_news.empty:
-            return
-        now = datetime.now(TZ)
-        tagged_all, _, _, _ = classify_news(df_news, bull=60, bear=40)
-        momentum_df = compute_momentum(tagged_all, now)
-        quant = quant_scores(momentum_df, None)
-        
-        horizons_to_calc = ["近1月", "近1週"]
-        horizon_results = {}
-
-        for hz in horizons_to_calc:
-            rows = []
-            for sector in SECTOR_ORDER:
-                q = quant.get(sector, {}).get(hz, (None, {}))[0]
-                if q is not None:
-                    sec_tickers = [c["ticker"] for c in COMPANIES if c["subsector"] == sector and c["ticker"] in DEFAULT_TRACKED]
-                    rows.append({
-                        "評估期間": hz, "次產業": sector, "量化分數": q, "AI分數": np.nan, "綜合分數": q, "成分股": ";".join(sec_tickers)
-                    })
-            table = pd.DataFrame(rows)
-            if not table.empty:
-                valid_table = table.dropna(subset=["綜合分數"]).sort_values("綜合分數", ascending=False)
-                top_5 = valid_table.head(5)
-                
-                total_score = top_5["綜合分數"].sum()
-                weights = []
-                if total_score > 0:
-                    for _, r in top_5.iterrows():
-                        w = (r["綜合分數"] / total_score) * 100
-                        weights.append(f"  - {r['次產業']}: {w:.1f}% (分數: {r['綜合分數']:.1f})")
-                
-                horizon_results[hz] = {
-                    "top_5": top_5,
-                    "weights": weights
-                }
-
-        if horizon_results:
-            msg_lines = [
-                f"【台股產業投資策略 1.5版】自動排程報告",
-                f"執行日期：{now:%Y-%m-%d %H:%M:%S}\n"
-            ]
-
-            for hz in horizons_to_calc:
-                if hz in horizon_results:
-                    top_5_df = horizon_results[hz]["top_5"]
-                    weights_list = horizon_results[hz]["weights"]
-                    
-                    top_5_lines = [f"  {i}. {r['次產業']} ({r['綜合分數']:.1f}分)" for i, (_, r) in enumerate(top_5_df.iterrows(), 1)]
-                    top_5_text = "\n".join(top_5_lines) if not top_5_df.empty else "  (無有效評分)"
-                    weights_text = "\n".join(weights_list) if weights_list else "  (無權重資料)"
-
-                    msg_lines.append(f"🔥 【{hz}】綜合分數最高前 5 名：\n{top_5_text}")
-                    msg_lines.append(f"⚖️ 【{hz}】AI 建議投資權重：\n{weights_text}\n")
-
-            msg_lines.append("請至 Web App 查看詳細回測與多策略對比。")
-            final_msg = "\n".join(msg_lines)
-
+        final_msg, horizon_results = generate_push_message_content()
+        if final_msg:
             send_line_messaging_api(final_msg)
-            
-            if "近1月" in horizon_results:
+            if horizon_results and "近1月" in horizon_results:
                 send_email_report(horizon_results["近1月"]["top_5"])
     except Exception as e:
         logger.error(f"自動化排程失敗: {e}")
@@ -1057,16 +1065,21 @@ st.title("📊 台股產業投資策略 1.5 版 - AI 互動式 Web App (記憶�
 # ----------------- 側邊欄設定 -----------------
 st.sidebar.header("🛠️ 系統控制與通知")
 st.sidebar.write("### 背景自動化排程與 LINE 推播")
-st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取，並發送 LINE 推播（含前 5 名與 AI 建議權重）及 Email 報告。")
+st.sidebar.caption("系統已設定於每天 14:00 自動執行背景抓取，並發送 LINE 推播（含近1月/近1週前 5 名與 AI 建議權重）及 Email 報告。")
 
 if st.sidebar.button("🚀 立即執行 LINE 推播測試", type="secondary"):
-    now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
-    test_msg = f"【台股產業投資策略 1.5版】手動測試推播\n發送時間：{now_str}\n系統運作正常！"
-    success = send_line_messaging_api(test_msg)
-    if success:
-        st.sidebar.success("✅ LINE 智慧推播測試發送成功！")
-    else:
-        st.sidebar.error("❌ LINE 推播發送失敗，請檢查 Token 與 User ID 設定。")
+    with st.spinner("正在計算並發送 LINE 智慧推播測試…"):
+        test_msg, _ = generate_push_message_content()
+        if not test_msg:
+            # 若無暫存新聞時的備用訊息
+            now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+            test_msg = f"【台股產業投資策略 1.5版】手動測試推播\n發送時間：{now_str}\n系統運作正常（目前無即時新聞數據可計算 Top 5）！"
+        
+        success = send_line_messaging_api(test_msg)
+        if success:
+            st.sidebar.success("✅ LINE 智慧推播測試發送成功！")
+        else:
+            st.sidebar.error("❌ LINE 推播發送失敗，請檢查 Token 與 User ID 設定（或詳見 log）。")
 
 _defaults = {
     "news_all": pd.DataFrame(), "news_failed": [], "news_fetched": False,
