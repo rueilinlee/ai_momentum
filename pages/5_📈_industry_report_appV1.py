@@ -553,7 +553,7 @@ SCORE_WEIGHTS = {"新聞情緒": 30, "二階動能": 15, "價格動能": 15, "�
 
 LLM_PROVIDERS = {
     "Claude (Anthropic)": {"model": "claude-sonnet-5-5", "secret": "ANTHROPIC_API_KEY", "pkg": "anthropic"},
-    "Gemini (Google)": {"model": "gemini-2.5-flash", "secret": "GEMINI_API_KEY", "pkg": "google-genai"},
+    "Gemini (Google)": {"model": "gemini-3.5-flash", "secret": "GEMINI_API_KEY", "pkg": "google-genai"},
 }
 
 AI_SYSTEM_PROMPT = """你是一位熟悉台股次產業的產業研究分析師。以第三人稱陳述，不要提及專業資歷，不要建議任何操作，不要直接對投資人喊話。
