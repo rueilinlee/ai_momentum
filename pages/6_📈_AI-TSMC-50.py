@@ -210,7 +210,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
 
             st.success("✅ 運算完成！")
             
-            # 1. 總榜前 10 名 (使用 .round(3) 避免 Styler 欄位型態例外)
+            # 1. 總榜前 10 名
             st.subheader("🏆 AI-TSMC-50 綜合評分【總榜前 10 名】")
             st.dataframe(res.head(10)[['Name', 'Sub_Industry', 'Category', 'Score_A', 'Final_Score']].round(3))
 
@@ -220,7 +220,20 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             sub_agg = sub_agg.sort_values(by='Final_Score', ascending=False)
             st.bar_chart(sub_agg.set_index('Sub_Industry')['Final_Score'])
 
-            # 3. 兩大類前 5 名
+            # 3. 📈 新增：前五名個股近 6 個月技術面走勢比較圖 (基準化 = 100)
+            st.subheader("📈 綜合評分【前五名個股】近 6 個月技術面相對走勢 (基準化 = 100)")
+            top_5_tickers = res.head(5).index.tolist()
+            top_5_names = [f"{c} {UNIVERSE[c]['name']}" for c in top_5_tickers]
+            
+            top_5_df = adj[top_5_tickers].tail(120).dropna(how='all')
+            if not top_5_df.empty:
+                top_5_normalized = top_5_df / top_5_df.iloc[0] * 100
+                top_5_normalized.columns = top_5_names
+                st.line_chart(top_5_normalized)
+            else:
+                st.info("目前無足夠歷史價格數據可供繪製圖表。")
+
+            # 4. 兩大類前 5 名
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### 🚀 AI 應用端前 5 名")
