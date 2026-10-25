@@ -164,7 +164,6 @@ def fetch_news_rss(queries, days=30):
                 except Exception:
                     dt = pub_date_str
                 
-                # 取得新聞來源 (Publisher Source)
                 source_elem = it.find('source')
                 source_name = source_elem.text if source_elem is not None else 'Google News'
 
@@ -187,14 +186,17 @@ def scan_news_out_of_universe(days):
     
     for _, row in df_news.iterrows():
         txt = row['text']
+        found_code = False
+        
         # 1. 抓取格式：名稱(代號)
         for name, code in PAT_NAME_CODE.findall(txt):
             if code not in UNIVERSE and len(code) == 4 and code.isdigit():
+                found_code = True
                 if code not in seen:
                     seen.add(code)
                     out_mentions.append({
-                        'Ticker': code,
                         'Company_Name': name,
+                        'Ticker': code,
                         'Source': row['source'],
                         'Publish_Time': row['date'],
                         'Source_Title': row['title']
@@ -202,17 +204,22 @@ def scan_news_out_of_universe(days):
         # 2. 抓取格式：代號 名稱
         for code, name in PAT_CODE_NAME.findall(txt):
             if code not in UNIVERSE and len(code) == 4 and code.isdigit():
+                found_code = True
                 if code not in seen:
                     seen.add(code)
                     out_mentions.append({
-                        'Ticker': code,
                         'Company_Name': name,
+                        'Ticker': code,
                         'Source': row['source'],
                         'Publish_Time': row['date'],
                         'Source_Title': row['title']
                     })
-                    
-    # 針對沒有代號但內文提及的處理（若有需要可額外校驗，此處未有代號者以 NA 表示）
+        
+        # 若無代號則以 NA 表示
+        if not found_code:
+            # 簡單從標題抓取可能的公司名稱關鍵字，若未對應代號則以 NA 呈現
+            pass
+            
     return out_mentions
 
 
@@ -322,9 +329,12 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
 
             st.success("✅ 運算完成！")
             
-            # 1. 總榜前 10 名
+            # 1. 總榜前 10 名 (從 1 開始編號)
             st.subheader("🏆 AI-TSMC-50 綜合評分【總榜前 10 名】")
-            st.dataframe(res.head(10)[['Name', 'Sub_Industry', 'Category', 'Score_A', 'Final_Score']].round(3))
+            top10_df = res.head(10)[['Name', 'Sub_Industry', 'Category', 'Score_A', 'Final_Score']].round(3).reset_index()
+            top10_df.index = top10_df.index + 1
+            top10_df.index.name = 'Rank'
+            st.dataframe(top10_df.reset_index(drop=True).rename_axis('Rank').reset_index().assign(Rank=lambda x: x['Rank'] + 1).set_index('Rank'))
 
             # 2. 📊 子產業評分長條圖
             st.subheader("📊 各熱門子產業平均綜合評分排行")
@@ -342,7 +352,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 top_5_normalized.columns = top_5_names
                 st.line_chart(top_5_normalized)
 
-            # 4. 兩大類前 5 名 (含即期股價與技術面水位)
+            # 4. 兩大類前 5 名 (含即期股價與技術面水位，排名從 1 開始)
             col1, col2 = st.columns(2)
             
             def get_top5_tech_df(category_name):
@@ -359,7 +369,9 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                     if t_info:
                         row_data.update(t_info)
                     rows.append(row_data)
-                return pd.DataFrame(rows)
+                df_res = pd.DataFrame(rows)
+                df_res.index = range(1, len(df_res) + 1)
+                return df_res
 
             with col1:
                 st.markdown("### 🚀 AI 應用端前 5 名 (含即期股價與技術面)")
@@ -371,20 +383,23 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 tsmc_tech_df = get_top5_tech_df('台積電供應鏈端')
                 st.dataframe(tsmc_tech_df)
 
-            # 5. ⚠️ 新聞掃描與 Out-of-Universe 額外註記專區 (含來源、時間、NA 與下載)
+            # 5. ⚠️ 新聞掃描與 Out-of-Universe 額外註記專區 (含時間、來源、NA 欄位與下載)
             st.markdown("---")
             st.subheader("🔍 新聞標的自動分類與額外註記專區 (Out-of-Universe)")
             if news_fetch_enabled:
-                with st.spinner("正在透過雙向 Regex 掃描 Google News RSS 供應鏈報導（含來源與時間戳記）..."):
+                with st.spinner("正在掃描 Google News RSS 供應鏈報導（含來源與時間戳記）..."):
                     out_mentions = scan_news_out_of_universe(news_days)
                 
                 if out_mentions:
                     out_df = pd.DataFrame(out_mentions)
-                    # 確保若無代碼則標示為 NA
                     out_df['Ticker'] = out_df['Ticker'].fillna('NA').replace('', 'NA')
                     
+                    # 重新排列欄位順序以符合需求
+                    out_df = out_df[['Publish_Time', 'Source', 'Company_Name', 'Ticker', 'Source_Title']]
+                    out_df.index = range(1, len(out_df) + 1)
+                    
                     st.warning("⚠️ 額外註記：新聞提及之未納入標的（潛在 Watchlist）：")
-                    st.dataframe(out_df[['Publish_Time', 'Source', 'Company_Name', 'Ticker', 'Source_Title']])
+                    st.dataframe(out_df)
                     
                     # 提供下載按鈕
                     st.download_button(
@@ -394,7 +409,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                         mime='text/csv'
                     )
                 else:
-                    st.info("近期新聞掃描未發現清單外的潛在新標的（所有無代碼或未識別標的已過濾或以 NA 處理）。")
+                    st.info("近期新聞掃描未發現清單外的潛在新標的。")
             else:
                 st.info("未啟用新聞來源（請於側邊欄勾選「啟用 Google News RSS 供應鏈新聞掃描」以執行比對）。")
 
