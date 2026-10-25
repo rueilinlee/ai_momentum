@@ -399,31 +399,28 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             else:
                 st.info("未啟用新聞來源（請於側邊欄勾選「啟用 Google News RSS 供應鏈新聞掃描」以執行比對）。")
 
-            # 6. 📈 新增：多時間框架回測與投資組合績效儀表板 (Plotly 互動視覺化)
+            # 6. 📈 多時間框架回測與投資組合績效儀表板 (Plotly 互動視覺化 - 已修正 shared_xaxes)
             st.markdown("---")
             st.subheader("📊 多時間框架回測與投資組合績效儀表板 (Performance Dashboard)")
             
-            # 呈現計量指標看板
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
             col_m1.metric("策略年化報酬 (CAGR)", "+24.5%", "+3.2% vs 大盤")
             col_m2.metric("夏普比率 (Sharpe Ratio)", "1.85", "優秀 (>1.5)")
             col_m3.metric("最大回檔 (MDD)", "-12.8%", "控制良好")
             col_m4.metric("單次調倉勝率 (Win Rate)", "64.2%", "樣本外驗證")
 
-            # Plotly 互動圖表：模擬累積報酬曲線與水下圖
             dates = pd.date_range(end=datetime.today(), periods=120, freq='B')
             np.random.seed(42)
             cum_strat = np.cumprod(1 + np.random.normal(0.001, 0.015, 120)) * 100
             cum_benchmark = np.cumprod(1 + np.random.normal(0.0006, 0.012, 120)) * 100
             
-            fig_perf = make_subplots(rows=2, cols=1, shared_axes=True, vertical_spacing=0.1, 
+            # 修正：將 shared_axes 改為正確的 shared_xaxes=True
+            fig_perf = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, 
                                      subplot_titles=('累積報酬曲線 (Stage A/B/C vs 0050大盤基準)', '策略回檔水下圖 (Underwater Chart)'))
             
-            # 累積報酬
             fig_perf.add_trace(go.Scatter(x=dates, y=cum_strat, name='AI-TSMC-50 策略淨值', line=dict(color='orange', width=2)), row=1, col=1)
             fig_perf.add_trace(go.Scatter(x=dates, y=cum_benchmark, name='大盤基準 (0050)', line=dict(color='gray', width=1.5, dash='dash')), row=1, col=1)
             
-            # 水下圖 (Drawdown)
             rolling_max = np.maximum.accumulate(cum_strat)
             drawdown = (cum_strat - rolling_max) / rolling_max * 100
             fig_perf.add_trace(go.Scatter(x=dates, y=drawdown, name='回檔深度 (%)', fill='tozeroy', line=dict(color='red', width=1)), row=2, col=1)
