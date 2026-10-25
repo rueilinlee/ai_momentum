@@ -188,7 +188,6 @@ def scan_news_out_of_universe(days):
         txt = row['text']
         found_code = False
         
-        # 1. 抓取格式：名稱(代號)
         for name, code in PAT_NAME_CODE.findall(txt):
             if code not in UNIVERSE and len(code) == 4 and code.isdigit():
                 found_code = True
@@ -201,7 +200,6 @@ def scan_news_out_of_universe(days):
                         'Publish_Time': row['date'],
                         'Source_Title': row['title']
                     })
-        # 2. 抓取格式：代號 名稱
         for code, name in PAT_CODE_NAME.findall(txt):
             if code not in UNIVERSE and len(code) == 4 and code.isdigit():
                 found_code = True
@@ -214,12 +212,6 @@ def scan_news_out_of_universe(days):
                         'Publish_Time': row['date'],
                         'Source_Title': row['title']
                     })
-        
-        # 若無代號則以 NA 表示
-        if not found_code:
-            # 簡單從標題抓取可能的公司名稱關鍵字，若未對應代號則以 NA 呈現
-            pass
-            
     return out_mentions
 
 
@@ -331,10 +323,9 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             
             # 1. 總榜前 10 名 (從 1 開始編號)
             st.subheader("🏆 AI-TSMC-50 綜合評分【總榜前 10 名】")
-            top10_df = res.head(10)[['Name', 'Sub_Industry', 'Category', 'Score_A', 'Final_Score']].round(3).reset_index()
-            top10_df.index = top10_df.index + 1
-            top10_df.index.name = 'Rank'
-            st.dataframe(top10_df.reset_index(drop=True).rename_axis('Rank').reset_index().assign(Rank=lambda x: x['Rank'] + 1).set_index('Rank'))
+            top10_df = res.head(10)[['Name', 'Sub_Industry', 'Category', 'Score_A', 'Final_Score']].round(3).reset_index(drop=True)
+            top10_df.index = range(1, len(top10_df) + 1)
+            st.dataframe(top10_df)
 
             # 2. 📊 子產業評分長條圖
             st.subheader("📊 各熱門子產業平均綜合評分排行")
@@ -393,15 +384,12 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 if out_mentions:
                     out_df = pd.DataFrame(out_mentions)
                     out_df['Ticker'] = out_df['Ticker'].fillna('NA').replace('', 'NA')
-                    
-                    # 重新排列欄位順序以符合需求
                     out_df = out_df[['Publish_Time', 'Source', 'Company_Name', 'Ticker', 'Source_Title']]
                     out_df.index = range(1, len(out_df) + 1)
                     
                     st.warning("⚠️ 額外註記：新聞提及之未納入標的（潛在 Watchlist）：")
                     st.dataframe(out_df)
                     
-                    # 提供下載按鈕
                     st.download_button(
                         label="📥 下載新聞額外註記專區 (CSV)",
                         data=out_df.to_csv().encode('utf-8-sig'),
@@ -412,6 +400,20 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                     st.info("近期新聞掃描未發現清單外的潛在新標的。")
             else:
                 st.info("未啟用新聞來源（請於側邊欄勾選「啟用 Google News RSS 供應鏈新聞掃描」以執行比對）。")
+
+            # 6. 🚀 系統未來的客製化調整與模組擴充方向
+            st.markdown("---")
+            with st.expander("📌 一、 系統未來的客製化調整與模組擴充方向 (發展藍圖)"):
+                st.markdown("""
+                1. **多時間框架回測與投資組合績效儀表板（Performance & Backtesting Dashboard）**
+                   - 擴充歷史回測模組，加入夏普比率（Sharpe Ratio）、最大回檔（MDD）、勝率與累積報酬曲線圖，讓使用者能直觀評估 Stage A/B/C 策略在不同多空循環下的表現。
+                2. **個股基本面與財報歷史走勢視覺化**
+                   - 點擊任一檔總榜或子產業個股時，能自動展開該公司的存貨周轉天數（DSI）歷史趨勢、資產周轉率（FAT）與營收年增率（YoY）的互動式歷史圖表。
+                3. **互動式自選股與動態監控清單編輯器**
+                   - 允許使用者直接在網頁側邊欄或表格中手動新增、刪除或調整特定標的，不必每次都修改底層程式碼，大幅提升動態應變能力。
+                4. **自動化通訊軟體通知警報（LINE推播）**
+                   - 當系統掃描到新聞提及之未納入標的（Out-of-Universe）出現異常聲量，或核心持股觸及多空目標價與技術面停損點時，自動發送推播通知。
+                """)
 
             # 下載完整選股 CSV 按鈕
             st.download_button(
