@@ -210,11 +210,11 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
 
             st.success("✅ 運算完成！")
             
-            # 1. 總榜前 10 名
+            # 1. 總榜前 10 名 (使用 .round(3) 避免 Styler 欄位型態例外)
             st.subheader("🏆 AI-TSMC-50 綜合評分【總榜前 10 名】")
-            st.dataframe(res.head(10)[['Name', 'Sub_Industry', 'Category', 'Score_A', 'Final_Score']].style.format("{:.3f}"))
+            st.dataframe(res.head(10)[['Name', 'Sub_Industry', 'Category', 'Score_A', 'Final_Score']].round(3))
 
-            # 2. 📊 新增：子產業評分長條圖
+            # 2. 📊 子產業評分長條圖
             st.subheader("📊 各熱門子產業平均綜合評分排行")
             sub_agg = res.groupby('Sub_Industry')['Final_Score'].mean().reset_index()
             sub_agg = sub_agg.sort_values(by='Final_Score', ascending=False)
@@ -225,11 +225,11 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             with col1:
                 st.markdown("### 🚀 AI 應用端前 5 名")
                 ai_df = res[res['Category'] == 'AI應用端'].head(5)
-                st.dataframe(ai_df[['Name', 'Sub_Industry', 'Final_Score']].style.format("{:.3f}"))
+                st.dataframe(ai_df[['Name', 'Sub_Industry', 'Final_Score']].round(3))
             with col2:
                 st.markdown("### ⚙️ 台積電供應鏈端前 5 名")
                 tsmc_df = res[res['Category'] == '台積電供應鏈端'].head(5)
-                st.dataframe(tsmc_df[['Name', 'Sub_Industry', 'Final_Score']].style.format("{:.3f}"))
+                st.dataframe(tsmc_df[['Name', 'Sub_Industry', 'Final_Score']].round(3))
 
             # 下載 CSV 按鈕
             st.download_button(
