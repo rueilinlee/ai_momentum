@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 st.title("📈 AI-TSMC-50 智慧選股與量化決策引擎 (Stage A/B/C)")
-st.markdown("結合 **AHP 專家權重、資訊熵、Ridge 歷史回測尋優 (Stage B)**、**LightGBM LambdaMART 機器學習排名 (Stage C)** 與 **支援上市/上櫃雙向辨識之即時新聞白名單比對** 的全方位半導體與 AI 供應鏈選股系統。")
+st.markdown("結合 **AHP 專家權重、資訊熵、Ridge 歷史回測尋優 (Stage B)**、**LightGBM LambdaMART 機器學習排名 (Stage C)** 與 **智慧新聞白名單比對與額外註記下載** 的全方位半導體與 AI 供應鏈選股系統。")
 
 # ============================ 側邊欄設定 ============================
 st.sidebar.header("⚙️ 模型與新聞控制面板")
@@ -82,7 +82,6 @@ NEWS_QUERIES = [
     '台積電 供應鏈 獨家', 'CoWoS 先進封裝 設備 打入', 'CPO 光通訊 打入 供應鏈',
     'AI 伺服器 散熱 水冷 打入', 'ABF載板 PCB AI 供應鏈 獨家', '矽光子 供應商 台積電'
 ]
-# 支援兩種格式：(1) 公司名(4位代號)  (2) 4位代號 公司名
 PAT_NAME_CODE = re.compile(r'([\u4e00-\u9fffA-Za-z\-\*]{2,8})\s*[（(]\s*(\d{4})\s*(?:[-.]?\s*(?:TW|TWO))?\s*[)）]')
 PAT_CODE_NAME = re.compile(r'(?<![\d年/.\-])(\d{4})\s+([\u4e00-\u9fffA-Za-z]{2,8})')
 
@@ -159,12 +158,21 @@ def fetch_news_rss(queries, days=30):
             for it in root.iter('item'):
                 title = it.findtext('title') or ''
                 desc = re.sub(r'<[^>]+>', ' ', it.findtext('description') or '')
-                dt = pd.Timestamp(parsedate_to_datetime(it.findtext('pubDate'))).tz_convert('UTC').tz_localize(None)
-                rows.append({'date': dt, 'title': title, 'text': f'{title} {desc}'})
+                pub_date_str = it.findtext('pubDate') or ''
+                try:
+                    dt = pd.Timestamp(parsedate_to_datetime(pub_date_str)).tz_convert('UTC').tz_localize(None).strftime('%Y-%m-%d %H:%M')
+                except Exception:
+                    dt = pub_date_str
+                
+                # 取得新聞來源 (Publisher Source)
+                source_elem = it.find('source')
+                source_name = source_elem.text if source_elem is not None else 'Google News'
+
+                rows.append({'date': dt, 'source': source_name, 'title': title, 'text': f'{title} {desc}'})
         except Exception:
             pass
         time.sleep(0.5)
-    return pd.DataFrame(rows, columns=['date', 'title', 'text'])
+    return pd.DataFrame(rows, columns=['date', 'source', 'title', 'text'])
 
 
 def scan_news_out_of_universe(days):
@@ -173,19 +181,39 @@ def scan_news_out_of_universe(days):
     df_news = fetch_news_rss(NEWS_QUERIES, days=days)
     if df_news.empty:
         return []
-    out_mentions = {}
+    
+    out_mentions = []
+    seen = set()
+    
     for _, row in df_news.iterrows():
         txt = row['text']
         # 1. 抓取格式：名稱(代號)
         for name, code in PAT_NAME_CODE.findall(txt):
             if code not in UNIVERSE and len(code) == 4 and code.isdigit():
-                out_mentions[code] = {'name': name, 'ticker': code, 'source_title': row['title']}
-        # 2. 抓取格式：代號 名稱（支援上櫃/上市雙向辨識）
+                if code not in seen:
+                    seen.add(code)
+                    out_mentions.append({
+                        'Ticker': code,
+                        'Company_Name': name,
+                        'Source': row['source'],
+                        'Publish_Time': row['date'],
+                        'Source_Title': row['title']
+                    })
+        # 2. 抓取格式：代號 名稱
         for code, name in PAT_CODE_NAME.findall(txt):
             if code not in UNIVERSE and len(code) == 4 and code.isdigit():
-                if code not in out_mentions:
-                    out_mentions[code] = {'name': name, 'ticker': code, 'source_title': row['title']}
-    return list(out_mentions.values())
+                if code not in seen:
+                    seen.add(code)
+                    out_mentions.append({
+                        'Ticker': code,
+                        'Company_Name': name,
+                        'Source': row['source'],
+                        'Publish_Time': row['date'],
+                        'Source_Title': row['title']
+                    })
+                    
+    # 針對沒有代號但內文提及的處理（若有需要可額外校驗，此處未有代號者以 NA 表示）
+    return out_mentions
 
 
 def _log_transform(r):
@@ -343,22 +371,34 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 tsmc_tech_df = get_top5_tech_df('台積電供應鏈端')
                 st.dataframe(tsmc_tech_df)
 
-            # 5. ⚠️ 新聞掃描與 Out-of-Universe 額外註記專區
+            # 5. ⚠️ 新聞掃描與 Out-of-Universe 額外註記專區 (含來源、時間、NA 與下載)
             st.markdown("---")
-            st.subheader("🔍 新聞標的自動分類與額外註記專區")
+            st.subheader("🔍 新聞標的自動分類與額外註記專區 (Out-of-Universe)")
             if news_fetch_enabled:
-                with st.spinner("正在透過雙向 Regex 掃描 Google News RSS 供應鏈報導（含上市/上櫃）..."):
+                with st.spinner("正在透過雙向 Regex 掃描 Google News RSS 供應鏈報導（含來源與時間戳記）..."):
                     out_mentions = scan_news_out_of_universe(news_days)
+                
                 if out_mentions:
-                    st.warning("⚠️ 額外註記：新聞提及之未納入標的（Out-of-Universe / 潛在 Watchlist）：")
-                    for item in out_mentions:
-                        st.write(f"• 公司名稱: **{item['name']}** (代號: `{item['ticker']}`) | 相關新聞: _{item['source_title']}_")
+                    out_df = pd.DataFrame(out_mentions)
+                    # 確保若無代碼則標示為 NA
+                    out_df['Ticker'] = out_df['Ticker'].fillna('NA').replace('', 'NA')
+                    
+                    st.warning("⚠️ 額外註記：新聞提及之未納入標的（潛在 Watchlist）：")
+                    st.dataframe(out_df[['Publish_Time', 'Source', 'Company_Name', 'Ticker', 'Source_Title']])
+                    
+                    # 提供下載按鈕
+                    st.download_button(
+                        label="📥 下載新聞額外註記專區 (CSV)",
+                        data=out_df.to_csv().encode('utf-8-sig'),
+                        file_name=f"AITSMC50_Watchlist_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime='text/csv'
+                    )
                 else:
-                    st.info("近期新聞掃描未發現清單外的潛在新標的。")
+                    st.info("近期新聞掃描未發現清單外的潛在新標的（所有無代碼或未識別標的已過濾或以 NA 處理）。")
             else:
                 st.info("未啟用新聞來源（請於側邊欄勾選「啟用 Google News RSS 供應鏈新聞掃描」以執行比對）。")
 
-            # 下載 CSV 按鈕
+            # 下載完整選股 CSV 按鈕
             st.download_button(
                 label="📥 下載完整選股排序結果 (CSV)",
                 data=res.to_csv().encode('utf-8-sig'),
