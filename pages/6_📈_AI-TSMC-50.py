@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 st.title("📈 AI-TSMC-50 智慧選股與量化決策引擎 (Stage A/B/C)")
-st.markdown("結合 **AHP 專家權重、資訊熵、Ridge 歷史回測尋優 (Stage B)**、**LightGBM LambdaMART 機器學習排名 (Stage C)** 與 **即時新聞白名單比對** 的全方位半導體與 AI 供應鏈選股系統。")
+st.markdown("結合 **AHP 專家權重、資訊熵、Ridge 歷史回測尋優 (Stage B)**、**LightGBM LambdaMART 機器學習排名 (Stage C)** 與 **支援上市/上櫃雙向辨識之即時新聞白名單比對** 的全方位半導體與 AI 供應鏈選股系統。")
 
 # ============================ 側邊欄設定 ============================
 st.sidebar.header("⚙️ 模型與新聞控制面板")
@@ -67,7 +67,6 @@ _UNIVERSE = [
     ('6139', '亞翔', '廠務工程', T), ('6691', '洋基工程', '廠務工程', T),
 ]
 UNIVERSE = {c: {'name': n, 'sub': s, 'cat': k} for c, n, s, k in _UNIVERSE}
-NAME_TO_CODE = {v['name']: c for c, v in UNIVERSE.items()}
 
 FACTORS = ['Rev_Growth_YoY', 'DSI', 'FAT']
 DIRECTION_MAP = {'Rev_Growth_YoY': 1.0, 'DSI': -1.0, 'FAT': 1.0}
@@ -83,8 +82,9 @@ NEWS_QUERIES = [
     '台積電 供應鏈 獨家', 'CoWoS 先進封裝 設備 打入', 'CPO 光通訊 打入 供應鏈',
     'AI 伺服器 散熱 水冷 打入', 'ABF載板 PCB AI 供應鏈 獨家', '矽光子 供應商 台積電'
 ]
+# 支援兩種格式：(1) 公司名(4位代號)  (2) 4位代號 公司名
 PAT_NAME_CODE = re.compile(r'([\u4e00-\u9fffA-Za-z\-\*]{2,8})\s*[（(]\s*(\d{4})\s*(?:[-.]?\s*(?:TW|TWO))?\s*[)）]')
-PAT_CODE_NAME = re.compile(r'(?<![\d年/.\-])(\d{4})\s+([\u4e00-\u9fff]{2,5})')
+PAT_CODE_NAME = re.compile(r'(?<![\d年/.\-])(\d{4})\s+([\u4e00-\u9fffA-Za-z]{2,8})')
 
 # ============================ 輔助函數 ============================
 @st.cache_data(ttl=3600)
@@ -169,16 +169,22 @@ def fetch_news_rss(queries, days=30):
 
 def scan_news_out_of_universe(days):
     if not news_fetch_enabled:
-        return None
+        return []
     df_news = fetch_news_rss(NEWS_QUERIES, days=days)
     if df_news.empty:
         return []
     out_mentions = {}
     for _, row in df_news.iterrows():
         txt = row['text']
+        # 1. 抓取格式：名稱(代號)
         for name, code in PAT_NAME_CODE.findall(txt):
             if code not in UNIVERSE and len(code) == 4 and code.isdigit():
-                out_mentions[code] = {'name': name, 'ticker': f"{code}.TW", 'source_title': row['title']}
+                out_mentions[code] = {'name': name, 'ticker': code, 'source_title': row['title']}
+        # 2. 抓取格式：代號 名稱（支援上櫃/上市雙向辨識）
+        for code, name in PAT_CODE_NAME.findall(txt):
+            if code not in UNIVERSE and len(code) == 4 and code.isdigit():
+                if code not in out_mentions:
+                    out_mentions[code] = {'name': name, 'ticker': code, 'source_title': row['title']}
     return list(out_mentions.values())
 
 
@@ -341,7 +347,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             st.markdown("---")
             st.subheader("🔍 新聞標的自動分類與額外註記專區")
             if news_fetch_enabled:
-                with st.spinner("正在掃描 Google News RSS 供應鏈報導..."):
+                with st.spinner("正在透過雙向 Regex 掃描 Google News RSS 供應鏈報導（含上市/上櫃）..."):
                     out_mentions = scan_news_out_of_universe(news_days)
                 if out_mentions:
                     st.warning("⚠️ 額外註記：新聞提及之未納入標的（Out-of-Universe / 潛在 Watchlist）：")
