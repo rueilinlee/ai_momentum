@@ -2,6 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
+import re
+import time
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 import yfinance as yf
 from datetime import datetime
 
@@ -13,10 +19,10 @@ st.set_page_config(
 )
 
 st.title("📈 AI-TSMC-50 智慧選股與量化決策引擎 (Stage A/B/C)")
-st.markdown("結合 **AHP 專家權重、資訊熵、Ridge 歷史回測尋優 (Stage B)** 以及 **LightGBM LambdaMART 機器學習排名 (Stage C)** 的全方位半導體與 AI 供應鏈選股系統。")
+st.markdown("結合 **AHP 專家權重、資訊熵、Ridge 歷史回測尋優 (Stage B)**、**LightGBM LambdaMART 機器學習排名 (Stage C)** 與 **即時新聞白名單比對** 的全方位半導體與 AI 供應鏈選股系統。")
 
 # ============================ 側邊欄設定 ============================
-st.sidebar.header("⚙️ 模型控制面板")
+st.sidebar.header("⚙️ 模型與新聞控制面板")
 primary_scenario = st.sidebar.selectbox("選擇主情境模型", ['S0', 'S1', 'S2'], index=1, 
     format_func=lambda x: {'S0': '舊版三因子', 'S1': '三因子 (DSI<15天視為N/A)', 'S2': '雙因子 (無FAT)'}[x])
 
@@ -24,6 +30,9 @@ ranker_enabled = st.sidebar.checkbox("啟用 Stage C 機器學習排名模型 (L
 blend_ratio = st.sidebar.slider("Stage C 混合權重比例", 0.0, 1.0, 0.5, 0.1)
 
 st.sidebar.markdown("---")
+news_fetch_enabled = st.sidebar.checkbox("啟用 Google News RSS 供應鏈新聞掃描", value=False)
+news_days = st.sidebar.slider("新聞搜尋天數範圍", 7, 60, 30, 5)
+
 st.sidebar.info("💡 提示：初次執行會自動下載最新價格與歷史快照資料，請稍候數秒。")
 
 # ============================ 核心常數與字典 ============================
@@ -58,6 +67,7 @@ _UNIVERSE = [
     ('6139', '亞翔', '廠務工程', T), ('6691', '洋基工程', '廠務工程', T),
 ]
 UNIVERSE = {c: {'name': n, 'sub': s, 'cat': k} for c, n, s, k in _UNIVERSE}
+NAME_TO_CODE = {v['name']: c for c, v in UNIVERSE.items()}
 
 FACTORS = ['Rev_Growth_YoY', 'DSI', 'FAT']
 DIRECTION_MAP = {'Rev_Growth_YoY': 1.0, 'DSI': -1.0, 'FAT': 1.0}
@@ -69,9 +79,16 @@ SCENARIOS = {
     'S2': {'label': '雙因子(無FAT, DSI<15視為N/A)', 'factors': ['Rev_Growth_YoY', 'DSI'], 'dsi_min': 15},
 }
 
+NEWS_QUERIES = [
+    '台積電 供應鏈 獨家', 'CoWoS 先進封裝 設備 打入', 'CPO 光通訊 打入 供應鏈',
+    'AI 伺服器 散熱 水冷 打入', 'ABF載板 PCB AI 供應鏈 獨家', '矽光子 供應商 台積電'
+]
+PAT_NAME_CODE = re.compile(r'([\u4e00-\u9fffA-Za-z\-\*]{2,8})\s*[（(]\s*(\d{4})\s*(?:[-.]?\s*(?:TW|TWO))?\s*[)）]')
+PAT_CODE_NAME = re.compile(r'(?<![\d年/.\-])(\d{4})\s+([\u4e00-\u9fff]{2,5})')
+
 # ============================ 輔助函數 ============================
 @st.cache_data(ttl=3600)
-def download_prices_cached(codes):
+def download_panels_cached(codes):
     def _field(data, field, symbols):
         if isinstance(data.columns, pd.MultiIndex):
             return data[field]
@@ -81,16 +98,16 @@ def download_prices_cached(codes):
         try:
             d = yf.download(symbols, period='2y', auto_adjust=False, progress=False, group_by='column')
             if d is None or d.empty:
-                return {'Adj Close': pd.DataFrame()}
-            return {'Adj Close': _field(d, 'Adj Close', symbols)}
+                return {f: pd.DataFrame() for f in ['Adj Close', 'Close', 'High', 'Low']}
+            return {f: _field(d, f, symbols) for f in ['Adj Close', 'Close', 'High', 'Low']}
         except Exception:
-            return {'Adj Close': pd.DataFrame()}
+            return {f: pd.DataFrame() for f in ['Adj Close', 'Close', 'High', 'Low']}
 
     sym = {c: f'{c}.TW' for c in codes}
     panels = _download(list(sym.values()))
     
     def ok(p, s):
-        return s in p['Adj Close'].columns and p['Adj Close'][s].dropna().shape[0] >= 30
+        return s in p['Close'].columns and p['Close'][s].dropna().shape[0] >= 30
 
     missing = [c for c in codes if not ok(panels, sym[c])]
     if missing:
@@ -98,11 +115,71 @@ def download_prices_cached(codes):
         for c in missing:
             if ok(p2, f'{c}.TWO'):
                 sym[c] = f'{c}.TWO'
-                panels['Adj Close'] = panels['Adj Close'].join(p2['Adj Close'][[f'{c}.TWO']], how='outer')
+                for f in panels:
+                    panels[f] = panels[f].join(p2[f][[f'{c}.TWO']], how='outer')
                 
     good = {c: s for c, s in sym.items() if ok(panels, s)}
-    adj = pd.DataFrame({c: panels['Adj Close'][s] for c, s in good.items()})
-    return adj
+    out = {f: pd.DataFrame({c: panels[f][s] for c, s in good.items()}) for f in panels}
+    return out, good
+
+
+def technicals(code, panels):
+    if code not in panels['Close'].columns:
+        return None
+    c = panels['Close'][code].dropna()
+    if len(c) < 25:
+        return None
+    h = panels['High'][code].reindex(c.index)
+    l = panels['Low'][code].reindex(c.index)
+    ma5, ma10, ma20 = (c.rolling(n).mean().iloc[-1] for n in (5, 10, 20))
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean().iloc[-1]
+    return {
+        'Price': round(float(c.iloc[-1]), 2),
+        'Date': c.index[-1].strftime('%Y-%m-%d'),
+        'MA5': round(float(ma5), 2),
+        'MA10': round(float(ma10), 2),
+        'MA20': round(float(ma20), 2),
+        'Trend': '多頭' if ma5 > ma10 else '空頭',
+        'Support_20D': round(float(l.iloc[-20:].min()), 2),
+        'Resist_20D': round(float(h.iloc[-20:].max()), 2),
+        'StopRef_2ATR': round(float(c.iloc[-1] - 2 * atr), 2)
+    }
+
+
+def fetch_news_rss(queries, days=30):
+    rows = []
+    for q in queries:
+        url = ('https://news.google.com/rss/search?q=' + urllib.parse.quote(f'{q} when:{days}d')
+               + '&hl=zh-TW&gl=TW&ceid=TW:zh-Hant')
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                root = ET.fromstring(r.read())
+            for it in root.iter('item'):
+                title = it.findtext('title') or ''
+                desc = re.sub(r'<[^>]+>', ' ', it.findtext('description') or '')
+                dt = pd.Timestamp(parsedate_to_datetime(it.findtext('pubDate'))).tz_convert('UTC').tz_localize(None)
+                rows.append({'date': dt, 'title': title, 'text': f'{title} {desc}'})
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return pd.DataFrame(rows, columns=['date', 'title', 'text'])
+
+
+def scan_news_out_of_universe(days):
+    if not news_fetch_enabled:
+        return None
+    df_news = fetch_news_rss(NEWS_QUERIES, days=days)
+    if df_news.empty:
+        return []
+    out_mentions = {}
+    for _, row in df_news.iterrows():
+        txt = row['text']
+        for name, code in PAT_NAME_CODE.findall(txt):
+            if code not in UNIVERSE and len(code) == 4 and code.isdigit():
+                out_mentions[code] = {'name': name, 'ticker': f"{code}.TW", 'source_title': row['title']}
+    return list(out_mentions.values())
 
 
 def _log_transform(r):
@@ -159,7 +236,8 @@ def ahp_weights(sc):
 if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
     with st.spinner("正在下載最新行情與計算多維度量化指標..."):
         codes = list(UNIVERSE)
-        adj = download_prices_cached(tuple(codes))
+        panels, sym_map = download_panels_cached(tuple(codes))
+        adj = panels['Adj Close']
         
         if adj.empty:
             st.error("❌ 無法取得價格資料，請檢查網路連線。")
@@ -220,29 +298,59 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             sub_agg = sub_agg.sort_values(by='Final_Score', ascending=False)
             st.bar_chart(sub_agg.set_index('Sub_Industry')['Final_Score'])
 
-            # 3. 📈 新增：前五名個股近 6 個月技術面走勢比較圖 (基準化 = 100)
+            # 3. 📈 前五名個股技術面相對走勢圖
             st.subheader("📈 綜合評分【前五名個股】近 6 個月技術面相對走勢 (基準化 = 100)")
             top_5_tickers = res.head(5).index.tolist()
             top_5_names = [f"{c} {UNIVERSE[c]['name']}" for c in top_5_tickers]
-            
             top_5_df = adj[top_5_tickers].tail(120).dropna(how='all')
             if not top_5_df.empty:
                 top_5_normalized = top_5_df / top_5_df.iloc[0] * 100
                 top_5_normalized.columns = top_5_names
                 st.line_chart(top_5_normalized)
-            else:
-                st.info("目前無足夠歷史價格數據可供繪製圖表。")
 
-            # 4. 兩大類前 5 名
+            # 4. 兩大類前 5 名 (含即期股價與技術面水位)
             col1, col2 = st.columns(2)
+            
+            def get_top5_tech_df(category_name):
+                t5 = res[res['Category'] == category_name].head(5)
+                rows = []
+                for code in t5.index:
+                    t_info = technicals(code, panels)
+                    row_data = {
+                        'Ticker': code,
+                        'Name': UNIVERSE[code]['name'],
+                        'Sub_Industry': UNIVERSE[code]['sub'],
+                        'Final_Score': round(float(t5.loc[code, 'Final_Score']), 3)
+                    }
+                    if t_info:
+                        row_data.update(t_info)
+                    rows.append(row_data)
+                return pd.DataFrame(rows)
+
             with col1:
-                st.markdown("### 🚀 AI 應用端前 5 名")
-                ai_df = res[res['Category'] == 'AI應用端'].head(5)
-                st.dataframe(ai_df[['Name', 'Sub_Industry', 'Final_Score']].round(3))
+                st.markdown("### 🚀 AI 應用端前 5 名 (含即期股價與技術面)")
+                ai_tech_df = get_top5_tech_df('AI應用端')
+                st.dataframe(ai_tech_df)
+
             with col2:
-                st.markdown("### ⚙️ 台積電供應鏈端前 5 名")
-                tsmc_df = res[res['Category'] == '台積電供應鏈端'].head(5)
-                st.dataframe(tsmc_df[['Name', 'Sub_Industry', 'Final_Score']].round(3))
+                st.markdown("### ⚙️ 台積電供應鏈端前 5 名 (含即期股價與技術面)")
+                tsmc_tech_df = get_top5_tech_df('台積電供應鏈端')
+                st.dataframe(tsmc_tech_df)
+
+            # 5. ⚠️ 新聞掃描與 Out-of-Universe 額外註記專區
+            st.markdown("---")
+            st.subheader("🔍 新聞標的自動分類與額外註記專區")
+            if news_fetch_enabled:
+                with st.spinner("正在掃描 Google News RSS 供應鏈報導..."):
+                    out_mentions = scan_news_out_of_universe(news_days)
+                if out_mentions:
+                    st.warning("⚠️ 額外註記：新聞提及之未納入標的（Out-of-Universe / 潛在 Watchlist）：")
+                    for item in out_mentions:
+                        st.write(f"• 公司名稱: **{item['name']}** (代號: `{item['ticker']}`) | 相關新聞: _{item['source_title']}_")
+                else:
+                    st.info("近期新聞掃描未發現清單外的潛在新標的。")
+            else:
+                st.info("未啟用新聞來源（請於側邊欄勾選「啟用 Google News RSS 供應鏈新聞掃描」以執行比對）。")
 
             # 下載 CSV 按鈕
             st.download_button(
