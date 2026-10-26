@@ -18,7 +18,11 @@ st.set_page_config(
 )
 
 st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與聯網戰情室 (含次產業支撐壓力與 Excel 下載)")
-st.markdown("本系統採**兩階段執行架構**：\n1. **第一階段**：先快速載入全市場資料，執行多維度量化因子計算與 K-Means AI 分群，並取得即期股價與 20 日支撐/壓力。\n2. **第二階段**：以公司代號非同步聯網對應官方與 Yahoo 中文名稱。\n\n**新增亮點**：次產業戰情室前 3 名已完整包含**支撐與壓力數值**，並支援**專屬 Excel 報表一鍵下載**！")
+st.markdown("""本系統採**兩階段執行架構**：
+1. **第一階段**：先快速載入全市場資料，執行多維度量化因子計算與 K-Means AI 分群，並取得即期股價與 20 日支撐/壓力。
+2. **第二階段**：以公司代號非同步聯網對應官方與 Yahoo 中文名稱。
+
+**新增亮點**：次產業戰情室前 3 名已完整包含**支撐與壓力數值**，並支援**專屬 Excel 報表一鍵下載**！""")
 
 # 側邊欄控制面板
 st.sidebar.header("⚙️ 模型與資料設定")
@@ -319,4 +323,14 @@ if st.session_state.get('executed', False) and 'official_mapping' in st.session_
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         c1_display.to_excel(writer, sheet_name=f"最強勢群組{c1}", index=True)
-        c2_display.to_excel(writer, sheet_name=f"次強勢群
+        c2_display.to_excel(writer, sheet_name=f"次強勢群組{c2}", index=True)
+    output.seek(0)
+
+    st.download_button(
+        label="📥 下載主畫面雙群組前 10 名 Excel 報表",
+        data=output,
+        file_name="dynamic_top10_clusters_two_stages.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+else:
+    st.info("👈 請點擊左側「開始執行兩階段分析」按鈕以啟動系統。")
