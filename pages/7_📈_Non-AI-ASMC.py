@@ -5,24 +5,22 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import os
 import io
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import yfinance as yf
 
 # 設定網頁版面
 st.set_page_config(
-    page_title="AI-TSMC-50 衛星同儕標的動態分群與技術面戰情室",
+    page_title="AI-TSMC-50 衛星同儕標的動態分群與次產業戰情室",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與技術面戰情室 (支撐/壓力分析)")
-st.markdown("本系統針對全市場標的扣除 **AI-TSMC-50 核心 55 檔** 後之同儕衛星標的，透過多維度量化因子與 K-Means AI 分群引擎，**動態自動尋找最強勢的前兩個集群**，各自輸出前 10 名標的，並透過 yfinance 下載即期股價、日期、20日支撐與壓力。")
+st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與次產業戰情室")
+st.markdown("本系統針對全市場標的扣除 **AI-TSMC-50 核心 55 檔** 後之同儕衛星標的，透過多維度量化因子與 K-Means AI 分群引擎，動態自動尋找最強勢的前兩個集群（各前 10 名），並支援**次產業下拉選單切換檢視各次產業前 3 名標的（包含公司名稱、公司代碼、即期股價、日期）**。")
 
 # 側邊欄控制面板
 st.sidebar.header("⚙️ 模型與資料設定")
 uploaded_extra = st.sidebar.file_uploader("上傳全市場標的 CSV (`taiwan_extra_universe.csv`)", type=["csv"])
-uploaded_names = st.sidebar.file_uploader("上傳公司名稱對照 CSV (`stock_names.csv`)", type=["csv"])
+uploaded_names = st.sidebar.file_uploader("上傳公司名稱對照 CSV (`stock_names.csv`) (選填)", type=["csv"])
 
 n_clusters_input = st.sidebar.slider("K-Means AI 分群數量 (Clusters)", 5, 15, 10)
 
@@ -31,8 +29,34 @@ st.sidebar.subheader("🎲 亂數與分群設定")
 enable_random_seed = st.sidebar.checkbox("固定亂數種子 (確保結果可重現)", value=True)
 random_seed_val = st.sidebar.number_input("設定 Random Seed數值", value=42, step=1) if enable_random_seed else None
 
-if st.button("🚀 開始執行動態分群與技術面戰情分析", type="primary"):
-    with st.spinner("正在載入資料、執行 AI 動態分群與下載即期技術面行情..."):
+# 使用 @st.cache_data 快取 yfinance 查詢結果以加速效能
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_stock_info_and_tech(code, fallback_name):
+    real_name = fallback_name
+    p_val, d_val, s_val, r_val = 'N/A', 'N/A', 'N/A', 'N/A'
+    
+    for suffix in ['.TW', '.TWO']:
+        try:
+            t = yf.Ticker(code + suffix)
+            info = t.info
+            long_n = info.get('longName', info.get('shortName', ''))
+            if long_n:
+                real_name = long_n
+            
+            hist = t.history(period='2mo')
+            if not hist.empty and len(hist) >= 20:
+                p_val = round(float(hist['Close'].iloc[-1]), 2)
+                d_val = hist.index[-1].strftime('%Y-%m-%d')
+                s_val = round(float(hist['Low'].iloc[-20:].min()), 2)
+                r_val = round(float(hist['High'].iloc[-20:].max()), 2)
+                break
+        except Exception:
+            continue
+            
+    return real_name, p_val, d_val, s_val, r_val
+
+if st.button("🚀 開始執行動態分群與次產業戰情分析", type="primary"):
+    with st.spinner("正在載入資料、執行 AI 動態分群與次產業標的計算..."):
         # 1. 讀取資料
         if uploaded_extra is not None:
             df_all = pd.read_csv(uploaded_extra)
@@ -55,27 +79,26 @@ if st.button("🚀 開始執行動態分群與技術面戰情分析", type="prim
         core_prefixes = {str(c)[:2] for c in core_universe}
         core_set = set(core_universe)
 
+        # 讀取備用 CSV 名稱對照
+        fallback_mapping = {}
         if uploaded_names is not None:
             df_names = pd.read_csv(uploaded_names)
         elif os.path.exists('stock_names.csv'):
             df_names = pd.read_csv('stock_names.csv')
         else:
-            df_names = pd.DataFrame({
-                'Code': ['3013', '3491', '2363', '6613', '6270', '3176', '8048', '8092', '6423', '2433',
-                         '2453', '4905', '6140', '6569', '3168', '4951', '8261', '1708', '2462', '4736'],
-                'Name': ['晟銘電', '昇達科技', '矽統', '朋億*', '台汽電', '基亞', '德勝', '建暐', '億而得', '互盛電',
-                         '凌群', '台聯電', '訊達', '睿生光電', '保銳', '友輝', '富鼎', '東鹼', '良維', '泰博']
-            })
-
-        df_names['Code'] = df_names['Code'].astype(str).str.zfill(4)
-        name_mapping = dict(zip(df_names['Code'], df_names['Name']))
+            df_names = pd.DataFrame(columns=['Code', 'Name'])
+        
+        if not df_names.empty:
+            df_names['Code'] = df_names['Code'].astype(str).str.zfill(4)
+            fallback_mapping = dict(zip(df_names['Code'], df_names['Name']))
 
         satellite_codes = df_all[df_all['Code'].str[:2].isin(core_prefixes) & (~df_all['Code'].isin(core_set))]['Code'].tolist()
 
         if enable_random_seed:
             np.random.seed(random_seed_val)
         n_samples = len(satellite_codes)
-        sample_names = [name_mapping.get(code, f"上市櫃企業_{code}") for code in satellite_codes]
+
+        dummy_names = [fallback_mapping.get(code, f"企業_{code}") for code in satellite_codes]
 
         rev_growth = np.random.normal(12.5, 18.0, n_samples)
         dsi = np.random.uniform(25.0, 110.0, n_samples)
@@ -84,7 +107,7 @@ if st.button("🚀 開始執行動態分群與技術面戰情分析", type="prim
 
         df_sat = pd.DataFrame({
             'Ticker': satellite_codes,
-            'Name': sample_names,
+            'Name': dummy_names,
             'Prefix': [c[:2] for c in satellite_codes],
             'Rev_Growth_YoY_%': np.round(rev_growth, 2),
             'DSI_Days': np.round(dsi, 1),
@@ -116,35 +139,29 @@ if st.button("🚀 開始執行動態分群與技術面戰情分析", type="prim
         c1_top = df_sat[df_sat['Cluster_ID'] == c1].sort_values(by='Final_Score', ascending=False).head(10).copy()
         c2_top = df_sat[df_sat['Cluster_ID'] == c2].sort_values(by='Final_Score', ascending=False).head(10).copy()
 
-        def enrich_technical_data(df_subset):
-            prices, dates, supports, resists = [], [], [], []
+        def enrich_real_name_and_tech(df_subset):
+            names, prices, dates, supports, resists = [], [], [], [], []
             for _, r in df_subset.iterrows():
                 code = r['Ticker']
-                p_val, d_val, s_val, r_val = 'N/A', 'N/A', 'N/A', 'N/A'
-                for suffix in ['.TW', '.TWO']:
-                    try:
-                        hist = yf.Ticker(code + suffix).history(period='2mo')
-                        if not hist.empty and len(hist) >= 20:
-                            p_val = round(float(hist['Close'].iloc[-1]), 2)
-                            d_val = hist.index[-1].strftime('%Y-%m-%d')
-                            s_val = round(float(hist['Low'].iloc[-20:].min()), 2)
-                            r_val = round(float(hist['High'].iloc[-20:].max()), 2)
-                            break
-                    except Exception:
-                        continue
+                fallback = fallback_mapping.get(code, f"上市櫃企業_{code}")
+                r_name, p_val, d_val, s_val, r_val = fetch_stock_info_and_tech(code, fallback)
+                
+                names.append(r_name)
                 prices.append(p_val)
                 dates.append(d_val)
                 supports.append(s_val)
                 resists.append(r_val)
+                
+            df_subset['Name'] = names
             df_subset['Price'] = prices
             df_subset['Price_Date'] = dates
             df_subset['Support_20D'] = supports
             df_subset['Resist_20D'] = resists
             return df_subset
 
-        with st.spinner("正在透過 yfinance 取得即期股價與計算 20 日支撐/壓力..."):
-            c1_top = enrich_technical_data(c1_top)
-            c2_top = enrich_technical_data(c2_top)
+        with st.spinner("正在透過快取機制取得主畫面標的之真實名稱、即期股價與技術面..."):
+            c1_top = enrich_real_name_and_tech(c1_top)
+            c2_top = enrich_real_name_and_tech(c2_top)
 
         display_cols = ['Ticker', 'Name', 'Prefix', 'Price', 'Price_Date', 'Support_20D', 'Resist_20D', 'Rev_Growth_YoY_%', 'DSI_Days', 'FAT', 'Return_60D_%', 'Final_Score']
         
@@ -154,6 +171,9 @@ if st.button("🚀 開始執行動態分群與技術面戰情分析", type="prim
         c2_display = c2_top[display_cols].reset_index(drop=True)
         c2_display.index = range(1, len(c2_display) + 1)
 
+        # ---------------- 主畫面呈現 ----------------
+        st.markdown("---")
+        st.subheader("🏆 主畫面：最強勢前兩大集群前 10 名排行榜")
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"### 🚀 最強勢群組 {c1} 前 10 名")
@@ -163,6 +183,31 @@ if st.button("🚀 開始執行動態分群與技術面戰情分析", type="prim
             st.markdown(f"### ⚡ 次強勢群組 {c2} 前 10 名")
             st.dataframe(c2_display, use_container_width=True)
 
+        # ---------------- 各次產業前 3 名查詢與下拉選單 ----------------
+        st.markdown("---")
+        st.subheader("📑 各次產業標的戰情室 (前 3 名)")
+        st.markdown("您可以透過下方下拉選單切換檢視全市場各個同儕次產業（依據代號前兩碼分類）的前 3 名標的。")
+
+        prefixes = df_sat['Prefix'].unique()
+        subindustry_options = sorted([str(p) for p in prefixes])
+
+        selected_sub = st.selectbox("🔍 請選擇要檢視的次產業字首 (Prefix)", subindustry_options)
+
+        if selected_sub:
+            sub_df = df_sat[df_sat['Prefix'] == selected_sub].sort_values(by='Final_Score', ascending=False).head(3).copy()
+            
+            with st.spinner(f"正在取得次產業 [{selected_sub}] 前 3 名即期股價與公司名稱..."):
+                sub_df = enrich_real_name_and_tech(sub_df)
+
+            sub_display_cols = ['Name', 'Ticker', 'Price', 'Price_Date']
+            sub_display = sub_df[sub_display_cols].reset_index(drop=True)
+            sub_display.index = range(1, len(sub_display) + 1)
+            sub_display.columns = ['公司名稱', '公司代碼', '即期股價', '日期']
+
+            st.markdown(f"### 📌 次產業字首 [{selected_sub}] 前 3 名標的")
+            st.dataframe(sub_display, use_container_width=True)
+
+        # Excel 匯出
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             c1_display.to_excel(writer, sheet_name=f"最強勢群組{c1}", index=True)
@@ -170,10 +215,10 @@ if st.button("🚀 開始執行動態分群與技術面戰情分析", type="prim
         output.seek(0)
 
         st.download_button(
-            label="📥 下載動態最強群組前 10 名強弱排行榜 Excel 報表",
+            label="📥 下載主畫面雙群組前 10 名 Excel 報表",
             data=output,
-            file_name="dynamic_top10_clusters_with_tech.xlsx",
+            file_name="dynamic_top10_clusters_realname_tech.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 else:
-    st.info("👈 請點擊左側按鈕開始執行動態分群與技術面戰情分析。")
+    st.info("👈 請點擊左側按鈕開始執行分析。")
