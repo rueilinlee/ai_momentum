@@ -6,12 +6,19 @@ import re
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 import yfinance as yf
 from datetime import datetime
+import json
+import logging
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+# 設定日誌
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # 設定網頁版面
 st.set_page_config(
@@ -21,10 +28,10 @@ st.set_page_config(
 )
 
 st.title("📈 AI-TSMC-50 智慧選股與量化決策引擎 (Stage A/B/C)")
-st.markdown("結合 **AHP 專家權重、資訊熵、Ridge 歷史回測尋優 (Stage B)**、**LightGBM LambdaMART 機器學習排名 (Stage C)**、**總榜前 10 名等權重配置回測儀表板** 與 **智慧新聞白名單比對** 的全方位半導體與 AI 供應鏈選股系統。")
+st.markdown("結合 **AHP 專家權重、資訊熵、Ridge 歷史回測尋優 (Stage B)**、**LightGBM LambdaMART 機器學習排名 (Stage C)**、**總榜前 10 名等權重配置回測儀表板** 與 **LINE 戰情室自動化推播** 的全方位半導體與 AI 供應鏈選股系統。")
 
 # ============================ 側邊欄設定 ============================
-st.sidebar.header("⚙️ 模型與回測控制面板")
+st.sidebar.header("⚙️ 模型與通知控制面板")
 primary_scenario = st.sidebar.selectbox("選擇主情境模型", ['S0', 'S1', 'S2'], index=1, 
     format_func=lambda x: {'S0': '舊版三因子', 'S1': '三因子 (DSI<15天視為N/A)', 'S2': '雙因子 (無FAT)'}[x])
 
@@ -35,7 +42,9 @@ st.sidebar.markdown("---")
 news_fetch_enabled = st.sidebar.checkbox("啟用 Google News RSS 供應鏈新聞掃描", value=False)
 news_days = st.sidebar.slider("新聞搜尋天數範圍", 7, 60, 30, 5)
 
-st.sidebar.info("💡 提示：投資組合回測樣本已設定為「總榜前 10 名等權重配置」。")
+st.sidebar.markdown("---")
+st.sidebar.subheader("📱 LINE 戰情室自動化推播")
+st.sidebar.info("系統已設定每日自動推播。您也可以點擊下方按鈕進行即時發送測試。")
 
 # ============================ 核心常數與字典 ============================
 A, T = 'AI應用端', '台積電供應鏈端'
@@ -213,6 +222,96 @@ def scan_news_out_of_universe(days):
     return out_mentions
 
 
+def generate_push_message_content(res, panels):
+    """
+    生成包含 AI 應用端前 5 名、供應鏈端前 5 名、以及新聞額外註記專區之 LINE 推播內容
+    格式：公司名稱/公司代碼/即期股價/日期/支撐/壓力
+    """
+    try:
+        now = datetime.now()
+        msg_lines = [
+            f"【AI-TSMC-50 智慧選股戰情室】",
+            f"執行時間：{now:%Y-%m-%d %H:%M:%S}\n"
+        ]
+
+        # 1. 🚀 AI 應用端前 5 名
+        ai_t5 = res[res['Category'] == 'AI應用端'].head(5)
+        msg_lines.append("🚀 【AI 應用端前 5 名】")
+        for i, (code, row) in enumerate(ai_t5.iterrows(), 1):
+            t_info = technicals(code, panels)
+            name = row['Name']
+            if t_info:
+                price, date, sup, res_val = t_info['Price'], t_info['Date'], t_info['Support_20D'], t_info['Resist_20D']
+            else:
+                price, date, sup, res_val = 'N/A', 'N/A', 'N/A', 'N/A'
+            msg_lines.append(f"  {i}. {name} / {code}")
+            msg_lines.append(f"     └ 股價:{price} | 日期:{date} | 支撐:{sup} | 壓力:{res_val}")
+        msg_lines.append("")
+
+        # 2. ⚙️ 台積電供應鏈端前 5 名
+        tsmc_t5 = res[res['Category'] == '台積電供應鏈端'].head(5)
+        msg_lines.append("⚙️ 【台積電供應鏈端前 5 名】")
+        for i, (code, row) in enumerate(tsmc_t5.iterrows(), 1):
+            t_info = technicals(code, panels)
+            name = row['Name']
+            if t_info:
+                price, date, sup, res_val = t_info['Price'], t_info['Date'], t_info['Support_20D'], t_info['Resist_20D']
+            else:
+                price, date, sup, res_val = 'N/A', 'N/A', 'N/A', 'N/A'
+            msg_lines.append(f"  {i}. {name} / {code}")
+            msg_lines.append(f"     └ 股價:{price} | 日期:{date} | 支撐:{sup} | 壓力:{res_val}")
+        msg_lines.append("")
+
+        # 3. 🔍 新聞標的自動分類與額外註記專區 (Out-of-Universe)
+        out_mentions = scan_news_out_of_universe(30)
+        msg_lines.append("🔍 【新聞標的自動分類與額外註記】")
+        if out_mentions:
+            for i, item in enumerate(out_mentions[:5], 1):
+                code = item.get('Ticker', 'NA')
+                name = item.get('Company_Name', '未知')
+                t_info = technicals(code, panels) if code != 'NA' else None
+                if t_info:
+                    price, date, sup, res_val = t_info['Price'], t_info['Date'], t_info['Support_20D'], t_info['Resist_20D']
+                else:
+                    price, date, sup, res_val = 'N/A', item.get('Publish_Time', 'N/A'), 'N/A', 'N/A'
+                msg_lines.append(f"  {i}. {name} / {code}")
+                msg_lines.append(f"     └ 股價:{price} | 日期:{date} | 支撐:{sup} | 壓力:{res_val}")
+        else:
+            msg_lines.append("  (近期新聞未發現清單外潛在新標的)")
+
+        msg_lines.append("\n💡 請至 Web App 查看詳細完整報告。")
+        return "\n".join(msg_lines)
+    except Exception as e:
+        logger.error(f"生成 LINE 推播內容失敗: {e}")
+        return None
+
+
+def send_line_messaging_api(message, token=None, user_id=None):
+    try:
+        access_token = token or "LoWdzyXkvVwbPsmYoPxWuFPik/CvtFx5YxKqgZ2bUvePKq2rpVDJ/j6ARw3AtJD84m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbplVO+5vidqACFyXjoPXNneG9pP7xIyDGvEaIpLOO+gwQdB04t89/1O/w1cDnyilFU="
+        target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
+        
+        if not access_token or not target_user:
+            return False
+
+        url = "https://api.line.me/v2/bot/message/push"
+        payload = {
+            "to": target_user,
+            "messages": [{"type": "text", "text": message}]
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, 
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}, 
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.status == 200
+    except Exception as e:
+        logger.error(f"發送 LINE 推播發生錯誤: {e}")
+        return False
+
+
 def _log_transform(r):
     r = r.copy()
     for f in LOG_FACTORS:
@@ -319,7 +418,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
 
             st.success("✅ 運算完成！")
             
-            # 1. 總榜前 10 名 (排名從 1 開始)
+            # 1. 總榜前 10 名
             st.subheader("🏆 AI-TSMC-50 綜合評分【總榜前 10 名】")
             top10_df = res.head(10)[['Name', 'Sub_Industry', 'Category', 'Score_A', 'Final_Score']].round(3).reset_index(drop=True)
             top10_df.index = range(1, len(top10_df) + 1)
@@ -341,7 +440,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 top_5_normalized.columns = top_5_names
                 st.line_chart(top_5_normalized)
 
-            # 4. 兩大類前 5 名 (排名從 1 開始)
+            # 4. 兩大類前 5 名
             col1, col2 = st.columns(2)
             
             def get_top5_tech_df(category_name):
@@ -399,7 +498,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             else:
                 st.info("未啟用新聞來源（請於側邊欄勾選「啟用 Google News RSS 供應鏈新聞掃描」以執行比對）。")
 
-            # 6. 📈 多時間框架回測與投資組合績效儀表板 (總榜前 10 名等權重配置)
+            # 6. 📊 多時間框架回測與投資組合績效儀表板 (總榜前 10 名等權重配置)
             st.markdown("---")
             st.subheader("📊 多時間框架回測與投資組合績效儀表板 (總榜前 10 名等權重配置)")
             
@@ -409,35 +508,42 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             col_m3.metric("最大回檔 (MDD)", "-11.4%", "控管良好")
             col_m4.metric("單次調倉勝率 (Win Rate)", "66.5%", "等權重配置驗證")
 
-            # 動態計算「總榜前 10 名等權重組合」與大盤基準的歷史回測淨值
             top_10_tickers = res.head(10).index.tolist()
             backtest_df = adj[top_10_tickers].tail(120).dropna(how='any')
             if not backtest_df.empty:
-                # 模擬總榜前 10 名等權重組合淨值
                 portfolio_returns = backtest_df.pct_change().mean(axis=1).fillna(0)
                 cum_strat = (1 + portfolio_returns).cumprod() * 100
-                
-                # 大盤基準 (以第一檔標的或模擬基準代替)
                 benchmark_returns = adj.iloc[:, 0].pct_change().tail(120).fillna(0)
                 cum_benchmark = (1 + benchmark_returns).cumprod() * 100
                 dates = backtest_df.index
                 
                 fig_perf = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, 
                                          subplot_titles=('累積報酬曲線 (總榜前10名等權重 vs 大盤基準)', '策略回檔水下圖 (Underwater Chart)'))
-                
                 fig_perf.add_trace(go.Scatter(x=dates, y=cum_strat, name='AI-TSMC-50 總榜前10名等權重', line=dict(color='orange', width=2)), row=1, col=1)
                 fig_perf.add_trace(go.Scatter(x=dates, y=cum_benchmark, name='大盤基準', line=dict(color='gray', width=1.5, dash='dash')), row=1, col=1)
                 
                 rolling_max = np.maximum.accumulate(cum_strat)
                 drawdown = (cum_strat - rolling_max) / rolling_max * 100
                 fig_perf.add_trace(go.Scatter(x=dates, y=drawdown, name='回檔深度 (%)', fill='tozeroy', line=dict(color='red', width=1)), row=2, col=1)
-                
                 fig_perf.update_layout(height=600, template='plotly_dark', margin=dict(l=20, r=20, t=40, b=20))
                 st.plotly_chart(fig_perf, use_container_width=True)
-            else:
-                st.info("歷史價格資料不足，無法繪製完整回測曲線。")
 
-            # 7. 🚀 系統未來的客製化調整與模組擴充方向
+            # 7. 📱 LINE 戰情室測試與發送按鈕
+            st.markdown("---")
+            st.subheader("📱 LINE 戰情室推播測試")
+            if st.button("🚀 立即執行 LINE 推播測試"):
+                with st.spinner("正在組成戰情室訊息並發送至 LINE..."):
+                    push_msg = generate_push_message_content(res, panels)
+                    if push_msg:
+                        success = send_line_messaging_api(push_msg)
+                        if success:
+                            st.success("✅ LINE 推播發送成功！")
+                        else:
+                            st.error("❌ LINE 推播發送失敗，請檢查權杖 (Token) 或使用者 ID。")
+                    else:
+                        st.warning("⚠️ 無法生成推播內容。")
+
+            # 8. 🚀 系統未來的客製化調整與模組擴充方向
             st.markdown("---")
             with st.expander("📌 一、 系統未來的客製化調整與模組擴充方向 (發展藍圖)"):
                 st.markdown("""
