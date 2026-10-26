@@ -118,13 +118,21 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
         core_prefixes = {str(c)[:2] for c in core_universe}
         core_set = set(core_universe)
 
+        # 安全讀取備用 CSV 名稱對照
         fallback_mapping = {}
+        df_names = pd.DataFrame(columns=['Code', 'Name'])
         if uploaded_names is not None:
-            df_names = pd.read_csv(uploaded_names)
+            try:
+                df_names = pd.read_csv(uploaded_names)
+            except Exception:
+                pass
         elif os.path.exists('stock_names.csv'):
-            df_names = pd.read_csv('stock_names.csv')
+            try:
+                df_names = pd.read_csv('stock_names.csv')
+            except Exception:
+                pass
         
-        if not df_names.empty:
+        if not df_names.empty and 'Code' in df_names.columns and 'Name' in df_names.columns:
             df_names['Code'] = df_names['Code'].astype(str).str.zfill(4)
             fallback_mapping = dict(zip(df_names['Code'], df_names['Name']))
 
@@ -225,7 +233,7 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
         st.session_state.official_mapping = official_mapping
         st.session_state.fallback_mapping = fallback_mapping
 
-# 渲染畫面（增加安全檢查，防止重新整理時發生 KeyError）
+# 渲染畫面（增加安全檢查）
 if st.session_state.get('executed', False) and 'official_mapping' in st.session_state:
     c1 = st.session_state.c1
     c2 = st.session_state.c2
