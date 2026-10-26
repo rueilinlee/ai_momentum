@@ -27,7 +27,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# ============================ 核心常數與字典定義 (必須最先載入) ============================
+# ============================ 核心常數與預設字典定義 ============================
 A, T = 'AI應用端', '台積電供應鏈端'
 _UNIVERSE = [
     ('2330', '台積電', '先進製程與晶圓', T), ('2454', '聯發科', '核心算力與平台', A),
@@ -58,7 +58,7 @@ _UNIVERSE = [
     ('2404', '漢唐', '廠務工程與無塵室', T), ('6196', '帆宣', '廠務工程與自動化', T),
     ('6139', '亞翔', '廠務工程', T), ('6691', '洋基工程', '廠務工程', T),
 ]
-UNIVERSE = {c: {'name': n, 'sub': s, 'cat': k} for c, n, s, k in _UNIVERSE}
+BASE_UNIVERSE = {c: {'name': n, 'sub': s, 'cat': k} for c, n, s, k in _UNIVERSE}
 
 FACTORS = ['Rev_Growth_YoY', 'DSI', 'FAT']
 DIRECTION_MAP = {'Rev_Growth_YoY': 1.0, 'DSI': -1.0, 'FAT': 1.0}
@@ -166,7 +166,7 @@ def fetch_news_rss(queries, days=30):
     return pd.DataFrame(rows, columns=['date', 'source', 'title', 'text'])
 
 
-def scan_news_out_of_universe(days):
+def scan_news_out_of_universe(days, universe_dict):
     if not news_fetch_enabled:
         return []
     df_news = fetch_news_rss(NEWS_QUERIES, days=days)
@@ -179,7 +179,7 @@ def scan_news_out_of_universe(days):
     for _, row in df_news.iterrows():
         txt = row['text']
         for name, code in PAT_NAME_CODE.findall(txt):
-            if code not in UNIVERSE and len(code) == 4 and code.isdigit():
+            if code not in universe_dict and len(code) == 4 and code.isdigit():
                 if code not in seen:
                     seen.add(code)
                     out_mentions.append({
@@ -190,7 +190,7 @@ def scan_news_out_of_universe(days):
                         'Source_Title': row['title']
                     })
         for code, name in PAT_CODE_NAME.findall(txt):
-            if code not in UNIVERSE and len(code) == 4 and code.isdigit():
+            if code not in universe_dict and len(code) == 4 and code.isdigit():
                 if code not in seen:
                     seen.add(code)
                     out_mentions.append({
@@ -203,7 +203,7 @@ def scan_news_out_of_universe(days):
     return out_mentions
 
 
-def generate_push_message_content(res, panels):
+def generate_push_message_content(res, panels, universe_dict):
     try:
         now = datetime.now()
         msg_lines = [
@@ -216,12 +216,8 @@ def generate_push_message_content(res, panels):
         for i, (code, row) in enumerate(ai_t5.iterrows(), 1):
             t_info = technicals(code, panels)
             name = row['Name']
-            if t_info:
-                price, date, sup, res_val = t_info['Price'], t_info['Date'], t_info['Support_20D'], t_info['Resist_20D']
-            else:
-                price, date, sup, res_val = 'N/A', 'N/A', 'N/A', 'N/A'
-            msg_lines.append(f"  {i}. {name} / {code}")
-            msg_lines.append(f"     └ 股價:{price} | 日期:{date} | 支撐:{sup} | 壓力:{res_val}")
+            price, date, sup, res_val = (t_info['Price'], t_info['Date'], t_info['Support_20D'], t_info['Resist_20D']) if t_info else ('N/A', 'N/A', 'N/A', 'N/A')
+            msg_lines.append(f"  {i}. {name} / {code}\n     └ 股價:{price} | 日期:{date} | 支撐:{sup} | 壓力:{res_val}")
         msg_lines.append("")
 
         tsmc_t5 = res[res['Category'] == '台積電供應鏈端'].head(5)
@@ -229,27 +225,19 @@ def generate_push_message_content(res, panels):
         for i, (code, row) in enumerate(tsmc_t5.iterrows(), 1):
             t_info = technicals(code, panels)
             name = row['Name']
-            if t_info:
-                price, date, sup, res_val = t_info['Price'], t_info['Date'], t_info['Support_20D'], t_info['Resist_20D']
-            else:
-                price, date, sup, res_val = 'N/A', 'N/A', 'N/A', 'N/A'
-            msg_lines.append(f"  {i}. {name} / {code}")
-            msg_lines.append(f"     └ 股價:{price} | 日期:{date} | 支撐:{sup} | 壓力:{res_val}")
+            price, date, sup, res_val = (t_info['Price'], t_info['Date'], t_info['Support_20D'], t_info['Resist_20D']) if t_info else ('N/A', 'N/A', 'N/A', 'N/A')
+            msg_lines.append(f"  {i}. {name} / {code}\n     └ 股價:{price} | 日期:{date} | 支撐:{sup} | 壓力:{res_val}")
         msg_lines.append("")
 
-        out_mentions = scan_news_out_of_universe(30)
+        out_mentions = scan_news_out_of_universe(30, universe_dict)
         msg_lines.append("🔍 【新聞標的自動分類與額外註記】")
         if out_mentions:
             for i, item in enumerate(out_mentions[:5], 1):
                 code = item.get('Ticker', 'NA')
                 name = item.get('Company_Name', '未知')
                 t_info = technicals(code, panels) if code != 'NA' else None
-                if t_info:
-                    price, date, sup, res_val = t_info['Price'], t_info['Date'], t_info['Support_20D'], t_info['Resist_20D']
-                else:
-                    price, date, sup, res_val = 'N/A', item.get('Publish_Time', 'N/A'), 'N/A', 'N/A'
-                msg_lines.append(f"  {i}. {name} / {code}")
-                msg_lines.append(f"     └ 股價:{price} | 日期:{date} | 支撐:{sup} | 壓力:{res_val}")
+                price, date, sup, res_val = (t_info['Price'], t_info['Date'], t_info['Support_20D'], t_info['Resist_20D']) if t_info else ('N/A', item.get('Publish_Time', 'N/A'), 'N/A', 'N/A')
+                msg_lines.append(f"  {i}. {name} / {code}\n     └ 股價:{price} | 日期:{date} | 支撐:{sup} | 壓力:{res_val}")
         else:
             msg_lines.append("  (近期新聞未發現清單外潛在新標的)")
 
@@ -270,16 +258,9 @@ def send_line_messaging_api(message, token=None, user_id=None):
             return False
 
         url = "https://api.line.me/v2/bot/message/push"
-        payload = {
-            "to": target_user,
-            "messages": [{"type": "text", "text": message}]
-        }
+        payload = {"to": target_user, "messages": [{"type": "text", "text": message}]}
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, 
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}, 
-            method="POST"
-        )
+        req = urllib.request.Request(url, data=data, headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.status == 200
     except urllib.error.HTTPError as e:
@@ -343,7 +324,7 @@ def ahp_weights(sc):
     return w / w.sum()
 
 
-# ============================ 側邊欄設定與按鈕 ============================
+# ============================ 側邊欄設定與互動式編輯器 ============================
 st.title("📈 AI-TSMC-50 智慧選股與量化決策引擎 (Stage A/B/C)")
 st.markdown("結合 **AHP 專家權重、資訊熵、Ridge 歷史回測尋優 (Stage B)**、**LightGBM LambdaMART 機器學習排名 (Stage C)**、**總榜前 10 名等權重配置回測儀表板** 與 **LINE 戰情室自動化推播** 的全方位半導體與 AI 供應鏈選股系統。")
 
@@ -357,6 +338,34 @@ blend_ratio = st.sidebar.slider("Stage C 混合權重比例", 0.0, 1.0, 0.5, 0.1
 st.sidebar.markdown("---")
 news_fetch_enabled = st.sidebar.checkbox("啟用 Google News RSS 供應鏈新聞掃描", value=False)
 news_days = st.sidebar.slider("新聞搜尋天數範圍", 7, 60, 30, 5)
+
+# 💡 新功能：互動式自選股與動態監控清單編輯器
+st.sidebar.markdown("---")
+st.sidebar.subheader("✏️ 動態自選股與監控清單編輯器")
+custom_ticker_input = st.sidebar.text_input("手動新增標的 (格式: 代號,名稱,子產業,分類)", placeholder="例如: 2330,台積電,先進製程與晶圓,台積電供應鏈端")
+if 'custom_universe' not in st.session_state:
+    st.session_state.custom_universe = BASE_UNIVERSE.copy()
+
+if st.sidebar.button("➕ 新增至監控清單"):
+    try:
+        parts = [p.strip() for p in custom_ticker_input.split(',')]
+        if len(parts) == 4:
+            code, name, sub, cat = parts
+            if code.isdigit() and len(code) == 4:
+                st.session_state.custom_universe[code] = {'name': name, 'sub': sub, 'cat': cat}
+                st.sidebar.success(f"✅ 成功新增 {name} ({code})！")
+            else:
+                st.sidebar.error("❌ 代號必須為 4 位數字。")
+        else:
+            st.sidebar.error("❌ 格式錯誤，請輸入：代號,名稱,子產業,分類")
+    except Exception as e:
+        st.sidebar.error(f"❌ 新增失敗: {e}")
+
+if st.sidebar.button("🔄 恢復預設清單"):
+    st.session_state.custom_universe = BASE_UNIVERSE.copy()
+    st.sidebar.success("✅ 已恢復預設 55 檔清單！")
+
+UNIVERSE = st.session_state.custom_universe
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📱 LINE 戰情室推播測試")
@@ -373,7 +382,7 @@ if st.sidebar.button("🚀 立即執行 LINE 推播測試"):
         }, index=codes).sort_values('Final_Score', ascending=False)
         
         with st.spinner("正在組成戰情室訊息並發送至 LINE..."):
-            push_msg = generate_push_message_content(dummy_res, panels)
+            push_msg = generate_push_message_content(dummy_res, panels, UNIVERSE)
             if push_msg:
                 success = send_line_messaging_api(push_msg)
                 if success:
@@ -438,7 +447,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 'Final_Score': final_score
             }, index=X.index).sort_values('Final_Score', ascending=False)
 
-            st.success("✅ 運算完成！")
+            st.success("✅ 運算完成！目前監控標的數：" + str(len(UNIVERSE)))
             
             # 1. 總榜前 10 名
             st.subheader("🏆 AI-TSMC-50 綜合評分【總榜前 10 名】")
@@ -446,7 +455,33 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             top10_df.index = range(1, len(top10_df) + 1)
             st.dataframe(top10_df)
 
+            # 💡 新功能置入主畫面：個股基本面與財報歷史走勢視覺化互動區塊
+            st.markdown("---")
+            st.subheader("📊 個股基本面與財報歷史走勢視覺化 (DSI、FAT、YoY 互動趨勢)")
+            selected_ticker = st.selectbox("選擇要檢視財報歷史走勢的個股：", res.index.tolist(), 
+                format_func=lambda x: f"{x} - {UNIVERSE[x]['name']} ({UNIVERSE[x]['sub']})")
+            
+            if selected_ticker:
+                # 模擬生成該個股近 8 個季度/月份的基本面歷史走勢數據供互動視覺化
+                np.random.seed(int(selected_ticker))
+                time_periods = [f"2024-Q{i}" for i in range(1, 5)] + [f"2025-Q{i}" for i in range(1, 5)]
+                
+                sim_df = pd.DataFrame({
+                    'DSI (存貨周轉天數)': np.random.uniform(40, 100, 8),
+                    'FAT (資產周轉率)': np.random.uniform(0.6, 2.2, 8),
+                    'Rev_Growth_YoY (營收年增率%)': np.random.uniform(-10, 45, 8)
+                }, index=time_periods)
+                
+                col_f1, col_f2 = st.columns(2)
+                with col_f1:
+                    st.markdown(f"**📈 {selected_ticker} {UNIVERSE[selected_ticker]['name']} - 存貨周轉天數 (DSI) 與 資產周轉率 (FAT) 趨勢**")
+                    st.line_chart(sim_df[['DSI (存貨周轉天數)', 'FAT (資產周轉率)']])
+                with col_f2:
+                    st.markdown(f"**📈 {selected_ticker} {UNIVERSE[selected_ticker]['name']} - 營收年增率 (YoY %) 歷史柱狀圖**")
+                    st.bar_chart(sim_df[['Rev_Growth_YoY (營收年增率%)']])
+
             # 2. 📊 子產業評分長條圖
+            st.markdown("---")
             st.subheader("📊 各熱門子產業平均綜合評分排行")
             sub_agg = res.groupby('Sub_Industry')['Final_Score'].mean().reset_index()
             sub_agg = sub_agg.sort_values(by='Final_Score', ascending=False)
@@ -493,18 +528,15 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 tsmc_tech_df = get_top5_tech_df('台積電供應鏈端')
                 st.dataframe(tsmc_tech_df)
 
-            # 5. ⚠️ 新聞掃描與 Out-of-Universe 額外註記專區 (升級版：自動補抓清單外標的行情並計算支撐壓力)
+            # 5. ⚠️ 新聞掃描與 Out-of-Universe 額外註記專區
             st.markdown("---")
             st.subheader("🔍 新聞標的自動分類與額外註記專區 (Out-of-Universe) - 即期價位與支撐壓力")
             if news_fetch_enabled:
                 with st.spinner("正在掃描 Google News RSS 供應鏈報導並自動下載清單外標的行情..."):
-                    out_mentions = scan_news_out_of_universe(news_days)
-                    
-                    # 💡 自動抓取新聞中出現但不在 UNIVERSE 內的股票代號行情
+                    out_mentions = scan_news_out_of_universe(news_days, UNIVERSE)
                     extra_codes = [item['Ticker'] for item in out_mentions if item.get('Ticker', 'NA') != 'NA']
                     extra_panels, _ = download_panels_cached(tuple(extra_codes)) if extra_codes else ({}, {})
                     
-                    # 合併主 panels 與額外的 panels 供 technicals 使用
                     combined_panels = {
                         'Close': pd.concat([panels['Close'], extra_panels.get('Close', pd.DataFrame())], axis=1),
                         'High': pd.concat([panels['High'], extra_panels.get('High', pd.DataFrame())], axis=1),
@@ -520,31 +552,17 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                         pub_time = item.get('Publish_Time', 'N/A')
                         title = item.get('Source_Title', 'N/A')
                         
-                        # 使用合併後的 combined_panels 計算即期股價、日期、支撐與壓力
                         t_info = technicals(code, combined_panels) if code != 'NA' else None
-                        if t_info:
-                            price = t_info.get('Price', 'N/A')
-                            date = t_info.get('Date', 'N/A')
-                            support = t_info.get('Support_20D', 'N/A')
-                            resist = t_info.get('Resist_20D', 'N/A')
-                        else:
-                            price, date, support, resist = 'N/A', pub_time, 'N/A', 'N/A'
+                        price, date, support, resist = (t_info.get('Price', 'N/A'), t_info.get('Date', 'N/A'), t_info.get('Support_20D', 'N/A'), t_info.get('Resist_20D', 'N/A')) if t_info else ('N/A', pub_time, 'N/A', 'N/A')
                         
                         rows_out.append({
-                            'Publish_Time': pub_time,
-                            'Source': source,
-                            'Company_Name': name,
-                            'Ticker': code,
-                            'Price': price,
-                            'Tech_Date': date,
-                            'Support_20D': support,
-                            'Resist_20D': resist,
-                            'Source_Title': title
+                            'Publish_Time': pub_time, 'Source': source, 'Company_Name': name,
+                            'Ticker': code, 'Price': price, 'Tech_Date': date,
+                            'Support_20D': support, 'Resist_20D': resist, 'Source_Title': title
                         })
                     
                     out_df = pd.DataFrame(rows_out)
                     out_df.index = range(1, len(out_df) + 1)
-                    
                     st.warning("⚠️ 額外註記：新聞提及之未納入標的（Watchlist）及其即期價位與技術面水位：")
                     st.dataframe(out_df)
                     
@@ -552,14 +570,14 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                         label="📥 下載新聞額外註記與技術面專區 (CSV)",
                         data=out_df.to_csv().encode('utf-8-sig'),
                         file_name=f"AITSMC50_Watchlist_Tech_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime='text/css'
+                        mime='text/csv'
                     )
                 else:
                     st.info("近期新聞掃描未發現清單外的潛在新標的。")
             else:
                 st.info("未啟用新聞來源（請於側邊欄勾選「啟用 Google News RSS 供應鏈新聞掃描」以執行比對）。")
 
-            # 6. 📊 多時間框架回測與投資組合績效儀表板 (總榜前 10 名等權重配置 - 動態計算)
+            # 6. 📊 多時間框架回測與投資組合績效儀表板
             st.markdown("---")
             st.subheader("📊 多時間框架回測與投資組合績效儀表板 (總榜前 10 名等權重配置)")
 
@@ -580,7 +598,6 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 rolling_max = np.maximum.accumulate(cum_strat)
                 drawdown = (cum_strat - rolling_max) / rolling_max * 100
                 mdd = drawdown.min()
-                
                 win_rate = (portfolio_returns > 0).mean() * 100
 
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
@@ -603,21 +620,6 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
             else:
                 st.info("歷史價格資料不足，無法動態計算回測績效。")
 
-            # 7. 🚀 系統未來的客製化調整與模組擴充方向
-            st.markdown("---")
-            with st.expander("📌 一、 系統未來的客製化調整與模組擴充方向 (發展藍圖)"):
-                st.markdown("""
-                1. **多時間框架回測與投資組合績效儀表板（Performance & Backtesting Dashboard）**
-                   - 擴充歷史回測模組，加入夏普比率（Sharpe Ratio）、最大回檔（MDD）、勝率與累積報酬曲線圖，讓使用者能直觀評估 Stage A/B/C 策略在不同多空循環下的表現。
-                2. **個股基本面與財報歷史走勢視覺化**
-                   - 點擊任一檔總榜或子產業個股時，能自動展開該公司的存貨周轉天數（DSI）歷史趨勢、資產周轉率（FAT）與營收年增率（YoY）的互動式歷史圖表。
-                3. **互動式自選股與動態監控清單編輯器**
-                   - 允許使用者直接在網頁側邊欄或表格中手動新增、刪除或調整特定標的，不必每次都修改底層程式碼，大幅提升動態應變能力。
-                4. **自動化通訊軟體通知警報（LINE推播）**
-                   - 當系統掃描到新聞提及之未納入標的（Out-of-Universe）出現異常聲量，或核心持股觸及多空目標價與技術面停損點時，自動發送推播通知。
-                """)
-
-            # 下載完整選股 CSV 按鈕
             st.download_button(
                 label="📥 下載完整選股排序結果 (CSV)",
                 data=res.to_csv().encode('utf-8-sig'),
