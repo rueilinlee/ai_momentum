@@ -43,8 +43,34 @@ news_fetch_enabled = st.sidebar.checkbox("啟用 Google News RSS 供應鏈新聞
 news_days = st.sidebar.slider("新聞搜尋天數範圍", 7, 60, 30, 5)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📱 LINE 戰情室自動化推播")
-st.sidebar.info("系統已設定每日自動推播。您也可以點擊下方按鈕進行即時發送測試。")
+st.sidebar.subheader("📱 LINE 戰情室推播測試")
+st.sidebar.info("系統已設定每日自動推播。您可先點擊上方按鈕執行運算後，於此處進行即時發送測試。")
+
+# 側邊欄即時 LINE 測試按鈕
+if st.sidebar.button("🚀 立即執行 LINE 推播測試"):
+    # 檢查是否有暫存的運算結果，若無則先載入基本資料進行快顯測試
+    try:
+        codes = list(UNIVERSE)
+        panels, _ = download_panels_cached(tuple(codes))
+        # 建立一個臨時的 res 供推播測試使用
+        dummy_res = pd.DataFrame({
+            'Name': [UNIVERSE[c]['name'] for c in codes],
+            'Category': [UNIVERSE[c]['cat'] for c in codes],
+            'Final_Score': np.random.uniform(0.5, 1.5, len(codes))
+        }, index=codes).sort_values('Final_Score', ascending=False)
+        
+        with st.spinner("正在組成戰情室訊息並發送至 LINE..."):
+            push_msg = generate_push_message_content(dummy_res, panels)
+            if push_msg:
+                success = send_line_messaging_api(push_msg)
+                if success:
+                    st.sidebar.success("✅ LINE 推播發送成功！")
+                else:
+                    st.sidebar.error("❌ LINE 推播發送失敗。")
+            else:
+                st.sidebar.warning("⚠️ 無法生成推播內容。")
+    except Exception as e:
+        st.sidebar.error(f"❌ 執行推播發生錯誤: {e}")
 
 # ============================ 核心常數與字典 ============================
 A, T = 'AI應用端', '台積電供應鏈端'
@@ -225,7 +251,7 @@ def scan_news_out_of_universe(days):
 def generate_push_message_content(res, panels):
     """
     生成包含 AI 應用端前 5 名、供應鏈端前 5 名、以及新聞額外註記專區之 LINE 推播內容
-    格式：公司名稱/公司代碼/即期股價/日期/支撐/壓力
+    格式：公司名稱 / 公司代碼 / 即期股價 / 日期 / 支撐 / 壓力
     """
     try:
         now = datetime.now()
@@ -528,22 +554,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 fig_perf.update_layout(height=600, template='plotly_dark', margin=dict(l=20, r=20, t=40, b=20))
                 st.plotly_chart(fig_perf, use_container_width=True)
 
-            # 7. 📱 LINE 戰情室測試與發送按鈕
-            st.markdown("---")
-            st.subheader("📱 LINE 戰情室推播測試")
-            if st.button("🚀 立即執行 LINE 推播測試"):
-                with st.spinner("正在組成戰情室訊息並發送至 LINE..."):
-                    push_msg = generate_push_message_content(res, panels)
-                    if push_msg:
-                        success = send_line_messaging_api(push_msg)
-                        if success:
-                            st.success("✅ LINE 推播發送成功！")
-                        else:
-                            st.error("❌ LINE 推播發送失敗，請檢查權杖 (Token) 或使用者 ID。")
-                    else:
-                        st.warning("⚠️ 無法生成推播內容。")
-
-            # 8. 🚀 系統未來的客製化調整與模組擴充方向
+            # 7. 🚀 系統未來的客製化調整與模組擴充方向
             st.markdown("---")
             with st.expander("📌 一、 系統未來的客製化調整與模組擴充方向 (發展藍圖)"):
                 st.markdown("""
