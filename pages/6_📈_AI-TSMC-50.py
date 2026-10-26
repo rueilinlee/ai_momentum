@@ -265,7 +265,7 @@ def generate_push_message_content(res, panels):
 
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
-        access_token = token or "LoWdzyXkvVwbPsmYoPxWuFPik/CvtFx5YxKqgZ2bUvePKq2rpVDJ/j6ARw3AtJD84m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbplVO+5vidqACFyXjoPXNneG9pP7xIyDGvEaIpLOO+gwQdB04t89/1O/w1cDnyilFU="
+        access_token = token or "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
         if not access_token or not target_user:
@@ -497,26 +497,54 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 tsmc_tech_df = get_top5_tech_df('台積電供應鏈端')
                 st.dataframe(tsmc_tech_df)
 
-            # 5. ⚠️ 新聞掃描與 Out-of-Universe 額外註記專區
+            # 5. ⚠️ 新聞掃描與 Out-of-Universe 額外註記專區 (升級版：含即期股價、日期、支撐、壓力)
             st.markdown("---")
-            st.subheader("🔍 新聞標的自動分類與額外註記專區 (Out-of-Universe)")
+            st.subheader("🔍 新聞標的自動分類與額外註記專區 (Out-of-Universe) - 即期價位與支撐壓力")
             if news_fetch_enabled:
-                with st.spinner("正在掃描 Google News RSS 供應鏈報導..."):
+                with st.spinner("正在掃描 Google News RSS 供應鏈報導並計算技術面水位..."):
                     out_mentions = scan_news_out_of_universe(news_days)
                 
                 if out_mentions:
-                    out_df = pd.DataFrame(out_mentions)
-                    out_df['Ticker'] = out_df['Ticker'].fillna('NA').replace('', 'NA')
-                    out_df = out_df[['Publish_Time', 'Source', 'Company_Name', 'Ticker', 'Source_Title']]
+                    rows_out = []
+                    for item in out_mentions:
+                        code = item.get('Ticker', 'NA')
+                        name = item.get('Company_Name', '未知')
+                        source = item.get('Source', 'N/A')
+                        pub_time = item.get('Publish_Time', 'N/A')
+                        title = item.get('Source_Title', 'N/A')
+                        
+                        # 計算即期股價、日期、支撐與壓力
+                        t_info = technicals(code, panels) if code != 'NA' else None
+                        if t_info:
+                            price = t_info.get('Price', 'N/A')
+                            date = t_info.get('Date', 'N/A')
+                            support = t_info.get('Support_20D', 'N/A')
+                            resist = t_info.get('Resist_20D', 'N/A')
+                        else:
+                            price, date, support, resist = 'N/A', pub_time, 'N/A', 'N/A'
+                        
+                        rows_out.append({
+                            'Publish_Time': pub_time,
+                            'Source': source,
+                            'Company_Name': name,
+                            'Ticker': code,
+                            'Price': price,
+                            'Tech_Date': date,
+                            'Support_20D': support,
+                            'Resist_20D': resist,
+                            'Source_Title': title
+                        })
+                    
+                    out_df = pd.DataFrame(rows_out)
                     out_df.index = range(1, len(out_df) + 1)
                     
-                    st.warning("⚠️ 額外註記：新聞提及之未納入標的（潛在 Watchlist）：")
+                    st.warning("⚠️ 額外註記：新聞提及之未納入標的（Watchlist）及其即期價位與技術面水位：")
                     st.dataframe(out_df)
                     
                     st.download_button(
-                        label="📥 下載新聞額外註記專區 (CSV)",
+                        label="📥 下載新聞額外註記與技術面專區 (CSV)",
                         data=out_df.to_csv().encode('utf-8-sig'),
-                        file_name=f"AITSMC50_Watchlist_{datetime.now().strftime('%Y%m%d')}.csv",
+                        file_name=f"AITSMC50_Watchlist_Tech_{datetime.now().strftime('%Y%m%d')}.csv",
                         mime='text/csv'
                     )
                 else:
@@ -587,7 +615,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 label="📥 下載完整選股排序結果 (CSV)",
                 data=res.to_csv().encode('utf-8-sig'),
                 file_name=f"AITSMC50_Report_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime='text/css'
+                mime='text/csv'
             )
 else:
     st.info("👈 請點擊上方按鈕開始載入資料與執行智慧選股模型。")
