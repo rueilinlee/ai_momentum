@@ -17,8 +17,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與聯網戰情室 (兩階段：先量化分群計算 ➔ 後載入中文名稱)")
-st.markdown("本系統採**兩階段執行架構**：\n1. **第一階段**：先快速載入全市場資料，執行多維度量化因子計算與 K-Means AI 分群，並透過 `yfinance` 取得即期股價與 20 日支撐/壓力。\n2. **第二階段**：對畫面中出現的標的代號，自動透過**證交所/櫃買中心官方 API 與 Yahoo 股市**非同步聯網載入正式中文名稱，確保完全呈現中文！")
+st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與聯網戰情室 (含次產業支撐壓力與 Excel 下載)")
+st.markdown("本系統採**兩階段執行架構**：\n1. **第一階段**：先快速載入全市場資料，執行多維度量化因子計算與 K-Means AI 分群，並取得即期股價與 20 日支撐/壓力。\n2. **第二階段**：以公司代號非同步聯網對應官方與 Yahoo 中文名稱。\n\n**新增亮點**：次產業戰情室前 3 名已完整包含**支撐與壓力數值**，並支援**專屬 Excel 報表一鍵下載**！")
 
 # 側邊欄控制面板
 st.sidebar.header("⚙️ 模型與資料設定")
@@ -102,7 +102,7 @@ def fetch_stock_tech_only(code):
 if 'executed' not in st.session_state:
     st.session_state.executed = False
 
-if st.button("🚀 開始執行兩階段分析 (先量化分群 ➔ 後載入中文名稱)", type="primary"):
+if st.button("🚀 開始執行兩階段分析 (含次產業支撐壓力與下載)", type="primary"):
     st.session_state.executed = True
     with st.spinner("【階段一】正在讀取資料、執行 AI 動態分群與技術面計算..."):
         if uploaded_extra is not None:
@@ -276,40 +276,47 @@ if st.session_state.get('executed', False) and 'official_mapping' in st.session_
     if selected_sub:
         sub_df = df_sat[df_sat['Prefix'] == selected_sub].sort_values(by='Final_Score', ascending=False).head(3).copy()
         
-        names, prices, dates = [], [], []
+        names, prices, dates, supports, resists = [], [], [], [], []
         for _, r in sub_df.iterrows():
             code = r['Ticker']
             r_name = official_mapping.get(code, fallback_mapping.get(code, fetch_stock_name_from_yahoo(code) or f"上市櫃企業_{code}"))
-            p_val, d_val, _, _ = fetch_stock_tech_only(code)
+            p_val, d_val, s_val, r_val = fetch_stock_tech_only(code)
             
             names.append(r_name)
             prices.append(p_val)
             dates.append(d_val)
+            supports.append(s_val)
+            resists.append(r_val)
             
         sub_df['Name'] = names
         sub_df['Price'] = prices
         sub_df['Price_Date'] = dates
+        sub_df['Support_20D'] = supports
+        sub_df['Resist_20D'] = resists
 
-        sub_display_cols = ['Name', 'Ticker', 'Price', 'Price_Date']
+        sub_display_cols = ['Name', 'Ticker', 'Price', 'Price_Date', 'Support_20D', 'Resist_20D']
         sub_display = sub_df[sub_display_cols].reset_index(drop=True)
         sub_display.index = range(1, len(sub_display) + 1)
-        sub_display.columns = ['公司名稱', '公司代碼', '即期股價', '日期']
+        sub_display.columns = ['公司名稱', '公司代碼', '即期股價', '日期', '20日支撐', '20日壓力']
 
-        st.markdown(f"### 📌 次產業字首 [{selected_sub}] 前 3 名標的")
+        st.markdown(f"### 📌 次產業字首 [{selected_sub}] 前 3 名標的戰情室")
         st.dataframe(sub_display, use_container_width=True)
 
-    # Excel 匯出
+        # 次產業專屬 Excel 匯出
+        sub_output = io.BytesIO()
+        with pd.ExcelWriter(sub_output, engine='openpyxl') as writer:
+            sub_display.to_excel(writer, sheet_name=f"次產業_{selected_sub}_前3名", index=True)
+        sub_output.seek(0)
+
+        st.download_button(
+            label=f"📥 下載次產業 [{selected_sub}] 前 3 名戰情 Excel 報表",
+            data=sub_output,
+            file_name=f"subindustry_{selected_sub}_top3.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    # 主畫面雙群組 Excel 匯出
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         c1_display.to_excel(writer, sheet_name=f"最強勢群組{c1}", index=True)
-        c2_display.to_excel(writer, sheet_name=f"次強勢群組{c2}", index=True)
-    output.seek(0)
-
-    st.download_button(
-        label="📥 下載主畫面雙群組前 10 名 Excel 報表",
-        data=output,
-        file_name="dynamic_top10_clusters_two_stages.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-else:
-    st.info("👈 請點擊左側「開始執行兩階段分析」按鈕以啟動系統。")
+        c2_display.to_excel(writer, sheet_name=f"次強勢群
