@@ -269,6 +269,7 @@ def send_line_messaging_api(message, token=None, user_id=None):
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
         if not access_token or not target_user:
+            st.sidebar.error("❌ Token 或 User ID 未設定")
             return False
 
         url = "https://api.line.me/v2/bot/message/push"
@@ -284,8 +285,14 @@ def send_line_messaging_api(message, token=None, user_id=None):
         )
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.status == 200
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"LINE API HTTP 錯誤 ({e.code}): {error_body}")
+        st.sidebar.error(f"❌ LINE API 錯誤 ({e.code}): {error_body}")
+        return False
     except Exception as e:
         logger.error(f"發送 LINE 推播發生錯誤: {e}")
+        st.sidebar.error(f"❌ 發生未預期錯誤: {e}")
         return False
 
 
@@ -375,8 +382,6 @@ if st.sidebar.button("🚀 立即執行 LINE 推播測試"):
                 success = send_line_messaging_api(push_msg)
                 if success:
                     st.sidebar.success("✅ LINE 推播發送成功！")
-                else:
-                    st.sidebar.error("❌ LINE 推播發送失敗。")
             else:
                 st.sidebar.warning("⚠️ 無法生成推播內容。")
     except Exception as e:
@@ -582,7 +587,7 @@ if st.button("🚀 開始執行 AI-TSMC-50 智慧選股運算", type="primary"):
                 label="📥 下載完整選股排序結果 (CSV)",
                 data=res.to_csv().encode('utf-8-sig'),
                 file_name=f"AITSMC50_Report_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime='text/csv'
+                mime='text/css'
             )
 else:
     st.info("👈 請點擊上方按鈕開始載入資料與執行智慧選股模型。")
