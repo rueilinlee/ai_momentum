@@ -17,12 +17,12 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與聯網戰情室 (含次產業支撐壓力與 Excel 下載)")
+st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與聯網戰情室 (含全次產業一次打包下載)")
 st.markdown("""本系統採**兩階段執行架構**：
 1. **第一階段**：先快速載入全市場資料，執行多維度量化因子計算與 K-Means AI 分群，並取得即期股價與 20 日支撐/壓力。
 2. **第二階段**：以公司代號非同步聯網對應官方與 Yahoo 中文名稱。
 
-**新增亮點**：次產業戰情室前 3 名已完整包含**支撐與壓力數值**，並支援**專屬 Excel 報表一鍵下載**！""")
+**最新功能亮點**：主畫面下方現已支援**「一鍵下載所有次產業前 3 名完整 Excel 報表（各次產業分頁）」**！""")
 
 # 側邊欄控制面板
 st.sidebar.header("⚙️ 模型與資料設定")
@@ -106,7 +106,7 @@ def fetch_stock_tech_only(code):
 if 'executed' not in st.session_state:
     st.session_state.executed = False
 
-if st.button("🚀 開始執行兩階段分析 (含次產業支撐壓力與下載)", type="primary"):
+if st.button("🚀 開始執行兩階段分析 (含全次產業打包下載)", type="primary"):
     st.session_state.executed = True
     with st.spinner("【階段一】正在讀取資料、執行 AI 動態分群與技術面計算..."):
         if uploaded_extra is not None:
@@ -267,10 +267,65 @@ if st.session_state.get('executed', False) and 'official_mapping' in st.session_
         st.markdown(f"### ⚡ 次強勢群組 {c2} 前 10 名")
         st.dataframe(c2_display, use_container_width=True)
 
+    # 主畫面雙群組 Excel 匯出按鈕 + 全次產業打包下載按鈕
+    st.markdown("### 📥 主畫面總表與全次產業資料匯出專區")
+    export_col1, export_col2 = st.columns(2)
+
+    with export_col1:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            c1_display.to_excel(writer, sheet_name=f"最強勢群組{c1}", index=True)
+            c2_display.to_excel(writer, sheet_name=f"次強勢群組{c2}", index=True)
+        output.seek(0)
+
+        st.download_button(
+            label="📥 下載主畫面雙群組前 10 名 Excel 報表",
+            data=output,
+            file_name="dynamic_top10_clusters_two_stages.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    with export_col2:
+        all_sub_output = io.BytesIO()
+        with pd.ExcelWriter(all_sub_output, engine='openpyxl') as writer:
+            for p in sorted(df_sat['Prefix'].unique()):
+                sub_df = df_sat[df_sat['Prefix'] == p].sort_values(by='Final_Score', ascending=False).head(3).copy()
+                names, prices, dates, supports, resists = [], [], [], [], []
+                for _, r in sub_df.iterrows():
+                    code = r['Ticker']
+                    r_name = official_mapping.get(code, fallback_mapping.get(code, fetch_stock_name_from_yahoo(code) or f"上市櫃企業_{code}"))
+                    p_val, d_val, s_val, r_val = fetch_stock_tech_only(code)
+                    names.append(r_name)
+                    prices.append(p_val)
+                    dates.append(d_val)
+                    supports.append(s_val)
+                    resists.append(r_val)
+                sub_df['Name'] = names
+                sub_df['Price'] = prices
+                sub_df['Price_Date'] = dates
+                sub_df['Support_20D'] = supports
+                sub_df['Resist_20D'] = resists
+
+                sub_display_cols = ['Name', 'Ticker', 'Price', 'Price_Date', 'Support_20D', 'Resist_20D']
+                sub_display = sub_df[sub_display_cols].reset_index(drop=True)
+                sub_display.index = range(1, len(sub_display) + 1)
+                sub_display.columns = ['公司名稱', '公司代碼', '即期股價', '日期', '20日支撐', '20日壓力']
+                
+                sheet_name = str(p)[:30]
+                sub_display.to_excel(writer, sheet_name=sheet_name, index=True)
+        all_sub_output.seek(0)
+
+        st.download_button(
+            label="📦 一次打包下載所有次產業前 3 名 Excel 報表 (多工作表)",
+            data=all_sub_output,
+            file_name="all_subindustries_top3_packed.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
     # ---------------- 各次產業前 3 名查詢與下拉選單 ----------------
     st.markdown("---")
-    st.subheader("📑 各次產業標的戰情室 (前 3 名)")
-    st.markdown("您可以透過下方下拉選單自由切換檢視全市場各個同儕次產業的前 3 名標的。")
+    st.subheader("📑 各次產業標的戰情室 (單一檢視與下載)")
+    st.markdown("您可以透過下方下拉選單自由切換檢視全市場各個同儕次產業的前 3 名標的，並單獨下載該次產業報表。")
 
     prefixes = df_sat['Prefix'].unique()
     subindustry_options = sorted([str(p) for p in prefixes])
@@ -318,19 +373,5 @@ if st.session_state.get('executed', False) and 'official_mapping' in st.session_
             file_name=f"subindustry_{selected_sub}_top3.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
-    # 主畫面雙群組 Excel 匯出
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        c1_display.to_excel(writer, sheet_name=f"最強勢群組{c1}", index=True)
-        c2_display.to_excel(writer, sheet_name=f"次強勢群組{c2}", index=True)
-    output.seek(0)
-
-    st.download_button(
-        label="📥 下載主畫面雙群組前 10 名 Excel 報表",
-        data=output,
-        file_name="dynamic_top10_clusters_two_stages.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
 else:
     st.info("👈 請點擊左側「開始執行兩階段分析」按鈕以啟動系統。")
