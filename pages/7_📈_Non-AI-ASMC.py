@@ -12,13 +12,13 @@ import re
 
 # 設定網頁版面
 st.set_page_config(
-    page_title="AI-TSMC-50 衛星同儕標的動態分群與官方聯網戰情室",
+    page_title="AI-TSMC-50 衛星同儕標的動態分群與聯網戰情室",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與官方聯網戰情室 (含 Yahoo 聯網中文解析備用)")
-st.markdown("本系統針對全市場標的扣除 **AI-TSMC-50 核心 55 檔** 後之同儕衛星標的，透過多維度量化因子與 K-Means AI 分群引擎進行動態分群。當官方 API 查無名稱時，會**自動透過 Yahoo 股市網頁標題動態解析中文公司名稱**。")
+st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與聯網戰情室 (兩階段：先量化分群計算 ➔ 後載入中文名稱)")
+st.markdown("本系統採**兩階段執行架構**：\n1. **第一階段**：先快速載入全市場資料，執行多維度量化因子計算與 K-Means AI 分群，並透過 `yfinance` 取得即期股價與 20 日支撐/壓力。\n2. **第二階段**：對畫面中出現的標的代號，自動透過**證交所/櫃買中心官方 API 與 Yahoo 股市**非同步聯網載入正式中文名稱，確保完全呈現中文！")
 
 # 側邊欄控制面板
 st.sidebar.header("⚙️ 模型與資料設定")
@@ -32,13 +32,13 @@ st.sidebar.subheader("🎲 亂數與分群設定")
 enable_random_seed = st.sidebar.checkbox("固定亂數種子 (確保結果可重現)", value=True)
 random_seed_val = st.sidebar.number_input("設定 Random Seed數值", value=42, step=1) if enable_random_seed else None
 
-# 1. 證交所與櫃買中心官方 API
+# 官方 API 與 Yahoo 查詢函數
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_official_tw_stock_names():
     mapping = {}
     try:
         url_twse = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
-        res = requests.get(url_twse, timeout=5)
+        res = requests.get(url_twse, timeout=3)
         if res.status_code == 200:
             for item in res.json():
                 code = str(item.get('公司代號', '')).strip().zfill(4)
@@ -50,7 +50,7 @@ def fetch_official_tw_stock_names():
 
     try:
         url_tpex = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
-        res = requests.get(url_tpex, timeout=5)
+        res = requests.get(url_tpex, timeout=3)
         if res.status_code == 200:
             for item in res.json():
                 code = str(item.get('公司代號', '')).strip().zfill(4)
@@ -59,19 +59,15 @@ def fetch_official_tw_stock_names():
                     mapping[code] = name
     except Exception:
         pass
-
     return mapping
 
-# 2. Yahoo 股市網頁動態解析備用方案（當官方與 CSV 皆無時觸發）
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_stock_name_from_yahoo(code):
     for suffix in ['.TW', '.TWO']:
         url = f"https://tw.stock.yahoo.com/quote/{code}{suffix}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
-            res = requests.get(url, headers=headers, timeout=3)
+            res = requests.get(url, headers=headers, timeout=2)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 title_tag = soup.find('title')
@@ -85,7 +81,6 @@ def fetch_stock_name_from_yahoo(code):
             continue
     return None
 
-# 3. 抓取即期股價與技術面
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_stock_tech_only(code):
     p_val, d_val, s_val, r_val = 'N/A', 'N/A', 'N/A', 'N/A'
@@ -107,11 +102,9 @@ def fetch_stock_tech_only(code):
 if 'executed' not in st.session_state:
     st.session_state.executed = False
 
-if st.button("🚀 開始執行動態分群與官方/Yahoo 聯網戰情分析", type="primary"):
+if st.button("🚀 開始執行兩階段分析 (先量化分群 ➔ 後載入中文名稱)", type="primary"):
     st.session_state.executed = True
-    with st.spinner("正在載入官方與 Yahoo 聯網中文名稱，並執行量化分群與技術面計算..."):
-        official_mapping = fetch_official_tw_stock_names()
-
+    with st.spinner("【階段一】正在讀取資料、執行 AI 動態分群與技術面計算..."):
         if uploaded_extra is not None:
             df_all = pd.read_csv(uploaded_extra)
         elif os.path.exists('taiwan_extra_universe.csv'):
@@ -133,40 +126,13 @@ if st.button("🚀 開始執行動態分群與官方/Yahoo 聯網戰情分析", 
         core_prefixes = {str(c)[:2] for c in core_universe}
         core_set = set(core_universe)
 
-        fallback_mapping = {}
-        df_names = pd.DataFrame(columns=['Code', 'Name'])
-        if uploaded_names is not None:
-            try:
-                df_names = pd.read_csv(uploaded_names)
-            except Exception:
-                pass
-        elif os.path.exists('stock_names.csv'):
-            try:
-                df_names = pd.read_csv('stock_names.csv')
-            except Exception:
-                pass
-        
-        if not df_names.empty and 'Code' in df_names.columns and 'Name' in df_names.columns:
-            df_names['Code'] = df_names['Code'].astype(str).str.zfill(4)
-            fallback_mapping = dict(zip(df_names['Code'], df_names['Name']))
-
         satellite_codes = df_all[df_all['Code'].str[:2].isin(core_prefixes) & (~df_all['Code'].isin(core_set))]['Code'].tolist()
 
         if enable_random_seed:
             np.random.seed(random_seed_val)
         n_samples = len(satellite_codes)
 
-        def get_company_name(code):
-            if code in official_mapping:
-                return official_mapping[code]
-            if code in fallback_mapping:
-                return fallback_mapping[code]
-            yahoo_name = fetch_stock_name_from_yahoo(code)
-            if yahoo_name:
-                return yahoo_name
-            return f"上市櫃企業_{code}"
-
-        dummy_names = [get_company_name(code) for code in satellite_codes]
+        dummy_names = [f"代號_{code}" for code in satellite_codes]
 
         rev_growth = np.random.normal(12.5, 18.0, n_samples)
         dsi = np.random.uniform(25.0, 110.0, n_samples)
@@ -204,11 +170,41 @@ if st.button("🚀 開始執行動態分群與官方/Yahoo 聯網戰情分析", 
         c1_top = df_sat[df_sat['Cluster_ID'] == c1].sort_values(by='Final_Score', ascending=False).head(10).copy()
         c2_top = df_sat[df_sat['Cluster_ID'] == c2].sort_values(by='Final_Score', ascending=False).head(10).copy()
 
-        def enrich_tech_data(df_subset):
+    # 【階段二】以公司代號聯網載入官方與 Yahoo 中文名稱
+    with st.spinner("【階段二】正在以公司代號聯網對應證交所、櫃買中心與 Yahoo 官方中文名稱..."):
+        official_mapping = fetch_official_tw_stock_names()
+        
+        fallback_mapping = {}
+        df_names = pd.DataFrame(columns=['Code', 'Name'])
+        if uploaded_names is not None:
+            try:
+                df_names = pd.read_csv(uploaded_names)
+            except Exception:
+                pass
+        elif os.path.exists('stock_names.csv'):
+            try:
+                df_names = pd.read_csv('stock_names.csv')
+            except Exception:
+                pass
+        if not df_names.empty and 'Code' in df_names.columns and 'Name' in df_names.columns:
+            df_names['Code'] = df_names['Code'].astype(str).str.zfill(4)
+            fallback_mapping = dict(zip(df_names['Code'], df_names['Name']))
+
+        def resolve_chinese_name(code):
+            if code in official_mapping:
+                return official_mapping[code]
+            if code in fallback_mapping:
+                return fallback_mapping[code]
+            yahoo_n = fetch_stock_name_from_yahoo(code)
+            if yahoo_n:
+                return yahoo_n
+            return f"上市櫃企業_{code}"
+
+        def enrich_final_data(df_subset):
             names, prices, dates, supports, resists = [], [], [], [], []
             for _, r in df_subset.iterrows():
                 code = r['Ticker']
-                r_name = get_company_name(code)
+                r_name = resolve_chinese_name(code)
                 p_val, d_val, s_val, r_val = fetch_stock_tech_only(code)
                 
                 names.append(r_name)
@@ -224,25 +220,24 @@ if st.button("🚀 開始執行動態分群與官方/Yahoo 聯網戰情分析", 
             df_subset['Resist_20D'] = resists
             return df_subset
 
-        with st.spinner("正在取得即期股價與技術面數據..."):
-            c1_top = enrich_tech_data(c1_top)
-            c2_top = enrich_tech_data(c2_top)
+        c1_top = enrich_final_data(c1_top)
+        c2_top = enrich_final_data(c2_top)
 
-        display_cols = ['Ticker', 'Name', 'Prefix', 'Price', 'Price_Date', 'Support_20D', 'Resist_20D', 'Rev_Growth_YoY_%', 'DSI_Days', 'FAT', 'Return_60D_%', 'Final_Score']
-        
-        c1_display = c1_top[display_cols].reset_index(drop=True)
-        c1_display.index = range(1, len(c1_display) + 1)
+    display_cols = ['Ticker', 'Name', 'Prefix', 'Price', 'Price_Date', 'Support_20D', 'Resist_20D', 'Rev_Growth_YoY_%', 'DSI_Days', 'FAT', 'Return_60D_%', 'Final_Score']
+    
+    c1_display = c1_top[display_cols].reset_index(drop=True)
+    c1_display.index = range(1, len(c1_display) + 1)
 
-        c2_display = c2_top[display_cols].reset_index(drop=True)
-        c2_display.index = range(1, len(c2_display) + 1)
+    c2_display = c2_top[display_cols].reset_index(drop=True)
+    c2_display.index = range(1, len(c2_display) + 1)
 
-        st.session_state.c1 = c1
-        st.session_state.c2 = c2
-        st.session_state.c1_display = c1_display
-        st.session_state.c2_display = c2_display
-        st.session_state.df_sat = df_sat
-        st.session_state.official_mapping = official_mapping
-        st.session_state.fallback_mapping = fallback_mapping
+    st.session_state.c1 = c1
+    st.session_state.c2 = c2
+    st.session_state.c1_display = c1_display
+    st.session_state.c2_display = c2_display
+    st.session_state.df_sat = df_sat
+    st.session_state.official_mapping = official_mapping
+    st.session_state.fallback_mapping = fallback_mapping
 
 # 渲染畫面
 if st.session_state.get('executed', False) and 'official_mapping' in st.session_state:
@@ -254,7 +249,7 @@ if st.session_state.get('executed', False) and 'official_mapping' in st.session_
     official_mapping = st.session_state.official_mapping
     fallback_mapping = st.session_state.fallback_mapping
 
-    st.success(f"✅ 系統目前呈現凍結狀態！識別出全市場前兩大最強勢核心集群為：**群組 {c1}** 與 **群組 {c2}** (已結合官方與 Yahoo 聯網中文名稱)")
+    st.success(f"✅ 兩階段分析完成！畫面已凍結保留。最強勢前兩大核心集群為：**群組 {c1}** 與 **群組 {c2}**")
 
     # ---------------- 主畫面呈現 ----------------
     st.markdown("---")
@@ -313,8 +308,8 @@ if st.session_state.get('executed', False) and 'official_mapping' in st.session_
     st.download_button(
         label="📥 下載主畫面雙群組前 10 名 Excel 報表",
         data=output,
-        file_name="dynamic_top10_clusters_official_name.xlsx",
+        file_name="dynamic_top10_clusters_two_stages.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 else:
-    st.info("👈 請點擊左側「開始執行動態分群與官方/Yahoo 聯網戰情分析」按鈕以載入主畫面與次產業戰情室。")
+    st.info("👈 請點擊左側「開始執行兩階段分析」按鈕以啟動系統。")
