@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與官方聯網戰情室 (證交所/櫃買中心即時對應)")
-st.markdown("本系統針對全市場標的扣除 **AI-TSMC-50 核心 55 檔** 後之同儕衛星標的，透過多維度量化因子與 K-Means AI 分群引擎，動態自動尋找最強勢的前兩個集群（各前 10 名）。系統會**自動透過台灣證券交易所（TWSE）與櫃買中心（TPEX）官方資料源**查詢真實上市櫃公司中文名稱，並結合 `yfinance` 取得即期股價與 20 日支撐/壓力。執行後畫面結果會**凍結保留（透過 session_state）**，方便您順暢使用下方的次產業下拉選單。")
+st.markdown("本系統針對全市場標的扣除 **AI-TSMC-50 核心 55 檔** 後之同儕衛星標的，透過多維度量化因子與 K-Means AI 分群引擎，動態自動尋找最強勢的前兩個集群（各前 10 名）。系統會**自動透過台灣證券交易所（TWSE）與櫃買中心（TPEX）官方資料源**查詢真實上市櫃公司中文名稱，並結合 `yfinance` 取得即期股價與 20 日支撐/壓力。")
 
 # 側邊欄控制面板
 st.sidebar.header("⚙️ 模型與資料設定")
@@ -35,7 +35,6 @@ random_seed_val = st.sidebar.number_input("設定 Random Seed數值", value=42, 
 def fetch_official_tw_stock_names():
     mapping = {}
     try:
-        # 1. TWSE 上市公司清單 API (JSON)
         url_twse = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
         res = requests.get(url_twse, timeout=5)
         if res.status_code == 200:
@@ -49,7 +48,6 @@ def fetch_official_tw_stock_names():
         pass
 
     try:
-        # 2. TPEX 上櫃公司清單 API (JSON)
         url_tpex = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
         res = requests.get(url_tpex, timeout=5)
         if res.status_code == 200:
@@ -64,7 +62,6 @@ def fetch_official_tw_stock_names():
 
     return mapping
 
-# 使用 @st.cache_data 快取 yfinance 技術面與備用名稱查詢
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_stock_info_and_tech(code, official_name):
     real_name = official_name
@@ -98,10 +95,8 @@ if 'executed' not in st.session_state:
 if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="primary"):
     st.session_state.executed = True
     with st.spinner("正在連線至證交所與櫃買中心官方 API 取得最新上市櫃中文名稱，並透過 AI 執行分群與技術面計算..."):
-        # 1. 取得官方上市櫃公司名稱對照
         official_mapping = fetch_official_tw_stock_names()
 
-        # 2. 讀取資料
         if uploaded_extra is not None:
             df_all = pd.read_csv(uploaded_extra)
         elif os.path.exists('taiwan_extra_universe.csv'):
@@ -123,14 +118,11 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
         core_prefixes = {str(c)[:2] for c in core_universe}
         core_set = set(core_universe)
 
-        # 讀取備用 CSV 名稱對照
         fallback_mapping = {}
         if uploaded_names is not None:
             df_names = pd.read_csv(uploaded_names)
         elif os.path.exists('stock_names.csv'):
             df_names = pd.read_csv('stock_names.csv')
-        else:
-            df_names = pd.DataFrame(columns=['Code', 'Name'])
         
         if not df_names.empty:
             df_names['Code'] = df_names['Code'].astype(str).str.zfill(4)
@@ -184,7 +176,6 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
         top_two_clusters = cluster_avg_scores.head(2).index.tolist()
         c1, c2 = top_two_clusters[0], top_two_clusters[1]
 
-        # 各萃取前 10 名
         c1_top = df_sat[df_sat['Cluster_ID'] == c1].sort_values(by='Final_Score', ascending=False).head(10).copy()
         c2_top = df_sat[df_sat['Cluster_ID'] == c2].sort_values(by='Final_Score', ascending=False).head(10).copy()
 
@@ -225,7 +216,7 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
         c2_display = c2_top[display_cols].reset_index(drop=True)
         c2_display.index = range(1, len(c2_display) + 1)
 
-        # 儲存至 session_state 凍結畫面
+        # 儲存至 session_state
         st.session_state.c1 = c1
         st.session_state.c2 = c2
         st.session_state.c1_display = c1_display
@@ -234,8 +225,8 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
         st.session_state.official_mapping = official_mapping
         st.session_state.fallback_mapping = fallback_mapping
 
-# 若已經執行過，直接從 session_state 渲染畫面，避免下拉選單觸發重新整理而洗掉主畫面
-if st.session_state.get('executed', False):
+# 渲染畫面（增加安全檢查，防止重新整理時發生 KeyError）
+if st.session_state.get('executed', False) and 'official_mapping' in st.session_state:
     c1 = st.session_state.c1
     c2 = st.session_state.c2
     c1_display = st.session_state.c1_display
@@ -244,7 +235,7 @@ if st.session_state.get('executed', False):
     official_mapping = st.session_state.official_mapping
     fallback_mapping = st.session_state.fallback_mapping
 
-    st.success(f"✅ 系統目前呈現凍結狀態！識別出全市場前兩大最強勢核心集群為：**群組 {c1}** 與 **群組 {c2}** (已透過證交所/櫃買中心官方 API 聯網對應真實中文名稱)")
+    st.success(f"✅ 系統目前呈現凍結狀態！識別出全市場前兩大最強勢核心集群為：**群組 {c1}** 與 **群組 {c2}**")
 
     # ---------------- 主畫面呈現 ----------------
     st.markdown("---")
