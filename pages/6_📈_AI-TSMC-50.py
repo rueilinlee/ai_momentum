@@ -265,7 +265,7 @@ def generate_push_message_content(res, panels):
 
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
-        access_token = token or "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
+        access_token = token or "LoWdzyXkvVwbPsmYoPxWuFPik/CvtFx5YxKqgZ2bUvePKq2rpVDJ/j6ARw3AtJD84m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbplVO+5vidqACFyXjoPXNneG9pP7xIyDGvEaIpLOO+gwQdB04t89/1O/w1cDnyilFU="
         target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
         if not access_token or not target_user:
