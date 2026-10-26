@@ -7,6 +7,7 @@ import os
 import io
 import yfinance as yf
 import requests
+import re
 
 # 設定網頁版面
 st.set_page_config(
@@ -15,13 +16,13 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與官方聯網戰情室 (證交所/櫃買中心即時對應)")
-st.markdown("本系統針對全市場標的扣除 **AI-TSMC-50 核心 55 檔** 後之同儕衛星標的，透過多維度量化因子與 K-Means AI 分群引擎，動態自動尋找最強勢的前兩個集群（各前 10 名）。系統會**自動透過台灣證券交易所（TWSE）與櫃買中心（TPEX）官方資料源**查詢真實上市櫃公司中文名稱，並結合 `yfinance` 取得即期股價與 20 日支撐/壓力。")
+st.title("📊 AI-TSMC-50 衛星同儕標的動態分群與官方聯網戰情室 (強制純中文名稱版)")
+st.markdown("本系統針對全市場標的扣除 **AI-TSMC-50 核心 55 檔** 後之同儕衛星標的，透過多維度量化因子與 K-Means AI 分群引擎進行動態分群。已全面**鎖定證交所/櫃買中心官方中文名稱**，杜絕 `yfinance` 英文名稱覆蓋問題。")
 
 # 側邊欄控制面板
 st.sidebar.header("⚙️ 模型與資料設定")
 uploaded_extra = st.sidebar.file_uploader("上傳全市場標的 CSV (`taiwan_extra_universe.csv`)", type=["csv"])
-uploaded_names = st.sidebar.file_uploader("上傳公司名稱對照 CSV (`stock_names.csv`) (備用)", type=["csv"])
+uploaded_names = st.sidebar.file_uploader("上傳公司名稱對照 CSV (`stock_names.csv`) (強烈建議備用)", type=["csv"])
 
 n_clusters_input = st.sidebar.slider("K-Means AI 分群數量 (Clusters)", 5, 15, 10)
 
@@ -62,20 +63,13 @@ def fetch_official_tw_stock_names():
 
     return mapping
 
+# 修正：純粹抓取即期股價與技術面，不讓 yfinance 改變名稱
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_stock_info_and_tech(code, official_name):
-    real_name = official_name
+def fetch_stock_tech_only(code):
     p_val, d_val, s_val, r_val = 'N/A', 'N/A', 'N/A', 'N/A'
-    
     for suffix in ['.TW', '.TWO']:
         try:
             t = yf.Ticker(code + suffix)
-            if not real_name or real_name.startswith('企業_') or real_name.startswith('上市櫃企業_'):
-                info = t.info
-                long_n = info.get('longName', info.get('shortName', ''))
-                if long_n:
-                    real_name = long_n
-            
             hist = t.history(period='2mo')
             if not hist.empty and len(hist) >= 20:
                 p_val = round(float(hist['Close'].iloc[-1]), 2)
@@ -85,8 +79,7 @@ def fetch_stock_info_and_tech(code, official_name):
                 break
         except Exception:
             continue
-            
-    return real_name, p_val, d_val, s_val, r_val
+    return p_val, d_val, s_val, r_val
 
 # 初始化 session_state
 if 'executed' not in st.session_state:
@@ -94,7 +87,7 @@ if 'executed' not in st.session_state:
 
 if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="primary"):
     st.session_state.executed = True
-    with st.spinner("正在連線至證交所與櫃買中心官方 API 取得最新上市櫃中文名稱，並透過 AI 執行分群與技術面計算..."):
+    with st.spinner("正在連線至證交所與櫃買中心官方 API 取得最新中文公司名稱，並執行量化分群與技術面計算..."):
         official_mapping = fetch_official_tw_stock_names()
 
         if uploaded_extra is not None:
@@ -142,6 +135,7 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
             np.random.seed(random_seed_val)
         n_samples = len(satellite_codes)
 
+        # 嚴格確保中文名稱對照優先序
         def get_company_name(code):
             if code in official_mapping:
                 return official_mapping[code]
@@ -187,17 +181,13 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
         c1_top = df_sat[df_sat['Cluster_ID'] == c1].sort_values(by='Final_Score', ascending=False).head(10).copy()
         c2_top = df_sat[df_sat['Cluster_ID'] == c2].sort_values(by='Final_Score', ascending=False).head(10).copy()
 
-        def enrich_real_name_and_tech(df_subset):
+        def enrich_tech_data(df_subset):
             names, prices, dates, supports, resists = [], [], [], [], []
             for _, r in df_subset.iterrows():
                 code = r['Ticker']
-                base_name = get_company_name(code)
-                r_name, p_val, d_val, s_val, r_val = fetch_stock_info_and_tech(code, base_name)
-                
-                if code in official_mapping:
-                    r_name = official_mapping[code]
-                elif code in fallback_mapping:
-                    r_name = fallback_mapping[code]
+                # 強制使用官方或備用中文名稱，絕不採用 yfinance 英文名稱
+                r_name = get_company_name(code)
+                p_val, d_val, s_val, r_val = fetch_stock_tech_only(code)
                 
                 names.append(r_name)
                 prices.append(p_val)
@@ -212,9 +202,9 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
             df_subset['Resist_20D'] = resists
             return df_subset
 
-        with st.spinner("正在取得主畫面標的之官方真實中文名稱、即期股價與技術面..."):
-            c1_top = enrich_real_name_and_tech(c1_top)
-            c2_top = enrich_real_name_and_tech(c2_top)
+        with st.spinner("正在取得即期股價與技術面數據..."):
+            c1_top = enrich_tech_data(c1_top)
+            c2_top = enrich_tech_data(c2_top)
 
         display_cols = ['Ticker', 'Name', 'Prefix', 'Price', 'Price_Date', 'Support_20D', 'Resist_20D', 'Rev_Growth_YoY_%', 'DSI_Days', 'FAT', 'Return_60D_%', 'Final_Score']
         
@@ -224,7 +214,6 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
         c2_display = c2_top[display_cols].reset_index(drop=True)
         c2_display.index = range(1, len(c2_display) + 1)
 
-        # 儲存至 session_state
         st.session_state.c1 = c1
         st.session_state.c2 = c2
         st.session_state.c1_display = c1_display
@@ -233,7 +222,7 @@ if st.button("🚀 開始執行動態分群與官方聯網戰情分析", type="p
         st.session_state.official_mapping = official_mapping
         st.session_state.fallback_mapping = fallback_mapping
 
-# 渲染畫面（增加安全檢查）
+# 渲染畫面
 if st.session_state.get('executed', False) and 'official_mapping' in st.session_state:
     c1 = st.session_state.c1
     c2 = st.session_state.c2
@@ -243,7 +232,7 @@ if st.session_state.get('executed', False) and 'official_mapping' in st.session_
     official_mapping = st.session_state.official_mapping
     fallback_mapping = st.session_state.fallback_mapping
 
-    st.success(f"✅ 系統目前呈現凍結狀態！識別出全市場前兩大最強勢核心集群為：**群組 {c1}** 與 **群組 {c2}**")
+    st.success(f"✅ 系統目前呈現凍結狀態！識別出全市場前兩大最強勢核心集群為：**群組 {c1}** 與 **群組 {c2}** (已強制鎖定純中文公司名稱)")
 
     # ---------------- 主畫面呈現 ----------------
     st.markdown("---")
@@ -260,7 +249,7 @@ if st.session_state.get('executed', False) and 'official_mapping' in st.session_
     # ---------------- 各次產業前 3 名查詢與下拉選單 ----------------
     st.markdown("---")
     st.subheader("📑 各次產業標的戰情室 (前 3 名)")
-    st.markdown("您可以透過下方下拉選單自由切換檢視全市場各個同儕次產業（依據代號前兩碼分類）的前 3 名標的。")
+    st.markdown("您可以透過下方下拉選單自由切換檢視全市場各個同儕次產業的前 3 名標的。")
 
     prefixes = df_sat['Prefix'].unique()
     subindustry_options = sorted([str(p) for p in prefixes])
@@ -273,14 +262,9 @@ if st.session_state.get('executed', False) and 'official_mapping' in st.session_
         names, prices, dates = [], [], []
         for _, r in sub_df.iterrows():
             code = r['Ticker']
-            base_name = official_mapping.get(code, fallback_mapping.get(code, f"上市櫃企業_{code}"))
-            r_name, p_val, d_val, _, _ = fetch_stock_info_and_tech(code, base_name)
+            r_name = official_mapping.get(code, fallback_mapping.get(code, f"上市櫃企業_{code}"))
+            p_val, d_val, _, _ = fetch_stock_tech_only(code)
             
-            if code in official_mapping:
-                r_name = official_mapping[code]
-            elif code in fallback_mapping:
-                r_name = fallback_mapping[code]
-                
             names.append(r_name)
             prices.append(p_val)
             dates.append(d_val)
