@@ -48,11 +48,9 @@ st.sidebar.info("系統已設定每日自動推播。您可先點擊上方按鈕
 
 # 側邊欄即時 LINE 測試按鈕
 if st.sidebar.button("🚀 立即執行 LINE 推播測試"):
-    # 檢查是否有暫存的運算結果，若無則先載入基本資料進行快顯測試
     try:
         codes = list(UNIVERSE)
         panels, _ = download_panels_cached(tuple(codes))
-        # 建立一個臨時的 res 供推播測試使用
         dummy_res = pd.DataFrame({
             'Name': [UNIVERSE[c]['name'] for c in codes],
             'Category': [UNIVERSE[c]['cat'] for c in codes],
@@ -314,9 +312,9 @@ def generate_push_message_content(res, panels):
 
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
-    LINE_CHANNEL_ACCESS_TOKEN = "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
-    LINE_USER_ID= "U232b236a8492ffa9677852f70c12ea88"
-    LINE_Channel_secret = "bcc7777f7db650fd1970d56bba0afdc"
+        # 使用您提供的專屬密鑰
+        access_token = token or "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
+        target_user = user_id or "U232b236a8492ffa9677852f70c12ea88"
         
         if not access_token or not target_user:
             return False
