@@ -314,9 +314,9 @@ def generate_push_message_content(res, panels):
 
 def send_line_messaging_api(message, token=None, user_id=None):
     try:
-LINE_CHANNEL_ACCESS_TOKEN = "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
-LINE_USER_ID= "U232b236a8492ffa9677852f70c12ea88"
-LINE_Channel_secret = "bcc7777f7db650fd1970d56bba0afdc"
+    LINE_CHANNEL_ACCESS_TOKEN = "KroTrGGzEPAhUpc2xMCCakFpvc+X0032PgDKH7wypdB1zaylegJ4vchBRUTmb6wk4m7Rmmxi2hIab6sbxPZNPViUnzCer2RdDrUssRBVrbpBelKVQL1sSFZOMMzRBAf3chzDbUMeSE0XWDQdtwHPVAdB04t89/1O/w1cDnyilFU="
+    LINE_USER_ID= "U232b236a8492ffa9677852f70c12ea88"
+    LINE_Channel_secret = "bcc7777f7db650fd1970d56bba0afdc"
         
         if not access_token or not target_user:
             return False
