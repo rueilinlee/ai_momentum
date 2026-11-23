@@ -752,7 +752,7 @@ with st.spinner(f'正在分析 {company_name} [{interval_label}]...'):
     features = ['Beta_3_Rolling', 'Gamma_Rolling', 'Price_Mom_30D', 'Price_Mom_5D', 'RSI_14', 'Vol_10D', 'NLP_Sent', 'NLP_Growth', 'NLP_Hotspot']
     features = [c for c in features if c in df.columns]
     df_ai = df.dropna(subset=features)
-    X, y = df_ai[features], (fwd_excess.reindex(df_ai.index) > 0.005).astype(int)
+    X, y = df_ai[features], (fwd_excess.reindex(df_ai.index) > 0.0005).astype(int)
 
     # 升級版：精細化超參數配置的 LightGBM 模型
     model = lgb.LGBMClassifier(
@@ -1118,3 +1118,4 @@ ctx = {
 }
 
 st.download_button("📝 下載 Word 完整分析報告", data=generate_word_report(ctx, fig1, fig2), file_name=f"{stock_code}_AI_Report.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
+
